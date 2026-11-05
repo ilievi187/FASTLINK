@@ -8,6 +8,7 @@
 - RAW/RLE lossless codec with size-based selection and bounded reconstruction.
 - Loopback-only TCP CLI: `fastlink serve` and `fastlink send`.
 - Five Rust unit tests passed; rustfmt, clippy and release compilation passed locally.
+- GitHub Actions cross-platform CI passed on Ubuntu and Windows (run 42098205495).
 - 8 MiB synthetic local test: cold payload 1,552 B; warm payload 0 B; one-byte delta 518 B.
 - SHA-256 of source and output matched; byte comparison passed.
 
