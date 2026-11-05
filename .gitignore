@@ -1,0 +1,11 @@
+/target
+/.fastlink-data
+/data
+*.tmp
+*.log
+*.gguf
+*.safetensors
+*.bin
+.env
+.env.*
+!examples/*.txt

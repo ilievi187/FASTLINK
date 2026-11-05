@@ -1,0 +1,3 @@
+FASTLINK hello!
+A second upload should reuse chunks by reference.
+Editing a line changes only the affected chunk.
