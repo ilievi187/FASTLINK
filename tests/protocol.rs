@@ -124,6 +124,61 @@ fn prestore(root: &Path, chunk: &[u8]) {
     fs::write(dir.join(&s), chunk).unwrap();
 }
 
+/// A loopback server that accepts `n` concurrent SYNC sessions on one
+/// listener, mirroring the real CLI's thread-per-connection accept loop.
+/// `finish` joins the dispatcher *and* every per-session worker, so the
+/// filesystem is fully settled before assertions run.
+struct ConcurrentServer {
+    handle: JoinHandle<()>,
+    root: PathBuf,
+}
+
+impl ConcurrentServer {
+    fn start(root: &Path, n: usize) -> (Vec<TcpStream>, Self) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let root_for_thread = root.to_path_buf();
+        let handle = std::thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..n {
+                if let Ok((stream, _)) = listener.accept() {
+                    let rt = root_for_thread.clone();
+                    let w = std::thread::spawn(move || {
+                        let mut s = stream;
+                        if let Err(e) = server_sync(&mut s, &rt) {
+                            eprintln!("concurrent server_sync: {e}");
+                        }
+                    });
+                    workers.push(w);
+                }
+            }
+            for w in workers {
+                let _ = w.join();
+            }
+        });
+        let streams = (0..n)
+            .map(|_| {
+                let s = TcpStream::connect(addr).unwrap();
+                s.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+                s.set_write_timeout(Some(Duration::from_secs(15))).unwrap();
+                s
+            })
+            .collect();
+        (
+            streams,
+            ConcurrentServer {
+                handle,
+                root: root.to_path_buf(),
+            },
+        )
+    }
+
+    fn finish(self) -> PathBuf {
+        let _ = self.handle.join();
+        self.root
+    }
+}
+
 #[test]
 fn cold_transfer_over_tcp() {
     let root = fresh_root();
@@ -458,4 +513,161 @@ fn failed_transfer_never_replaces_prior_output() {
     );
     cleanup(&root);
     cleanup(&work);
+}
+
+#[test]
+fn zero_byte_file_transfers_and_reconstructs() {
+    let root = fresh_root();
+    let work = fresh_root();
+    let name = "empty.bin";
+    let source = work.join(name);
+    fs::write(&source, b"").unwrap(); // 0 bytes
+
+    let (mut stream, server) = LoopbackServer::start(&root);
+    let stats = client_sync(&mut stream, name, &source).unwrap();
+    let root = server.finish();
+
+    let output = root.join("outputs").join(name);
+    let received = fs::read(&output).unwrap();
+    assert!(
+        received.is_empty(),
+        "zero-byte file must reconstruct as 0 bytes"
+    );
+    assert_eq!(stats.chunks_total, 0);
+    assert_eq!(stats.chunks_transferred, 0);
+    assert_eq!(stats.raw_missing_bytes, 0);
+    // Byte-exact comparison is the integrity check (stronger than any hash).
+    assert_eq!(received, b"");
+    cleanup(&root);
+    cleanup(&work);
+}
+
+#[test]
+fn concurrent_transfers_all_byte_identical() {
+    let root = fresh_root();
+    let work = fresh_root();
+    // Each client sends a *distinct* 2-chunk file; all share the same data
+    // root, exercising the thread-per-connection accept loop and the shared
+    // content-addressed cache under concurrent writes.
+    let clients = 5usize;
+    let names: Vec<String> = (0..clients).map(|i| format!("c{}.bin", i)).collect();
+    let expected: Vec<Vec<u8>> = (0..clients)
+        .map(|i| {
+            let mut a = vec![0u8; CHUNK_BYTES];
+            let mut b = vec![255u8; CHUNK_BYTES];
+            a[i % 256] = (i * 3 + 1) as u8;
+            b[i % 256] = (i * 5 + 2) as u8;
+            let src = work.join(&names[i]);
+            fs::write(&src, [a.clone(), b.clone()].concat()).unwrap();
+            [a, b].concat()
+        })
+        .collect();
+
+    let (streams, server) = ConcurrentServer::start(&root, clients);
+    let mut handles = Vec::new();
+    for (mut stream, name) in streams.into_iter().zip(names.iter().cloned()) {
+        let src = work.join(&name);
+        handles.push(std::thread::spawn(move || {
+            client_sync(&mut stream, &name, &src).expect("concurrent client_sync must succeed");
+        }));
+    }
+    for h in handles {
+        h.join().expect("client thread must not panic");
+    }
+    let root = server.finish();
+    for (name, expected_bytes) in names.iter().zip(expected.iter()) {
+        let received = fs::read(root.join("outputs").join(name)).unwrap();
+        assert_eq!(
+            received, *expected_bytes,
+            "concurrent output {name} mismatch"
+        );
+    }
+    cleanup(&root);
+    cleanup(&work);
+}
+
+#[test]
+fn duplicate_chunks_transferred_once() {
+    let root = fresh_root();
+    let work = fresh_root();
+    let name = "dup.bin";
+    // Two identical 64 KiB chunks: the file has 2 chunks but only ONE unique
+    // content hash, so the server must request it once and store it once.
+    let chunk = vec![42u8; CHUNK_BYTES];
+    let file_bytes: Vec<u8> = [chunk.clone(), chunk].concat();
+    let source = work.join(name);
+    fs::write(&source, &file_bytes).unwrap();
+
+    let (mut stream, server) = LoopbackServer::start(&root);
+    let stats = client_sync(&mut stream, name, &source).unwrap();
+    let root = server.finish();
+
+    assert_eq!(
+        fs::read(root.join("outputs").join(name)).unwrap(),
+        file_bytes
+    );
+    assert_eq!(stats.chunks_total, 2, "file has two 64 KiB chunks");
+    assert_eq!(
+        stats.chunks_transferred, 1,
+        "a duplicated hash must be transferred only once"
+    );
+    assert_eq!(stats.chunks_reused, 1);
+    // Exactly one cached chunk must exist (content-addressed dedup).
+    let chunk_files: Vec<PathBuf> = fs::read_dir(root.join("chunks"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .flat_map(|e| {
+            fs::read_dir(e.path()).ok().map(|sub| {
+                sub.filter_map(|e2| e2.ok())
+                    .map(|e2| e2.path())
+                    .collect::<Vec<_>>()
+            })
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        chunk_files.len(),
+        1,
+        "exactly one unique chunk should be cached"
+    );
+    cleanup(&root);
+    cleanup(&work);
+}
+
+#[test]
+fn mid_chunk_disconnect_leaves_no_output() {
+    let root = fresh_root();
+    let name = "mid.bin";
+    let chunk0 = vec![0u8; CHUNK_BYTES];
+    let chunk1 = vec![7u8; CHUNK_BYTES];
+    // 2-chunk file; chunk 0 already cached so the server requests chunk 1.
+    prestore(&root, &chunk0);
+
+    let (mut stream, server) = LoopbackServer::start(&root);
+    do_handshake(&mut stream);
+    write_u8(&mut stream, 1).unwrap(); // CMD_SYNC
+    write_u16(&mut stream, name.len() as u16).unwrap();
+    stream.write_all(name.as_bytes()).unwrap();
+    write_u64(&mut stream, (2 * CHUNK_BYTES) as u64).unwrap();
+    write_u32(&mut stream, CHUNK_BYTES as u32).unwrap();
+    write_u32(&mut stream, 2).unwrap(); // 2 chunks
+    stream.write_all(&digest(&chunk0)).unwrap();
+    stream.write_all(&digest(&chunk1)).unwrap();
+    let missing = read_missing(&mut stream);
+    assert_eq!(missing, 1, "server should request chunk 1");
+
+    // Begin chunk 1's framing, then drop mid-payload (send only half of it).
+    let (codec, encoded) = encode_chunk(&chunk1);
+    write_u32(&mut stream, 1).unwrap();
+    write_u8(&mut stream, codec).unwrap();
+    write_u32(&mut stream, encoded.len() as u32).unwrap();
+    stream.write_all(&encoded[..encoded.len() / 2]).unwrap();
+    drop(stream); // abrupt close mid-chunk
+
+    let root = server.finish();
+    assert!(
+        !root.join("outputs").join(name).exists(),
+        "a mid-chunk disconnect must not commit any output"
+    );
+    cleanup(&root);
 }
