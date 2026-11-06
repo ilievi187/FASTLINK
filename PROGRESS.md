@@ -1,5 +1,42 @@
 # Development progress
 
+## 2026-11-06 — M1 QA baseline (independent validation + perf/stress)
+
+Branch: `agent/heretic-m1-hardening` (committed locally only; not pushed, no PR, no merge).
+Audited base `a3b599f`. See `QA_REPORT.md` (full findings) and `BENCHMARKS.md` (raw tables).
+
+**Independent re-run (all green, CPU-only, loopback-only):**
+- `cargo fmt --check` clean · `cargo build` ok · `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test --all-targets` → **47 passed, 0 failed** (33 lib + 14 integration)
+
+**Coverage gaps closed (this pass):** added 4 loopback integration tests + a
+`ConcurrentServer` helper — `zero_byte_file_transfers_and_reconstructs`,
+`concurrent_transfers_all_byte_identical` (5 parallel clients, all byte-exact),
+`duplicate_chunks_transferred_once` (dedup), `mid_chunk_disconnect_leaves_no_output`.
+Integrity via byte-exact `assert_eq!` in Rust and system `sha256sum` in the
+bench/stress harnesses.
+
+**Benchmark baseline (release, incompressible fixtures, sha256-verified):**
+- Cold ≈ 19–20 MB/s (CPU-bound on BLAKE3); warm ≈ 300–360 MB/s (0 bytes moved).
+- 1 GB: cold 51.2 s / warm 3.4 s; **server RSS flat at ~3 MB across 1 KB → 1 GB**
+  (true streaming, no leak).
+- Harness: `qa/bench.py`; raw data `qa/results/bench_summary.json`.
+
+**Stress (6/6 PASS, sha-verified):** `repeated` (20×, RSS Δ 0 kB), `concurrent`
+(8 distinct), `same_name` (8 sequential), `cancel` (kill mid-transfer → no partial
+output, server alive), `restart` (pass 2 warm + byte-exact), `manyfiles` (40).
+Harness: `qa/stress.py`; raw data `qa/results/stress_summary.json`.
+
+**Bugs found & fixed (M1 engine): 0.** Findings recorded (not regressions):
+- F1 CLI `serve` is **sequential** (joins each session before next accept) —
+  already in `KNOWN_LIMITATIONS.md`; library concurrency is proven separately.
+- F2 same-filename concurrent materialization would serialize on the shared
+  `.fastlink-inprogress-<name>` path — not reachable via the sequential CLI today;
+  make the in-progress path per-session before enabling concurrent CLI (M2).
+- F3 cache is unbounded (no quota/eviction) — already documented.
+
+**Milestone 2 recommendation: PROCEED.** See `QA_REPORT.md` §11.
+
 ## 2026-11-06 — M1 (issue #1: correctness hardening)
 
 Branch: `agent/heretic-m1-hardening` (committed locally only; not pushed, no PR, no merge).
