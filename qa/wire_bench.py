@@ -28,31 +28,94 @@ METRIC_PATTERNS = {
     "elapsed_ms": r"^\s*elapsed_ms:\s*(\d+)\s*$",
 }
 
+OPTIONAL_INT_PATTERNS = {
+    "handshake_wire_bytes": r"^\s*handshake_wire_bytes:\s*(\d+)\s*$",
+    "manifest_wire_bytes": r"^\s*manifest_wire_bytes:\s*(\d+)\s*$",
+    "need_wire_bytes": r"^\s*need_wire_bytes:\s*(\d+)\s*$",
+    "chunk_framing_wire_bytes": r"^\s*chunk_framing_wire_bytes:\s*(\d+)\s*$",
+    "status_wire_bytes": r"^\s*status_wire_bytes:\s*(\d+)\s*$",
+    "headers_and_framing_wire_bytes": r"^\s*headers_and_framing_wire_bytes:\s*(\d+)\s*$",
+    "wire_bytes_tx": r"^\s*wire_bytes_tx:\s*(\d+)\s*$",
+    "wire_bytes_rx": r"^\s*wire_bytes_rx:\s*(\d+)\s*$",
+    "wire_bytes_total": r"^\s*wire_bytes_total:\s*(\d+)\s*$",
+    "handshake_us": r"^\s*handshake_us:\s*(\d+)\s*$",
+    "manifest_us": r"^\s*manifest_us:\s*(\d+)\s*$",
+    "transfer_us": r"^\s*transfer_us:\s*(\d+)\s*$",
+    "elapsed_us": r"^\s*elapsed_us:\s*(\d+)\s*$",
+}
 
-def parse_sender_summary(text: str) -> dict[str, int]:
-    """Parse existing CLI metrics; deliberately does not synthesize wire bytes."""
-    result: dict[str, int] = {}
+OPTIONAL_FLOAT_PATTERNS = {
+    "wire_mib_per_s": r"^\s*wire_mib_per_s:\s*([0-9]+(?:\.[0-9]+)?)\s*$",
+    "logical_mib_per_s": r"^\s*logical_mib_per_s:\s*([0-9]+(?:\.[0-9]+)?)\s*$",
+}
+
+
+def compute_mib_per_s(num_bytes: int, elapsed_ms: float) -> float:
+    """Calculate throughput in MiB/s given bytes and elapsed milliseconds."""
+    if num_bytes <= 0 or elapsed_ms <= 0:
+        return 0.0
+    return round((num_bytes / (1024.0 * 1024.0)) / (elapsed_ms / 1000.0), 3)
+
+
+def parse_sender_summary(text: str) -> dict[str, Any]:
+    """Parse CLI metrics; includes wire-byte accounting and speed when present."""
+    result: dict[str, Any] = {}
     for key, pattern in METRIC_PATTERNS.items():
         match = re.search(pattern, text, flags=re.MULTILINE)
         if not match:
             raise ValueError(f"missing sender metric: {key}")
         result[key] = int(match.group(1))
+    for key, pattern in OPTIONAL_INT_PATTERNS.items():
+        match = re.search(pattern, text, flags=re.MULTILINE)
+        if match:
+            result[key] = int(match.group(1))
+    for key, pattern in OPTIONAL_FLOAT_PATTERNS.items():
+        match = re.search(pattern, text, flags=re.MULTILINE)
+        if match:
+            result[key] = float(match.group(1))
     return result
 
 
 def summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate verified scenarios with TCP-stream bytes separate from payload."""
+    """Aggregate verified scenarios with TCP-stream/wire bytes, framing, and MiB/s."""
     if not cases:
         raise ValueError("at least one case is required")
     if any(not case.get("ok", False) for case in cases):
         raise ValueError("cannot summarize failed benchmark cases")
-    return {
+    tcp_total = sum(int(case["tcp_stream_bytes"]) for case in cases)
+    payload_total = sum(int(case["encoded_payload_bytes"]) for case in cases)
+    wire_total = sum(
+        int(case.get("wire_bytes_total", case["tcp_stream_bytes"])) for case in cases
+    )
+    summary: dict[str, Any] = {
         "case_count": len(cases),
-        "tcp_stream_bytes_total": sum(int(case["tcp_stream_bytes"]) for case in cases),
-        "payload_bytes_total": sum(int(case["encoded_payload_bytes"]) for case in cases),
+        "tcp_stream_bytes_total": tcp_total,
+        "wire_bytes_total": wire_total,
+        "payload_bytes_total": payload_total,
+        "headers_and_framing_bytes_total": wire_total - payload_total,
         "elapsed_ms_median": statistics.median(int(c["elapsed_ms"]) for c in cases),
         "all_correct": True,
     }
+    for case in cases:
+        name = str(case.get("name", ""))
+        wire_b = int(case.get("wire_bytes_total", case["tcp_stream_bytes"]))
+        elapsed = float(case.get("elapsed_ms", 0))
+        wire_rate = float(
+            case.get("wire_mib_per_s", compute_mib_per_s(wire_b, elapsed))
+        )
+        file_b = int(case.get("file_bytes", wire_b))
+        logical_rate = float(
+            case.get("logical_mib_per_s", compute_mib_per_s(file_b, elapsed))
+        )
+        if name in ("cold", "random_cold"):
+            summary["cold_wire_bytes"] = wire_b
+            summary["cold_wire_mib_per_s"] = wire_rate
+            summary["cold_logical_mib_per_s"] = logical_rate
+        elif name in ("warm", "random_warm"):
+            summary["warm_wire_bytes"] = wire_b
+            summary["warm_wire_mib_per_s"] = wire_rate
+            summary["warm_logical_mib_per_s"] = logical_rate
+    return summary
 
 
 class CountingProxy:
@@ -139,14 +202,23 @@ def _run_case(binary: Path, source: Path, proxy: CountingProxy,
     output = output_dir / source.name
     expected_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     actual_sha = hashlib.sha256(output.read_bytes()).hexdigest()
+    end_to_end_ms = round((time.perf_counter() - started) * 1000)
+    wire_ok = (
+        "wire_bytes_total" not in metrics
+        or int(metrics["wire_bytes_total"]) == proxy.count
+    )
     return {
         "name": case_name,
         **metrics,
         "tcp_stream_bytes": proxy.count,
-        "end_to_end_ms": round((time.perf_counter() - started) * 1000),
+        "end_to_end_ms": end_to_end_ms,
+        "end_to_end_wire_mib_per_s": compute_mib_per_s(proxy.count, max(1, end_to_end_ms)),
+        "end_to_end_logical_mib_per_s": compute_mib_per_s(
+            int(metrics["file_bytes"]), max(1, end_to_end_ms)
+        ),
         "source_sha256": expected_sha,
         "output_sha256": actual_sha,
-        "ok": expected_sha == actual_sha,
+        "ok": expected_sha == actual_sha and wire_ok,
     }
 
 
