@@ -11,5 +11,11 @@
 - [ ] **P2 integration:** Build an experimental ggml/llama.cpp RPC adapter in its own integration path.
 - [ ] **P2 execution:** Model verified remote tensor references, generations, lifetimes and dependency fences.
 - [ ] **P3 GPU:** Benchmark against stock RPC with cache for real models, only after explicit authorization.
+- [ ] **V3 CPU model:** Build deterministic placement cost model for compute, queue, transfer, RTT and explicit VRAM reserve; six tests currently pass on isolated branch `feat/fastlink-v3-cpu-baseline`.
+- [ ] **V3 instrumentation:** Add complete wire-byte accounting and separate sender hash, manifest, cache validation, reconstruction, prefill/decode and network timings.
+- [ ] **V3 RPC:** Verify behavior of the existing local adapter against a clean pinned stock build; do not edit its dirty llama.cpp source tree.
+- [ ] **V3 telemetry:** Expose real worker/backend metrics only where APIs provide measured values; report unavailable metrics as unavailable.
+- [ ] **V3 reliability:** Add mock worker fault injection for truncation, disconnect, retry, backpressure and cache invalidation.
+- [ ] **V3 A/B:** Compare stock/v2/v3 with identical prompts, sampling, context and cache state; serialize GPU workloads and avoid active-service interference.
 
 Each implementation should have correctness tests, honest benchmarks, and a scoped PR.
