@@ -4,11 +4,18 @@
 use std::io::{self, Read, Write};
 
 pub mod codec;
+pub mod server;
 pub use codec::{
     codec_name, decode_chunk, encode_chunk_adaptive, encode_lz4, encode_rle, encode_with_codec,
     encode_zstd, evaluate_codec_candidate, select_codec_measured, synthetic_incompressible_chunk,
     synthetic_sparse_chunk, synthetic_tensor_like_chunk, AdaptiveCodecChoice,
     CodecCandidateMetrics, CodecCostPolicy, LZ4, RAW, RLE, ZSTD,
+};
+pub use server::{
+    cached_and_valid, clean_stale_partials, client_handshake, digest_path, process_session,
+    process_session_with_config, safe_basename, send_file_once_with_options, send_file_resumable,
+    send_file_with_metrics, serve, server_handshake, spawn_server, store_chunk_isolated,
+    BoundedQueue, RunningServer, SendOptions, ServerConfig, ServerCoord, CMD_SYNC,
 };
 
 pub const MAGIC: &[u8; 4] = b"FLNK";
