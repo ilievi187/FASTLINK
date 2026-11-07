@@ -94,44 +94,41 @@ pub fn encode_chunk(chunk: &[u8]) -> (u8, Vec<u8>) {
 }
 
 /// Decode a chunk, enforcing the expected size and the codec's own bounds.
+///
+/// RAW must be exactly `expected` bytes. RLE must be an even-length stream of
+/// `(run, value)` pairs, at most `2 * expected` bytes, and must expand to
+/// exactly `expected` bytes. `expected` cannot exceed one chunk.
 pub fn decode_chunk(codec: u8, bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
     if expected > CHUNK_BYTES || bytes.len() > MAX_ENCODED_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "chunk exceeds limit",
-        ));
+        return Err(invalid("chunk exceeds limit"));
     }
-    let decoded = match codec {
-        RAW => bytes.to_vec(),
+    match codec {
+        RAW => {
+            if bytes.len() != expected {
+                return Err(invalid("decoded size mismatch"));
+            }
+            Ok(bytes.to_vec())
+        }
         RLE => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid RLE payload",
-                ));
+            // Each output byte costs at most one (run, value) pair.
+            if bytes.len() > expected.saturating_mul(2) || !bytes.len().is_multiple_of(2) {
+                return Err(invalid("invalid RLE payload"));
             }
             let mut output = Vec::with_capacity(expected);
             for pair in bytes.as_chunks::<2>().0 {
                 let run = pair[0] as usize;
                 if run == 0 || output.len() + run > expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid RLE run length",
-                    ));
+                    return Err(invalid("invalid RLE run length"));
                 }
                 output.extend(std::iter::repeat_n(pair[1], run));
             }
-            output
+            if output.len() != expected {
+                return Err(invalid("decoded size mismatch"));
+            }
+            Ok(output)
         }
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "unknown codec")),
-    };
-    if decoded.len() != expected {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "decoded size mismatch",
-        ));
+        _ => Err(invalid("unknown codec")),
     }
-    Ok(decoded)
 }
 
 /// Accept only plain basenames. Rejects empty names, `.`, `..`, overlong
@@ -271,11 +268,8 @@ pub fn read_manifest(r: &mut impl Read) -> io::Result<Manifest> {
             "file exceeds transfer limit",
         ));
     }
-    if chunk_bytes as usize != CHUNK_BYTES || count != chunk_count(size)? {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid chunk size or count",
-        ));
+    if count > MAX_CHUNKS || chunk_bytes as usize != CHUNK_BYTES || count != chunk_count(size)? {
+        return Err(invalid("invalid chunk size or count"));
     }
     let mut hashes = Vec::<Digest>::with_capacity(count as usize);
     for _ in 0..count {
@@ -300,22 +294,30 @@ pub fn read_chunk(
 ) -> io::Result<Vec<u8>> {
     let index = read_u32(r)?;
     if index != expected_index || index >= manifest.count {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "chunk order mismatch",
-        ));
+        return Err(invalid("chunk order mismatch"));
     }
+    let expected = expected_chunk_len(manifest.size, index)?;
     let codec = read_u8(r)?;
+    if codec != RAW && codec != RLE {
+        // Reject before reading a declared length, so an unknown codec cannot
+        // force a large allocation.
+        return Err(invalid("unknown codec"));
+    }
     let compressed_size = read_u32(r)? as usize;
-    if compressed_size > MAX_ENCODED_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "chunk payload too large",
-        ));
+    let size_ok = match codec {
+        RAW => compressed_size == expected,
+        RLE => {
+            compressed_size <= expected.saturating_mul(2).min(MAX_ENCODED_BYTES)
+                && compressed_size.is_multiple_of(2)
+        }
+        _ => false,
+    };
+    if !size_ok || compressed_size > MAX_ENCODED_BYTES {
+        return Err(invalid("chunk payload too large"));
     }
     let mut encoded = vec![0u8; compressed_size];
     r.read_exact(&mut encoded)?;
-    let chunk = decode_chunk(codec, &encoded, expected_chunk_len(manifest.size, index)?)?;
+    let chunk = decode_chunk(codec, &encoded, expected)?;
     if digest(&chunk) != manifest.hashes[index as usize] {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -347,15 +349,47 @@ fn ensure_not_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Read a regular file that is at most `limit` bytes.
+///
+/// The size is taken from metadata before the read, so a planted multi-megabyte
+/// cache object cannot be loaded to test its digest.
+fn read_bounded_file(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    ensure_not_symlink(path)?;
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Err(invalid("cache entry is not a regular file"));
+    }
+    let len = meta.len();
+    if len > limit as u64 {
+        return Err(invalid("cached object exceeds size cap"));
+    }
+    let mut file = File::open(path)?;
+    let mut buf = vec![0u8; len as usize];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
 /// True if the path holds a valid copy of the expected chunk.
 fn cached_and_valid(path: &Path, expected: &Digest) -> bool {
-    if ensure_not_symlink(path).is_err() {
-        return false;
+    match read_bounded_file(path, CHUNK_BYTES) {
+        Ok(bytes) => digest(&bytes) == *expected,
+        Err(_) => false,
     }
-    match fs::read(path) {
-        Ok(bytes) if bytes.len() <= CHUNK_BYTES => digest(&bytes) == *expected,
-        _ => false,
+}
+
+/// Flush directory metadata after an atomic rename. Windows directory handles
+/// are not opened here; file `sync_all` before the rename is the durability
+/// step on that target.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
 }
 
 static STORE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -364,6 +398,11 @@ static STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// left untouched. The write goes through a private, exclusive temp file so a
 /// stale temp or a pre-placed link can never clobber existing content.
 fn store_chunk(root: &Path, hash: &Digest, bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() > CHUNK_BYTES || digest(bytes) != *hash {
+        return Err(invalid(
+            "refusing to store an oversized or misaddressed chunk",
+        ));
+    }
     let path = digest_path(root, hash);
     if cached_and_valid(&path, hash) {
         return Ok(());
@@ -373,12 +412,21 @@ fn store_chunk(root: &Path, hash: &Digest, bytes: &[u8]) -> io::Result<()> {
     let seq = STORE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let short = &hex(hash)[..12];
     let tmp = dir.join(format!(".partial-{seq}-{short}"));
-    let mut file = exclusive_create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&tmp, &path)?;
-    Ok(())
+    let write_result = (|| -> io::Result<()> {
+        let mut file = exclusive_create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, &path)?;
+        sync_dir(dir)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        // The temp name is never a committed chunk. If rename already succeeded,
+        // the temp path is gone and this remove is a no-op.
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result
 }
 
 /// Open a private file that must not exist yet. If something is already at the
@@ -458,8 +506,7 @@ pub fn materialize_file(root: &Path, manifest: &Manifest, output: &Path) -> io::
         let mut destination = exclusive_create(&in_progress)?;
         for (idx, hash) in manifest.hashes.iter().enumerate() {
             let chunk_path = digest_path(root, hash);
-            ensure_not_symlink(&chunk_path)?;
-            let bytes = fs::read(&chunk_path)?;
+            let bytes = read_bounded_file(&chunk_path, CHUNK_BYTES)?;
             if bytes.len() != expected_chunk_len(manifest.size, idx as u32)?
                 || digest(&bytes) != *hash
             {
@@ -470,6 +517,9 @@ pub fn materialize_file(root: &Path, manifest: &Manifest, output: &Path) -> io::
         destination.sync_all()?;
         drop(destination);
         fs::rename(&in_progress, output)?;
+        if let Some(parent) = output.parent() {
+            sync_dir(parent)?;
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -477,6 +527,85 @@ pub fn materialize_file(root: &Path, manifest: &Manifest, output: &Path) -> io::
         let _ = fs::remove_file(&in_progress);
     }
     result
+}
+
+/// Counts of uncommitted temp files removed by [`recover_atomic_writes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub partial_chunks_removed: u64,
+    pub in_progress_outputs_removed: u64,
+}
+
+/// Discard uncommitted atomic-write leftovers.
+///
+/// Removes `chunks/**/.partial-*` and `outputs/.fastlink-inprogress-*`.
+/// Those names are never renamed into a cache object or a final output.
+/// Verified chunk files and already committed outputs are left in place.
+/// Symlinks are not followed. A directory sitting on a temp name is an error.
+pub fn recover_atomic_writes(root: &Path) -> io::Result<RecoveryReport> {
+    let mut report = RecoveryReport {
+        partial_chunks_removed: 0,
+        in_progress_outputs_removed: 0,
+    };
+    let chunks = root.join("chunks");
+    if chunks.exists() {
+        remove_prefixed(&chunks, 0, ".partial-", &mut report.partial_chunks_removed)?;
+    }
+    let outputs = root.join("outputs");
+    if outputs.exists() {
+        ensure_not_symlink(&outputs)?;
+        for entry in fs::read_dir(&outputs)? {
+            let entry = entry?;
+            if !os_starts_with(&entry.file_name(), ".fastlink-inprogress-") {
+                continue;
+            }
+            remove_uncommitted(&entry)?;
+            report.in_progress_outputs_removed += 1;
+        }
+    }
+    Ok(report)
+}
+
+fn os_starts_with(name: &std::ffi::OsStr, prefix: &str) -> bool {
+    name.to_string_lossy().starts_with(prefix)
+}
+
+fn remove_uncommitted(entry: &fs::DirEntry) -> io::Result<()> {
+    let file_type = entry.file_type()?;
+    let path = entry.path();
+    if file_type.is_symlink() || file_type.is_file() {
+        // `remove_file` on a symlink removes the link, not its target.
+        fs::remove_file(path)?;
+        return Ok(());
+    }
+    if file_type.is_dir() {
+        return Err(invalid("uncommitted transfer path is a directory"));
+    }
+    Err(invalid("uncommitted transfer path has an unknown type"))
+}
+
+fn remove_prefixed(dir: &Path, depth: u32, prefix: &str, count: &mut u64) -> io::Result<()> {
+    if depth > 3 {
+        return Ok(());
+    }
+    ensure_not_symlink(dir)?;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let prefixed = os_starts_with(&entry.file_name(), prefix);
+        if file_type.is_dir() {
+            if prefixed {
+                return Err(invalid("uncommitted transfer path is a directory"));
+            }
+            remove_prefixed(&entry.path(), depth + 1, prefix, count)?;
+            continue;
+        }
+        if prefixed {
+            remove_uncommitted(&entry)?;
+            *count += 1;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +677,7 @@ pub fn client_sync<R: Read + Write>(
     }
 
     let missing_count = read_u32(stream)?;
-    if missing_count > count {
+    if missing_count > count || missing_count > MAX_CHUNKS {
         return Err(invalid("server requested more chunks than declared"));
     }
     let mut missing = Vec::with_capacity(missing_count as usize);
@@ -605,6 +734,9 @@ pub fn client_sync<R: Read + Write>(
 /// stores them in the content-addressed cache, and atomically materializes
 /// the output. On any error the session aborts without committing an output.
 pub fn server_sync<R: Read + Write>(stream: &mut R, root: &Path) -> io::Result<TransferStats> {
+    // Drop uncommitted temps from a crashed process before this session
+    // reads or writes the cache. Committed outputs are not touched.
+    recover_atomic_writes(root)?;
     handshake(stream)?;
 
     let command = read_u8(stream)?;
@@ -1111,5 +1243,186 @@ mod tests {
         expected.extend_from_slice(MAGIC);
         expected.extend_from_slice(&VERSION.to_le_bytes());
         assert_eq!(stream.local, expected);
+    }
+
+    #[test]
+    fn read_manifest_rejects_name_length_before_reading_bytes() {
+        let mut buf = Vec::new();
+        write_u16(&mut buf, u16::MAX).unwrap();
+        let err = read_manifest(&mut Cursor::new(buf)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_chunk_rejects_unknown_codec_before_length() {
+        let manifest = manifest_for(&[1u8; 4]);
+        let mut buf = Vec::new();
+        write_u32(&mut buf, 0).unwrap();
+        write_u8(&mut buf, 9).unwrap();
+        let err = read_chunk(&mut Cursor::new(buf), 0, &manifest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("unknown codec"));
+    }
+
+    #[test]
+    fn read_chunk_rejects_raw_length_before_payload() {
+        let manifest = manifest_for(&[1u8; 4]);
+        let mut buf = Vec::new();
+        write_u32(&mut buf, 0).unwrap();
+        write_u8(&mut buf, RAW).unwrap();
+        write_u32(&mut buf, 50).unwrap();
+        let err = read_chunk(&mut Cursor::new(buf), 0, &manifest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(!err.to_string().to_lowercase().contains("eof"));
+    }
+
+    #[test]
+    fn rle_encoded_longer_than_twice_expected_is_rejected() {
+        assert!(decode_chunk(RLE, &[1, 9, 1, 8], 1).is_err());
+    }
+
+    #[test]
+    fn client_rejects_unbounded_missing_list() {
+        let root = temp_root();
+        let path = root.join("a.bin");
+        fs::write(&path, b"hi").unwrap();
+        let mut peer = Vec::new();
+        peer.extend_from_slice(MAGIC);
+        peer.extend_from_slice(&VERSION.to_le_bytes());
+        peer.extend_from_slice(&u32::MAX.to_le_bytes());
+        let mut stream = two_way(peer);
+        let err = client_sync(&mut stream, "a.bin", &path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("more chunks"));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn recover_discards_partials_and_keeps_committed_output() {
+        let root = temp_root();
+        let chunk = vec![3u8; 32];
+        store(&root, &chunk);
+        let hash = digest(&chunk);
+        let shard = digest_path(&root, &hash).parent().unwrap().to_path_buf();
+        let partial = shard.join(".partial-9-aabbccddeeff");
+        fs::write(&partial, &chunk).unwrap();
+        let orphan_dir = root.join("chunks").join("ff");
+        fs::create_dir_all(&orphan_dir).unwrap();
+        let orphan = orphan_dir.join(".partial-1-001122334455");
+        fs::write(&orphan, &chunk).unwrap();
+        let out = root.join("outputs").join("out.bin");
+        fs::write(&out, b"committed").unwrap();
+        let stale = in_progress_path(&out);
+        fs::write(&stale, b"do-not-promote").unwrap();
+
+        let report = recover_atomic_writes(&root).unwrap();
+        assert_eq!(report.partial_chunks_removed, 2);
+        assert_eq!(report.in_progress_outputs_removed, 1);
+        assert!(!partial.exists());
+        assert!(!orphan.exists());
+        let promoted: Vec<_> = fs::read_dir(&orphan_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(
+            promoted.is_empty(),
+            "a partial must not be promoted into the cache: {promoted:?}"
+        );
+        assert!(!stale.exists());
+        assert_eq!(fs::read(&out).unwrap(), b"committed");
+        assert!(cached_and_valid(&digest_path(&root, &hash), &hash));
+
+        let again = recover_atomic_writes(&root).unwrap();
+        assert_eq!(again.partial_chunks_removed, 0);
+        assert_eq!(again.in_progress_outputs_removed, 0);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn recover_does_not_promote_in_progress_when_output_is_absent() {
+        let root = temp_root();
+        let out = root.join("outputs").join("out.bin");
+        let stale = in_progress_path(&out);
+        fs::write(&stale, vec![9u8; 32]).unwrap();
+        recover_atomic_writes(&root).unwrap();
+        assert!(!stale.exists());
+        assert!(!out.exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn oversized_cache_object_is_not_a_hit() {
+        let root = temp_root();
+        let chunk = vec![1u8; 32];
+        let hash = digest(&chunk);
+        let path = digest_path(&root, &hash);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![1u8; CHUNK_BYTES + 8]).unwrap();
+        assert!(!cached_and_valid(&path, &hash));
+        let out = root.join("outputs").join("out.bin");
+        let manifest = Manifest {
+            name: "out.bin".into(),
+            size: 32,
+            count: 1,
+            hashes: vec![hash],
+        };
+        assert!(materialize_file(&root, &manifest, &out).is_err());
+        assert!(!out.exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn store_chunk_rejects_misaddressed_bytes() {
+        let root = temp_root();
+        let bytes = vec![1u8; 8];
+        let err = store_chunk(&root, &digest(b"other"), &bytes).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn fuzz_corpus_decode_paths_do_not_panic() {
+        let mut samples = Vec::<Vec<u8>>::new();
+        samples.push(Vec::new());
+        for len in 0..64 {
+            samples.push(vec![0xff; len]);
+            samples.push(vec![0x00; len]);
+        }
+        let mut state = 0x1234_5678u32;
+        for _ in 0..64 {
+            let mut buf = Vec::new();
+            let len = (state % 80) as usize;
+            for _ in 0..len {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                buf.push((state >> 16) as u8);
+            }
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            samples.push(buf);
+        }
+        let mut huge_name = Vec::new();
+        write_u16(&mut huge_name, u16::MAX).unwrap();
+        samples.push(huge_name);
+        let mut huge_chunk = Vec::new();
+        write_u32(&mut huge_chunk, 0).unwrap();
+        write_u8(&mut huge_chunk, RAW).unwrap();
+        write_u32(&mut huge_chunk, u32::MAX).unwrap();
+        samples.push(huge_chunk);
+
+        let manifest = Manifest {
+            name: "a.bin".into(),
+            size: 4,
+            count: 1,
+            hashes: vec![[7u8; 32]],
+        };
+        for sample in samples {
+            let _ = read_manifest(&mut Cursor::new(sample.clone()));
+            let _ = decode_chunk(RAW, &sample, 0);
+            let _ = decode_chunk(RAW, &sample, 4);
+            let _ = decode_chunk(RLE, &sample, 4);
+            let _ = decode_chunk(255, &sample, CHUNK_BYTES);
+            let _ = read_chunk(&mut Cursor::new(sample.clone()), 0, &manifest);
+            let _ = handshake(&mut two_way(sample));
+        }
     }
 }

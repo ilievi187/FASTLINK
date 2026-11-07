@@ -143,3 +143,11 @@ Measured on `target/debug/fastlink`, CPU-only: full runs were 10/10, including t
 
 The CLI still joins a session before accepting the next one, so the concurrent case queues four clients on one listener. `cargo fmt --check` was clean. `cargo clippy --all-targets -- -D warnings` was clean. `cargo test --all-targets` passed (33 library tests, 14 integration tests). No GPU and no remote host.
 
+# FL3-D2 bounded parsing and crash recovery — 2026-11-07
+
+Decode paths now reject an unknown codec before reading a payload length, reject a RAW length other than the logical chunk length before allocating the payload, and reject an RLE stream longer than twice the logical length. Cache reads use the file's metadata size and refuse objects larger than 64 KiB. `store_chunk` refuses bytes that do not match the address digest.
+
+`recover_atomic_writes` deletes `.partial-*` and `.fastlink-inprogress-*` files and does not rename them into the cache or the output. `server_sync` and `fastlink serve` call it at session start. Committed outputs stay. There is still no resume token and no cache quota.
+
+`cargo fmt --check` was clean. `cargo clippy --all-targets -- -D warnings` was clean. `cargo test --all-targets` passed: 43 library tests (including a deterministic malformed-input corpus) and 15 integration tests. `python3 qa/faults.py --bin target/debug/fastlink` was 10/10 after the change. No GPU and no remote host. Wire format v0.1 is unchanged; invalid frames that were already illegal stay illegal.
+

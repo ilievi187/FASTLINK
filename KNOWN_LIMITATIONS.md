@@ -4,7 +4,7 @@
 - No authentication or encryption. Loopback-only listener enforces safe-by-default behavior.
 - Fixed 64 KiB chunks may resend entire blocks for shifted data; content-defined chunking is future work.
 - Simple RLE handles long runs but is ineffective for high-entropy tensors; Zstd/LZ4 experiments are planned.
-- No resumable transaction, quota/eviction, concurrency or peer discovery.
+- No resume token, cache quota/eviction, or peer discovery. The next session deletes uncommitted `.partial-*` and `.fastlink-inprogress-*` files and does not promote them. A dropped transfer must be sent again.
 - Full-file manifest hashing and cache integrity checks add disk reads and CPU overhead.
 - Metrics count encoded payload bytes, not total on-the-wire traffic. Benchmarks use synthetic data only.
 - Windows compatibility is intended via Rust standard library but requires CI verification.

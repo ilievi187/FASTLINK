@@ -5,7 +5,8 @@
 //! `src/lib.rs` so it can be exercised by integration tests over real TCP.
 
 use fastlink::{
-    client_sync, server_sync, validate_connect_address, validate_listen_address, TransferStats,
+    client_sync, recover_atomic_writes, server_sync, validate_connect_address,
+    validate_listen_address, TransferStats,
 };
 use std::fs;
 use std::net::{TcpListener, TcpStream};
@@ -41,6 +42,7 @@ fn serve(address: &str, root: &Path) -> std::io::Result<()> {
     let socket = validate_listen_address(address)?;
     fs::create_dir_all(root.join("chunks"))?;
     fs::create_dir_all(root.join("outputs"))?;
+    recover_atomic_writes(root)?;
     let listener = TcpListener::bind(socket)?;
     println!("FASTLINK pre-alpha listening at {socket}");
     println!("Cache: {}", root.display());

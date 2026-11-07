@@ -37,7 +37,8 @@ The server persists chunks in a content-addressable cache, reconstructs the file
 ## Boundaries, caveats and invariants
 
 - Chunk bytes are 65,536; at most 1,000,000 chunks, at most 65,536,000,000 logical bytes per file.
-- Received encoded chunks are capped at 131,072 bytes.
+- Received encoded chunks are capped at 131,072 bytes. RAW length must equal the logical chunk length. RLE length must be even and at most twice the logical chunk length. Any other codec byte is rejected before the payload length is used to allocate.
+- On session start the server deletes uncommitted `.partial-*` chunk temps and `.fastlink-inprogress-*` output temps. It does not rename those files into the cache or the output. Verified cache objects and already committed outputs stay. There is no resume token.
 - File names are restricted to basenames; no path traversal or nested output paths.
 - Deduplication is exact. Reused hashes must match the stored content.
 - RLE decompression rejects invalid lengths and overlong runs.

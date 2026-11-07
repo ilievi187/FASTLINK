@@ -671,3 +671,43 @@ fn mid_chunk_disconnect_leaves_no_output() {
     );
     cleanup(&root);
 }
+
+#[test]
+fn stale_in_progress_is_discarded_not_committed() {
+    let root = fresh_root();
+    let work = fresh_root();
+    let name = "recovered.bin";
+    let bytes = vec![4u8; 32];
+    let source = work.join(name);
+    fs::write(&source, &bytes).unwrap();
+    let stale = root
+        .join("outputs")
+        .join(format!(".fastlink-inprogress-{name}"));
+    fs::write(&stale, b"TORN").unwrap();
+    let partial_dir = root.join("chunks").join("ab");
+    fs::create_dir_all(&partial_dir).unwrap();
+    fs::write(partial_dir.join(".partial-1-001122334455"), b"TORN-CHUNK").unwrap();
+
+    let (mut stream, server) = LoopbackServer::start(&root);
+    client_sync(&mut stream, name, &source).unwrap();
+    let root = server.finish();
+
+    assert_eq!(fs::read(root.join("outputs").join(name)).unwrap(), bytes);
+    assert!(
+        !root
+            .join("outputs")
+            .join(format!(".fastlink-inprogress-{name}"))
+            .exists(),
+        "crash recovery must not leave or promote the in-progress file"
+    );
+    let leftover_partial = root
+        .join("chunks")
+        .join("ab")
+        .join(".partial-1-001122334455");
+    assert!(
+        !leftover_partial.exists(),
+        "crash recovery must remove the partial chunk without promoting it"
+    );
+    cleanup(&root);
+    cleanup(&work);
+}
