@@ -19,6 +19,13 @@ See `docs/BENCHMARKS.md`: local CPU file-sync test only, highly compressible 8 M
 - Combined Python suite: 38/38 pass. Rust checks in same branch: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` — pass, 5 Rust tests.
 - These are localhost CPU file-sync metrics only, not LAN, llama.cpp RPC or inference measurements. They do not prove GPU speedup.
 
+## Existing local adapter CPU codec regression
+
+- Repository/worktree: `/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter`, branch `feat/fastlink-rpc-adapter`, based on pinned llama.cpp commit `0ec4027`; tree remained clean.
+- Reconfigured existing release build, built target `test-fastlink-rpc-codec` (Ninja reported no rebuild needed), then ran `ctest --test-dir build-fl-gpu/ggml/src/ggml-rpc -R fastlink-rpc-codec --output-on-failure`.
+- Result: 1/1 passed in 0.18 s. The test covers codec roundtrip, random fallback, malformed/truncated/corrupt frame handling. This is CPU codec QA only; no RPC client-server socket test, Windows rebuild, GPU graph execution, inference, or speed measurement was performed.
+- Working v2 tree `/mnt/gamez/AI/llama.cpp-b12020-fastlink` remains dirty with its pre-existing `ggml-rpc.cpp` modification; untouched.
+
 ## GPU A/B results
 
-Not run. The existing v2 inference service was active at inspection. Do not start competing GPU jobs. A controlled maintenance window is required; v2, stock RPC, and candidate v3 must be tested serially with identical settings and multiple runs before claiming improvement.
+Not run. Heretic v2 remained active on port 18879, so no GPU/model benchmark was started. A controlled maintenance window is required; stock RPC, v2 and candidate v3 must be tested serially with identical settings and repeated runs before any performance claim.

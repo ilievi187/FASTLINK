@@ -8,4 +8,6 @@
 - Commits: `28a4771` model+docs, `0c4ecc3` Python cache ignore, `fb73c4f` task gates.
 - OpenCode implemented the CPU-only network/retry simulator on isolated `feat/fastlink-v3-network-sim` (only `qa/network_sim.py`, `qa/test_network_sim.py`); 22/22 passed. Commit `f786cbc` integrated into baseline branch with `a578ecd` after scope and tests verified.
 - Combined Python tests: 34/34 passed; Rust fmt, clippy, tests passed (5 Rust tests).
-- No GPU benchmark launched; PID 81209 remains active and untouched. No competing inference or duplicate research was started. GPU comparisons wait until the existing service is idle or a maintenance window is available.
+- Built CPU release CLI and ran a 3-repeat 1 MiB localhost sync matrix (random cold/warm, one-byte delta, sparse cold). SHA256 matched all outputs. Recorded end-to-end medians and TCP stream bytes in `BENCHMARKS.md` and raw JSON artifact; excludes TCP/IP/Ethernet headers and is not an inference result.
+- Reviewed existing local FASTLINK-RPC adapter via OpenCode read-only report. Existing configured release target codec CTest passed 1/1 in 0.18s. This is CPU-only codec QA; socket RPC, Windows rebuild, actual GPU graph and inference remain unverified. Dirty production v2 tree untouched.
+- Final current branch validation: 38 Python tests and 5 Rust tests pass; rustfmt/clippy pass. Current benchmark/docs changes are uncommitted on isolated v3 branch.

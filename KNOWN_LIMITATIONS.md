@@ -15,4 +15,5 @@
 - **v3 status (2026-11-07):** only CPU-side serial placement and fault simulators exist on `feat/fastlink-v3-cpu-baseline`; no v3 RPC execution, worker service, GPU scheduling, telemetry, OpenAI API or JCode integration has been implemented.
 - Both simulators consume declared link/device numbers; they are not device discovery, network measurements, GPU benchmarks or utilization telemetry.
 - Live Heretic v2 is the preserved rollback baseline. Do not benchmark concurrently with active inference or modify its launcher/profile.
-- The repository's v0.1 file-sync protocol is separate from the experimental llama.cpp RPC adapter; neither alone constitutes production-ready distributed inference.
+- The public repository's v0.1 file-sync protocol is separate from the experimental llama.cpp RPC adapter; neither alone constitutes production-ready distributed inference.
+- The separate llama.cpp adapter's CPU codec CTest passes in the existing configured Linux release build, but socket-level RPC tests, Windows rebuild/parity, actual GPU graph execution through the adapter, and comparative inference benchmarks remain unverified in this session.

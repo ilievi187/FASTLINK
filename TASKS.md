@@ -14,6 +14,7 @@
 - [x] **V3 CPU model:** Serial placement model committed on `feat/fastlink-v3-cpu-baseline`; 12 tests pass; limitations documented.
 - [x] **V3 network simulator:** Deterministic serial transfer/retry/disconnect model on isolated worktree, integrated into CPU branch; 22 tests pass. Model only.
 - [ ] **V3 instrumentation:** CPU file-sync stream-byte/timing harness is implemented and verified; add per-stage hash/manifest/cache timing and RPC prefill/decode/network measurements when integration exists.
+- [x] **V3 codec QA:** Existing local llama.cpp adapter CPU codec CTest passes 1/1 in configured Linux release tree. Socket and Windows adapter verification remain open.
 - [ ] **V3 RPC:** Verify behavior of the existing local adapter against a clean pinned stock build; do not edit its dirty llama.cpp source tree.
 - [ ] **V3 telemetry:** Expose real worker/backend metrics only where APIs provide measured values; report unavailable metrics as unavailable.
 - [ ] **V3 reliability:** Add mock worker fault injection for truncation, disconnect, retry, backpressure and cache invalidation.
