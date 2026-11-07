@@ -34,3 +34,14 @@ Run 3 (FL3-E4 Step 3) was executed on 2026-11-07 at 21:31 +02:00 by Antigravity.
 | `/home/nightknight/Projects/FASTLINK-heretic-agent` | c3a89b7 | PASS | PASS | 15/0/0 integration (captured tail; full `cargo test --all-targets` exit 0) | PASS |
 
 Adapter `/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter`: CMake (llama.cpp fork), no Cargo suite — not run (CPU-only QA scope). Detailed capture: `qa-mission/e4-run3-suite-2026-11-07T2131+02.txt`. No source files in other worktrees edited.
+
+Run 4 (FL3-E5 Step 3, post A4 deac1d0) was executed on 2026-11-07 at 21:46 +02:00 by Antigravity. CPU-only, loopback-only; no GPU, no SSH. Exact sequence: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --all-targets`. Network-sim also Python sim 57/0.
+
+| Checkout | SHA | fmt | clippy | test pass/fail/ignored (observed) | Full sequence result |
+|---|---|---|---|---:|---|
+| `/home/nightknight/Projects/FASTLINK` | 8aeed68 | PASS | PASS | exit 0 (full `cargo test --all-targets`) | PASS |
+| `/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-cpu-baseline` | deac1d0 | PASS | PASS | exit 0; observed codec_adaptive 3/3, concurrency_isolation 2/2, resume_and_backpressure 3/3 | PASS |
+| `/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-network-sim` | a50ecd8 | PASS | PASS | Rust exit 0 + Python sim 57/0 | PASS |
+| `/home/nightknight/Projects/FASTLINK-heretic-agent` | c3a89b7 | PASS | PASS | integration tail 15/0/0; exit 0 | PASS |
+
+Adapter `/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter` (CMake): not run. Detail: `qa-mission/e5-run4-suite-2026-11-07T2146+02.txt`. No source files in other worktrees edited.
