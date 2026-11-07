@@ -1,0 +1,112 @@
+[
+  {
+    "scenario": "repeated",
+    "iterations": 20,
+    "ok": true,
+    "rss_kb": [
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996,
+      2996
+    ],
+    "failures": 0,
+    "rss_first_kb": 2996,
+    "rss_last_kb": 2996,
+    "leak_growth_kb": 0,
+    "wall_ms": 757.3
+  },
+  {
+    "scenario": "concurrent",
+    "clients": 8,
+    "ok": true,
+    "client_rcs": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "sha_ok": true,
+    "wall_ms": 4611.4
+  },
+  {
+    "scenario": "same_name",
+    "clients": 8,
+    "ok": true,
+    "client_rcs": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output_exists": true,
+    "output_sha_ok": true,
+    "server_alive": true,
+    "wall_ms": 663.3
+  },
+  {
+    "scenario": "cancel",
+    "ok": true,
+    "server_alive": true,
+    "no_partial_output": true,
+    "followup_ok": true,
+    "wall_ms": 711.2
+  },
+  {
+    "scenario": "restart",
+    "ok": true,
+    "pass1_rc": 0,
+    "pass1": {
+      "file_bytes": 10485760,
+      "chunks_total": 160,
+      "chunks_reused": 0,
+      "chunks_transferred": 160,
+      "raw_missing_bytes": 10485760,
+      "encoded_payload_bytes": 10485760,
+      "elapsed_ms": 698
+    },
+    "pass2_rc": 0,
+    "pass2": {
+      "file_bytes": 10485760,
+      "chunks_total": 160,
+      "chunks_reused": 160,
+      "chunks_transferred": 0,
+      "raw_missing_bytes": 0,
+      "encoded_payload_bytes": 0,
+      "elapsed_ms": 35
+    },
+    "pass2_sha_ok": true,
+    "pass2_warm": true,
+    "wall_ms": 768.1
+  },
+  {
+    "scenario": "manyfiles",
+    "files": 40,
+    "ok": true,
+    "failures": 0,
+    "wall_ms": 4260.3
+  }
+]

@@ -1,0 +1,70 @@
+{
+  "binary": "target/debug/fastlink",
+  "listen": "127.0.0.1",
+  "cpu_only": true,
+  "scenario_count": 10,
+  "passed": 10,
+  "failed": 0,
+  "scenarios": [
+    {
+      "name": "malformed_frame",
+      "ok": true,
+      "seconds": 0.002,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "truncated_stream",
+      "ok": true,
+      "seconds": 0.021,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "invalid_codec",
+      "ok": true,
+      "seconds": 0.063,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "bad_digest",
+      "ok": true,
+      "seconds": 0.063,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "hash_collision",
+      "ok": true,
+      "seconds": 0.063,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "interrupted_session",
+      "ok": true,
+      "seconds": 0.063,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "concurrent_clients",
+      "ok": true,
+      "seconds": 0.104,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "oversized_name",
+      "ok": true,
+      "seconds": 0.021,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "oversized_chunk",
+      "ok": true,
+      "seconds": 0.062,
+      "detail": "rejected, prior output unchanged, server alive"
+    },
+    {
+      "name": "resume_failure",
+      "ok": true,
+      "seconds": 0.062,
+      "detail": "rejected, prior output unchanged, server alive"
+    }
+  ]
+}
