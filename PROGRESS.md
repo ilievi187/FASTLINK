@@ -135,3 +135,11 @@ cache, and the source checkout has uncommitted modifications. The adapter and
 production integration remain unimplemented; details and test gates are in
 `docs/RPC_COMPATIBILITY_FINDINGS.md`. No services or launchers were changed.
 
+# FL3-D1 fault harness — 2026-11-07
+
+`qa/faults.py` speaks v0.1 to `fastlink serve` on `127.0.0.1` only. Ten scenarios: malformed frame, truncated stream, invalid codec, bad digest, planted hash collision, interrupted session, four concurrent faulty clients, oversized name (241 bytes), oversized chunk (declared encoded length 131073), and resume failure (command byte 2 after a dropped session). Each scenario pre-seeds the target output with the bytes `PRIOR`.
+
+Measured on `target/debug/fastlink`, CPU-only: full runs were 10/10, including the run recorded in `qa/results/faults_summary.json` (10 passed, 0 failed). An earlier full run was also 10/10, and `--only malformed_frame resume_failure` was 2/2. Every passing case logged `session error`, did not return status byte 0, left the pre-seeded output unchanged, and left no `.fastlink-inprogress-*` or `.partial-*` file. The server process was still running at the end of each case.
+
+The CLI still joins a session before accepting the next one, so the concurrent case queues four clients on one listener. `cargo fmt --check` was clean. `cargo clippy --all-targets -- -D warnings` was clean. `cargo test --all-targets` passed (33 library tests, 14 integration tests). No GPU and no remote host.
+
