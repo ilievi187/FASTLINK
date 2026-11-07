@@ -4,6 +4,7 @@
 use std::io::{self, Read, Write};
 
 pub mod codec;
+pub mod retry;
 pub mod server;
 pub use codec::{
     codec_name, decode_chunk, encode_chunk_adaptive, encode_lz4, encode_rle, encode_with_codec,
@@ -11,12 +12,18 @@ pub use codec::{
     synthetic_sparse_chunk, synthetic_tensor_like_chunk, AdaptiveCodecChoice,
     CodecCandidateMetrics, CodecCostPolicy, LZ4, RAW, RLE, ZSTD,
 };
+pub use retry::{
+    send_file_with_policy, AttemptFault, FaultInjectionPlan, LinkEstimate, PolicyTransferReport,
+    RetryPolicy, NOMINAL_LINK_QUEUE_MS, NOMINAL_LINK_RTT_MS, NOMINAL_LINK_SERIALIZATION_MS,
+    NOMINAL_LINK_THROUGHPUT_MIB_S, POLICY_MAX_RECONNECTS, POLICY_MAX_RETRIES_PER_RPC,
+    POLICY_RECONNECT_BACKOFF_MS, POLICY_TIMEOUT_FLOOR_MS, POLICY_TIMEOUT_MULTIPLIER,
+};
 pub use server::{
     cached_and_valid, clean_stale_partials, client_handshake, digest_path, process_session,
-    process_session_with_config, safe_basename, send_file_once_with_options, send_file_resumable,
-    send_file_with_metrics, serve, server_handshake, spawn_server, store_chunk_isolated,
-    verify_cache_integrity, BoundedQueue, RunningServer, SendOptions, ServerConfig, ServerCoord,
-    CMD_SYNC,
+    process_session_with_config, safe_basename, send_file_once_with_options,
+    send_file_once_with_timeout, send_file_resumable, send_file_with_metrics, serve,
+    server_handshake, spawn_server, store_chunk_isolated, verify_cache_integrity, BoundedQueue,
+    RunningServer, SendOptions, ServerConfig, ServerCoord, CMD_SYNC,
 };
 
 pub const MAGIC: &[u8; 4] = b"FLNK";

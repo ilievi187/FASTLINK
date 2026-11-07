@@ -45,4 +45,19 @@ The server persists chunks in a content-addressable cache, reconstructs the file
 - No durable resumable session identifiers, eviction policy, multi-client concurrency, or GPU handles exist yet.
 - A successful transfer is byte-for-byte lossless; a disconnected transfer may leave verified cache chunks but never commits a partial output as final.
 
+## Retry, Timeout, and Reconnect Policy (`FL3-A5` / `FL3-C3`)
+
+Implemented in `src/retry.rs` (`RetryPolicy`, `LinkEstimate`, `send_file_with_policy`) and re-exported from `fastlink`:
+
+| Constant / Formula | Value | Purpose |
+| --- | --- | --- |
+| `POLICY_MAX_RETRIES_PER_RPC` | `2` (`3` attempts per cycle) | Covers transient per-RPC loss $p \le 0.05$ ($1 - p^3 = 0.999875$ completion rate) |
+| `POLICY_TIMEOUT_FLOOR_MS` | `50.0` ms | Minimum per-attempt socket timeout floor |
+| `POLICY_TIMEOUT_MULTIPLIER` | `3.0` | Safety factor applied over expected transfer duration |
+| `attempt_timeout_ms` | $\max(50.0,\; 3.0 \times (\text{queue\_ms} + \text{rtt\_ms} + \text{ser\_ms} + \text{wire\_ms}))$ | Recomputed dynamically from the current `LinkEstimate` (`wire_ms = 1000 * mib / throughput_mib_s`) |
+| `POLICY_RECONNECT_BACKOFF_MS` | `[100, 400, 1600]` ms | Exponential reconnect backoff schedule on connection drop or per-cycle timeout exhaustion |
+| `POLICY_MAX_RECONNECTS` | `3` | Maximum reconnect cycles before terminal abort |
+| Nominal `LinkEstimate` | `rtt = 1.0 ms`, `throughput = 95.3674 MiB/s`, `ser = 0.05 ms`, `queue = 0.2 ms` | Reference 1 Gbps boundary hop (`f = 1.0`: `50 ms` for 8 KiB / 64 KiB, `130 ms` for 4 MiB ubatch; `f = 0.01`: `200 ms` for 64 KiB, `12,587 ms` for 4 MiB ubatch) |
+| Terminal failure rule | Zero partial output committed | Resumes by manifest across retries/reconnects (re-sending only uncached chunks); if all retries and reconnects fail, aborts cleanly with zero committed or leftover `.fastlink-partial` files in `outputs/` |
+
 The v0.1 format may change. Do not rely on cross-version compatibility yet.

@@ -781,13 +781,28 @@ impl Default for SendOptions {
     }
 }
 
-/// Perform a single SYNC attempt over one TCP connection.
+/// Perform a single SYNC attempt over one TCP connection with default 300s socket timeout.
 /// If `abort_after_chunks` is `Some(k)` and `missing.len() > k`, sends `k` chunks, flushes, and
 /// drops the connection returning `Err(ErrorKind::ConnectionAborted)`.
 pub fn send_file_once_with_options(
     file_path: &Path,
     server: &str,
     abort_after_chunks: Option<u32>,
+) -> io::Result<(String, TransferMetrics)> {
+    send_file_once_with_timeout(
+        file_path,
+        server,
+        abort_after_chunks,
+        Duration::from_secs(300),
+    )
+}
+
+/// Perform a single SYNC attempt over one TCP connection using `io_timeout` for socket reads and writes.
+pub fn send_file_once_with_timeout(
+    file_path: &Path,
+    server: &str,
+    abort_after_chunks: Option<u32>,
+    io_timeout: Duration,
 ) -> io::Result<(String, TransferMetrics)> {
     let started = Instant::now();
     let filename = file_path
@@ -807,8 +822,9 @@ pub fn send_file_once_with_options(
     }
 
     let tcp = TcpStream::connect(server)?;
-    tcp.set_read_timeout(Some(Duration::from_secs(300)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(300)))?;
+    let clamped_timeout = io_timeout.max(Duration::from_millis(50));
+    tcp.set_read_timeout(Some(clamped_timeout))?;
+    tcp.set_write_timeout(Some(clamped_timeout))?;
     let mut stream = CountingStream::new(tcp);
 
     let t_handshake = Instant::now();
