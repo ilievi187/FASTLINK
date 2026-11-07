@@ -111,3 +111,27 @@ library but behaves identically; no protocol change is required.
 - SHA-256 of source and output matched; byte comparison passed.
 
 **Explicit limitation:** This does not yet accelerate GPU inference; no GPU benchmarks exist for FASTLINK's new Rust transport. This log is not a measure of real RPC performance.
+# Cross-machine validation — 2026-11-06
+
+At `4a5179e`, Linux sender to Windows receiver on detti over authenticated SSH
+local forwarding, both FASTLINK endpoints bound to loopback. One 16 MiB random
+fixture: cold 1.8582 s, 256 chunks and 16,777,216 encoded payload bytes; warm
+0.1464 s, zero chunks; one-chunk delta 0.1778 s, one 65,536-byte chunk. Source
+and receiver SHA-256 matched independently after each transfer. Logical rates
+were 8.61, 109.30 and 89.98 MiB/s respectively; warm/delta rates are logical
+file size divided by wall time, not network throughput. Counts exclude framing,
+SSH and TCP overhead. One run per case, not a general performance claim.
+Temporary data, receiver and tunnel were removed. An initial detached Windows
+receiver attempt failed; keeping its SSH session open allowed successful tests.
+47 tests, cargo fmt and clippy passed locally. No GPU or inference was used.
+See `docs/RPC_ADAPTER_PLAN.md` for the design-only next steps.
+
+# RPC investigation — 2026-11-06
+
+Inspected the local Heretic launcher and its pinned, locally modified llama.cpp
+source. Its existing FastLink-named packet aggregation and tensor chunking are
+not this project's v0.1 file protocol. Stock RPC already includes a weight hash
+cache, and the source checkout has uncommitted modifications. The adapter and
+production integration remain unimplemented; details and test gates are in
+`docs/RPC_COMPATIBILITY_FINDINGS.md`. No services or launchers were changed.
+
