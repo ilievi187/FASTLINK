@@ -151,3 +151,11 @@ Decode paths now reject an unknown codec before reading a payload length, reject
 
 `cargo fmt --check` was clean. `cargo clippy --all-targets -- -D warnings` was clean. `cargo test --all-targets` passed: 43 library tests (including a deterministic malformed-input corpus) and 15 integration tests. `python3 qa/faults.py --bin target/debug/fastlink` was 10/10 after the change. No GPU and no remote host. Wire format v0.1 is unchanged; invalid frames that were already illegal stay illegal.
 
+# FL3-D3 Windows target — 2026-11-07
+
+Command: `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu --all-targets` with `WINEDEBUG=-all`. Host rustc 1.99.0, linker `x86_64-w64-mingw32-gcc` 16.2.0, Wine 11.20. Git `cdfc5f3`. Full log: `qa/results/windows-gnu-cargo-test.txt`.
+
+Result: exit 0. Library tests 42 passed, 0 failed. Binary unit tests 0. Integration tests 15 passed, 0 failed, 0.30 s. The Linux library count is 43 because `materialize_symlink_output_rejected` is `cfg(unix)` and is not in the Windows target. Compile of the test profile finished in 1.49 s. Two stderr lines from `lsfg-vk` appeared when the first test exe started (`Unknown key in profile section: gpu`); they are outside the test binary and the cargo exit code was still 0.
+
+This is a cross run under Wine, not a native Windows host and not a GitHub Actions run. `.github/workflows/ci.yml` already includes `windows-latest` and was not changed. No GPU and no remote host.
+
