@@ -5,11 +5,13 @@ use std::io::{self, Read, Write};
 
 pub mod cache_budget;
 pub mod codec;
+pub mod qwen35_4b;
 pub mod recovery;
 pub mod residency;
 pub mod retry;
 pub mod scheduler;
 pub mod server;
+pub mod state_cache;
 pub use codec::{
     codec_name, decode_chunk, decode_v4_chunk, encode_chunk_adaptive, encode_lz4, encode_rle,
     encode_with_codec, encode_zstd, evaluate_codec_candidate, select_best_stride,
