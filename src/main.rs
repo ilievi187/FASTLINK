@@ -1,97 +1,46 @@
 //! FASTLINK CPU-only proof of concept: content-addressed, lossless delta sync.
 //! This does NOT yet accelerate llama.cpp RPC or GPU execution.
-//!
-//! The CLI is a thin shell over the `fastlink` library: session logic lives in
-//! `src/lib.rs` so it can be exercised by integration tests over real TCP.
-
-use fastlink::{
-    client_sync, recover_atomic_writes, server_sync, validate_connect_address,
-    validate_listen_address, TransferStats,
-};
-use std::fs;
-use std::net::{TcpListener, TcpStream};
+use fastlink::{send_file_resumable, serve, SendOptions};
+use std::io;
 use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
 
-/// Default session timeout for both directions on loopback.
-const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn setup_timeouts(stream: &TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(SESSION_TIMEOUT))?;
-    stream.set_write_timeout(Some(SESSION_TIMEOUT))?;
-    Ok(())
-}
-
-fn print_stats(stats: &TransferStats, direction: &str) {
-    println!("{direction}: {} ({})", stats.filename, stats.file_bytes);
-    println!("  file_bytes: {}", stats.file_bytes);
-    println!("  chunks_total: {}", stats.chunks_total);
-    println!("  chunks_reused: {}", stats.chunks_reused);
-    println!("  chunks_transferred: {}", stats.chunks_transferred);
-    println!("  raw_missing_bytes: {}", stats.raw_missing_bytes);
-    println!("  encoded_payload_bytes: {}", stats.encoded_payload_bytes);
+fn send_file(file_path: &Path, server: &str) -> io::Result<()> {
+    let (filename, m) = send_file_resumable(file_path, server, SendOptions::default())?;
+    println!("FASTLINK sync complete: {filename}");
+    println!("  file_bytes: {}", m.file_bytes);
+    println!("  chunks_total: {}", m.chunks_total);
+    println!("  chunks_reused: {}", m.chunks_reused);
+    println!("  chunks_transferred: {}", m.chunks_transferred);
+    println!("  raw_missing_bytes: {}", m.raw_missing_bytes);
+    println!("  encoded_payload_bytes: {}", m.encoded_payload_bytes);
+    println!("  handshake_wire_bytes: {}", m.handshake_wire_bytes);
+    println!("  manifest_wire_bytes: {}", m.manifest_wire_bytes);
+    println!("  need_wire_bytes: {}", m.need_wire_bytes);
+    println!("  chunk_framing_wire_bytes: {}", m.chunk_framing_wire_bytes);
+    println!("  status_wire_bytes: {}", m.status_wire_bytes);
+    println!(
+        "  headers_and_framing_wire_bytes: {}",
+        m.headers_and_framing_wire_bytes
+    );
+    println!("  wire_bytes_tx: {}", m.wire_bytes_tx);
+    println!("  wire_bytes_rx: {}", m.wire_bytes_rx);
+    println!("  wire_bytes_total: {}", m.wire_bytes_total);
     println!(
         "  payload_bytes_avoided_vs_full_file: {}",
-        stats.file_bytes.saturating_sub(stats.encoded_payload_bytes)
+        m.file_bytes.saturating_sub(m.encoded_payload_bytes)
     );
-    println!("  note: payload counts exclude wire framing, hashes, and TCP overhead");
-}
-
-fn serve(address: &str, root: &Path) -> std::io::Result<()> {
-    let socket = validate_listen_address(address)?;
-    fs::create_dir_all(root.join("chunks"))?;
-    fs::create_dir_all(root.join("outputs"))?;
-    recover_atomic_writes(root)?;
-    let listener = TcpListener::bind(socket)?;
-    println!("FASTLINK pre-alpha listening at {socket}");
-    println!("Cache: {}", root.display());
-    println!("UNAUTHENTICATED MVP: DO NOT expose port publicly; use an SSH tunnel");
-    for connection in listener.incoming() {
-        match connection {
-            Ok(stream) => {
-                let root = root.to_path_buf();
-                // One thread per session so a single misbehaving peer cannot
-                // stall the accept loop indefinitely.
-                let handle = thread::spawn(move || {
-                    if let Err(e) = serve_session(stream, &root) {
-                        eprintln!("session error: {e}");
-                    }
-                });
-                let _ = handle.join();
-            }
-            Err(err) => eprintln!("accept error: {err}"),
-        }
-    }
-    Ok(())
-}
-
-fn serve_session(stream: TcpStream, root: &Path) -> std::io::Result<()> {
-    let mut stream = stream;
-    setup_timeouts(&stream)?;
-    let stats = server_sync(&mut stream, root)?;
     println!(
-        "materialized {} ({} bytes)",
-        root.join("outputs").join(stats.filename).display(),
-        stats.file_bytes
+        "  wire_bytes_avoided_vs_full_file: {}",
+        m.file_bytes.saturating_sub(m.wire_bytes_total)
     );
-    Ok(())
-}
-
-fn send_file(file_path: &Path, server: &str) -> std::io::Result<()> {
-    let started = Instant::now();
-    let filename = file_path
-        .file_name()
-        .and_then(|x| x.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid input file name")
-        })?;
-    let socket = validate_connect_address(server)?;
-    let mut stream = TcpStream::connect(socket)?;
-    setup_timeouts(&stream)?;
-    let stats = client_sync(&mut stream, filename, file_path)?;
-    print_stats(&stats, "FASTLINK sync complete");
-    println!("  elapsed_ms: {}", started.elapsed().as_millis());
+    println!("  handshake_us: {}", m.handshake_us);
+    println!("  manifest_us: {}", m.manifest_us);
+    println!("  transfer_us: {}", m.transfer_us);
+    println!("  elapsed_us: {}", m.elapsed_us);
+    println!("  elapsed_ms: {}", m.elapsed_ms);
+    println!("  wire_mib_per_s: {:.3}", m.wire_mib_per_s);
+    println!("  logical_mib_per_s: {:.3}", m.logical_mib_per_s);
+    println!("  note: wire_bytes_total includes handshake, manifest, NEED list, chunk framing, encoded payloads, and status (excludes TCP/IP headers)");
     Ok(())
 }
 
@@ -122,5 +71,92 @@ fn main() {
     if let Err(err) = outcome {
         eprintln!("FASTLINK error: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fastlink::{process_session, send_file_with_metrics, CHUNK_BYTES};
+    use std::fs;
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "fastlink-test-{prefix}-{}-{id}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn loopback_cold_and_warm_wire_accounting_is_exact() {
+        let dir = temp_test_dir("wire-accounting");
+        let root = dir.join("cache");
+        fs::create_dir_all(root.join("chunks")).unwrap();
+        fs::create_dir_all(root.join("outputs")).unwrap();
+
+        let src_path = dir.join("sample.bin");
+        let payload: Vec<u8> = (0..(CHUNK_BYTES * 2))
+            .map(|i| (i.wrapping_mul(31) % 251) as u8)
+            .collect();
+        fs::write(&src_path, &payload).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server_root = root.clone();
+
+        let handle = thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                process_session(stream, &server_root).unwrap();
+            }
+        });
+
+        let (_, cold) = send_file_with_metrics(&src_path, &addr).unwrap();
+        assert_eq!(cold.file_bytes, (CHUNK_BYTES * 2) as u64);
+        assert_eq!(cold.chunks_total, 2);
+        assert_eq!(cold.chunks_reused, 0);
+        assert_eq!(cold.chunks_transferred, 2);
+        assert_eq!(cold.handshake_wire_bytes, 12);
+        // "sample.bin" = 10 bytes; manifest = 19 + 10 + 2 * 32 = 93
+        assert_eq!(cold.manifest_wire_bytes, 93);
+        assert_eq!(cold.need_wire_bytes, 12);
+        assert_eq!(cold.chunk_framing_wire_bytes, 18);
+        assert_eq!(cold.status_wire_bytes, 1);
+        assert_eq!(cold.headers_and_framing_wire_bytes, 136);
+        assert_eq!(
+            cold.wire_bytes_total,
+            cold.headers_and_framing_wire_bytes + cold.encoded_payload_bytes
+        );
+        assert_eq!(
+            cold.wire_bytes_tx + cold.wire_bytes_rx,
+            cold.wire_bytes_total
+        );
+        assert!(cold.wire_mib_per_s > 0.0);
+        assert!(cold.logical_mib_per_s > 0.0);
+
+        let (_, warm) = send_file_with_metrics(&src_path, &addr).unwrap();
+        assert_eq!(warm.chunks_reused, 2);
+        assert_eq!(warm.chunks_transferred, 0);
+        assert_eq!(warm.encoded_payload_bytes, 0);
+        assert_eq!(warm.need_wire_bytes, 4);
+        assert_eq!(warm.chunk_framing_wire_bytes, 0);
+        assert_eq!(warm.wire_bytes_total, 12 + 93 + 4 + 1);
+        assert_eq!(warm.wire_bytes_tx, 6 + 93);
+        assert_eq!(warm.wire_bytes_rx, 6 + 4 + 1);
+        assert!(warm.wire_mib_per_s > 0.0);
+        assert!(warm.logical_mib_per_s > 0.0);
+
+        handle.join().unwrap();
+        let output_bytes = fs::read(root.join("outputs").join("sample.bin")).unwrap();
+        assert_eq!(output_bytes, payload);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

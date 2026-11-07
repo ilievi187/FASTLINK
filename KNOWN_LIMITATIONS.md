@@ -12,4 +12,10 @@
 - Single-connection server serializes clients; untrusted clients can hold a session.
 - No production security audit; do not expose raw endpoints or send confidential files.
 
-See `docs/ROADMAP.md` for planned remediation.
+- **v3 status (2026-11-07):** only CPU-side serial placement and fault simulators exist on `feat/fastlink-v3-cpu-baseline`; no v3 RPC execution, worker service, GPU scheduling, telemetry, OpenAI API or JCode integration has been implemented.
+- Both simulators consume declared link/device numbers; they are not device discovery, network measurements, GPU benchmarks or utilization telemetry.
+- Live Heretic v2 is the preserved rollback baseline. Do not benchmark concurrently with active inference or modify its launcher/profile.
+- The public repository's v0.1 file-sync protocol is separate from the experimental llama.cpp RPC adapter; neither alone constitutes production-ready distributed inference.
+- Existing adapter's CPU codec CTest passed in the configured Linux release build; socket-level RPC, Windows rebuild/parity, GPU graph and inference are unverified.
+- Existing adapter frame SHA-256 is an unkeyed integrity check, not peer authentication. Continue to confine RPC workers behind authenticated encrypted SSH/private transport; never expose raw RPC publicly.
+- Adapter capability opt-in currently uses a HELLO padding byte in a pinned experimental llama.cpp fork; upstream compatibility and protocol evolution need explicit versioned negotiation tests.

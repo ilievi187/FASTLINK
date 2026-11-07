@@ -1,0 +1,55 @@
+{
+  "manifest_version": 1,
+  "allowed_workers": [
+    "herdr-dispatcher"
+  ],
+  "tasks": [
+    {
+      "id": "herdr-dispatcher-core",
+      "title": "Implement tools/herdr_dispatcher.py + unit tests",
+      "owner": "herdr-dispatcher",
+      "deps": [],
+      "branch": "feat/herdr-persistent-dispatch",
+      "worktree": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch",
+      "owned_paths": [
+        "tools/herdr_dispatcher.py",
+        "qa/test_herdr_dispatcher.py"
+      ],
+      "test_cmds": [
+        ["python3", "qa/test_herdr_dispatcher.py"]
+      ],
+      "cwd": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch"
+    },
+    {
+      "id": "herdr-orchestration-docs",
+      "title": "Document orchestration design and run modes",
+      "owner": "herdr-dispatcher",
+      "deps": [
+        "herdr-dispatcher-core"
+      ],
+      "branch": "feat/herdr-persistent-dispatch",
+      "worktree": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch",
+      "owned_paths": [
+        "docs/HERDR_ORCHESTRATION.md",
+        "orchestration/tasks.json"
+      ],
+      "test_cmds": [],
+      "cwd": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch"
+    },
+    {
+      "id": "herdr-live-integration",
+      "title": "Verify events.subscribe integration against a live Herdr session (requires explicit owner authorization; production/GPU gates apply)",
+      "owner": "herdr-dispatcher",
+      "deps": [
+        "herdr-orchestration-docs"
+      ],
+      "branch": "feat/herdr-persistent-dispatch",
+      "worktree": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch",
+      "owned_paths": [
+        "docs/HERDR_ORCHESTRATION.md"
+      ],
+      "test_cmds": [],
+      "cwd": "/home/nightknight/Projects/FASTLINK/.worktrees/herdr-persistent-dispatch"
+    }
+  ]
+}
