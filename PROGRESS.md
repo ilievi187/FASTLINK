@@ -183,3 +183,19 @@ CHUNK frames are still 9 header bytes plus payload. The client sends each frame 
 - Added CPU-only localhost TCP byte-counting benchmark harness. Three repetitions each for random-cold, random-warm, one-byte-delta, and sparse-cold 1 MiB fixtures; all reconstructed SHA256s matched. Medians and stream/payload bytes are documented in `BENCHMARKS.md`; raw JSON at `qa/results/loopback-cpu-1mib-repeats-20261107.json`. These are file-sync measurements, not GPU or inference metrics.
 - No GPU benchmark, model inference, live LAN experiment, service, profile or launcher was changed. Live Heretic v2 remains the untouched rollback baseline.
 - This is only a serial cost model, not FastLink v3 inference transport. No performance claim.
+
+## 2026-11-07 — WP-C scheduling simulations (FL3-C1..C3)
+
+- Worktree `fastlink-v3-network-sim`, branch `feat/fastlink-v3-network-sim`.
+- Added `qa/sim_common.py` (declared shared inputs) and three deterministic
+  CPU-only simulation runner scripts with with unit tests:
+  `qa/sim_placement.py` (FL3-C1 ranked VRAM placement matrix),
+  `qa/sim_pipeline.py` (FL3-C2 sync vs batched vs pipelined), and
+  `qa/sim_faults.py` (FL3-C3 degradation/loss/crash + retry policy).
+- Named entry point `qa/sim_run.sh`; verbatim outputs and a computed
+  selection recommendation in `docs/NETWORK_SIM.md`.
+- 91 python model unit tests pass; `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets`
+  (5 tests) pass.
+- Everything is SIMULATED from declared inputs; no GPU, remote host,
+  model, service or network action was taken.
