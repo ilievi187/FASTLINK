@@ -543,6 +543,50 @@ pub fn clean_stale_partials(root: &Path) -> io::Result<usize> {
     Ok(removed)
 }
 
+/// Audit every stored chunk in `<root>/chunks/` against its content-addressed filename digest
+/// and verify that no temporary `.partial*` or `.fastlink-partial*` files remain in the cache or outputs.
+/// Returns the number of verified cached chunks.
+pub fn verify_cache_integrity(root: &Path) -> io::Result<usize> {
+    let mut verified_chunks = 0usize;
+    let chunks_dir = root.join("chunks");
+    if chunks_dir.exists() {
+        for sub in fs::read_dir(&chunks_dir)? {
+            let sub = sub?;
+            if sub.path().is_dir() {
+                for entry in fs::read_dir(sub.path())? {
+                    let entry = entry?;
+                    let fname = entry.file_name().to_string_lossy().to_string();
+                    if fname.contains(".partial") {
+                        return Err(invalid(format!("leftover partial chunk file: {fname}")));
+                    }
+                    let bytes = fs::read(entry.path())?;
+                    if bytes.len() > CHUNK_BYTES {
+                        return Err(invalid(format!("oversized cached chunk: {fname}")));
+                    }
+                    let actual_hex = hex(&digest(&bytes));
+                    if actual_hex != fname {
+                        return Err(invalid(format!(
+                            "cache corruption: expected {fname}, got {actual_hex}"
+                        )));
+                    }
+                    verified_chunks += 1;
+                }
+            }
+        }
+    }
+    let outputs_dir = root.join("outputs");
+    if outputs_dir.exists() {
+        for entry in fs::read_dir(&outputs_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.contains(".fastlink-partial") || fname.ends_with(".partial") {
+                return Err(invalid(format!("leftover partial output file: {fname}")));
+            }
+        }
+    }
+    Ok(verified_chunks)
+}
+
 /// Handle to a running background FASTLINK server with bounded connection queue and worker pool.
 pub struct RunningServer {
     addr: SocketAddr,
