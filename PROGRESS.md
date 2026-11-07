@@ -159,3 +159,15 @@ Result: exit 0. Library tests 42 passed, 0 failed. Binary unit tests 0. Integrat
 
 This is a cross run under Wine, not a native Windows host and not a GitHub Actions run. `.github/workflows/ci.yml` already includes `windows-latest` and was not changed. No GPU and no remote host.
 
+# FL3-D5 memory budget, scheduler, chunk framing — 2026-11-07
+
+QA run 2's unresolved `recover_atomic_writes` call is defined in `cdfc5f3`. This session recompiled it as part of the D5 gate.
+
+`MemoryBudgetCache` keeps verified chunks in memory under a payload-byte budget and evicts by ascending admission sequence. It does not remove on-disk cache objects. The on-disk store still has no quota.
+
+`src/scheduler.rs` ports the WP-C placement formulas from `feat/fastlink-v3-network-sim` at `e9c96ad`. For the declared 131072-token q4 / dedicated-7900 case the selected split is 53/11. The decode figure 35.87459190317786 tok/s is model arithmetic locked by a unit test, not a hardware measurement. Equal feasible costs stay local.
+
+CHUNK frames are still 9 header bytes plus payload. The client sends each frame with `write_vectored`. A loopback microbench of 128 frames (`qa/measure_chunk_frame.rs`, `rustc -O`, two runs, five-trial medians) put that path at 1,449,996 ns and 1,507,545 ns versus 2,105,558 ns and 2,001,842 ns for separate header writes. A second RAW-buffer clone was not a stable win (894,203 ns vs 908,942 ns, then 1,260,217 ns vs 1,124,379 ns), so `read_chunk` still copies a RAW payload. End-to-end cold/warm MiB/s was not re-measured.
+
+`cargo fmt --check` was clean. `cargo clippy --all-targets -- -D warnings` was clean. `cargo test --all-targets --offline` passed: 57 library tests and 17 integration tests. No GPU and no remote host. Details and the full modelled row are in `docs/FL3-D5.md`.
+

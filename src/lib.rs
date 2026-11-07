@@ -8,10 +8,13 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, IoSlice, Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+pub mod cache_budget;
+pub mod scheduler;
 
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;
@@ -212,6 +215,42 @@ pub fn write_u16(w: &mut impl Write, value: u16) -> io::Result<()> {
 pub fn write_u32(w: &mut impl Write, value: u32) -> io::Result<()> {
     w.write_all(&value.to_le_bytes())
 }
+/// Write every byte of `bufs`, advancing after each partial `write_vectored`.
+fn write_all_vectored(w: &mut impl Write, mut bufs: &mut [IoSlice<'_>]) -> io::Result<()> {
+    while !bufs.is_empty() {
+        match w.write_vectored(bufs) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write chunk frame",
+                ));
+            }
+            Ok(n) => IoSlice::advance_slices(&mut bufs, n),
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+/// Write one v0.1 CHUNK frame: `index:u32` + `codec:u8` + `length:u32` + payload.
+///
+/// The bytes match four separate writes. Header and payload share one
+/// vectored write so the 9-byte prefix is not its own syscall.
+fn write_chunk_frame(w: &mut impl Write, index: u32, codec: u8, encoded: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(encoded.len()).map_err(|_| invalid("chunk frame exceeds u32"))?;
+    let index_bytes = index.to_le_bytes();
+    let codec_byte = [codec];
+    let len_bytes = len.to_le_bytes();
+    let mut bufs = [
+        IoSlice::new(&index_bytes),
+        IoSlice::new(&codec_byte),
+        IoSlice::new(&len_bytes),
+        IoSlice::new(encoded),
+    ];
+    write_all_vectored(w, &mut bufs)
+}
+
 pub fn write_u64(w: &mut impl Write, value: u64) -> io::Result<()> {
     w.write_all(&value.to_le_bytes())
 }
@@ -703,10 +742,7 @@ pub fn client_sync<R: Read + Write>(
             return Err(invalid("input file changed while syncing"));
         }
         let (codec, encoded) = encode_chunk(&chunk);
-        write_u32(stream, *idx)?;
-        write_u8(stream, codec)?;
-        write_u32(stream, encoded.len() as u32)?;
-        stream.write_all(&encoded)?;
+        write_chunk_frame(stream, *idx, codec, &encoded)?;
         wire_payload_bytes += encoded.len() as u64;
         raw_bytes += len as u64;
     }
@@ -1424,5 +1460,43 @@ mod tests {
             let _ = read_chunk(&mut Cursor::new(sample.clone()), 0, &manifest);
             let _ = handshake(&mut two_way(sample));
         }
+    }
+
+    /// Accepts at most `max` bytes per `write` call and does not implement
+    /// `write_vectored`, so the frame helper must reassemble partial writes.
+    struct ShortWriter {
+        buf: Vec<u8>,
+        max: usize,
+    }
+
+    impl Write for ShortWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            let n = data.len().min(self.max);
+            self.buf.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn chunk_frame_matches_v01_bytes_across_short_writes() {
+        let payload = b"abcd";
+        let mut writer = ShortWriter {
+            buf: Vec::new(),
+            max: 1,
+        };
+        write_chunk_frame(&mut writer, 7, RAW, payload).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&7u32.to_le_bytes());
+        expected.push(RAW);
+        expected.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        expected.extend_from_slice(payload);
+        assert_eq!(writer.buf, expected);
+
+        let mut direct = Vec::new();
+        write_chunk_frame(&mut direct, 7, RAW, payload).unwrap();
+        assert_eq!(direct, expected);
     }
 }
