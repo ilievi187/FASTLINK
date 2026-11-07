@@ -1,0 +1,13 @@
+{
+  "results": {
+    "C_8192": {
+      "config": "C",
+      "desc": "single GPU RX 6600 XT (detti, ~7GB free)",
+      "context": 8192,
+      "n_predict": 64,
+      "status": "error",
+      "error": "detti server on :8212 not healthy after 180s"
+    }
+  },
+  "updated_at": "2026-11-08T01:06:06+0200"
+}
