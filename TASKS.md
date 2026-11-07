@@ -10,8 +10,8 @@
 - [ ] **P1 portability:** Verify Windows tests and sample CLI run in GitHub Actions.
 - [ ] **P2 integration:** Build an experimental ggml/llama.cpp RPC adapter in its own integration path.
 - [ ] **P2 execution:** Model verified remote tensor references, generations, lifetimes and dependency fences.
-- [ ] **P3 GPU:** Benchmark against stock RPC with cache for real models, only after explicit authorization.
-- [ ] **V3 CPU model:** Build deterministic placement cost model for compute, queue, transfer, RTT and explicit VRAM reserve; six tests currently pass on isolated branch `feat/fastlink-v3-cpu-baseline`.
+- [ ] **P3 GPU:** Run the stock/v2/v3 real-model A/B benchmark. Owner has explicitly requested it; defer until the live Heretic v2 service is verified idle or a maintenance window is available. Never interrupt or compete with active inference.
+- [ ] **V3 CPU model:** Build deterministic placement cost model for compute, queue, transfer, RTT and explicit VRAM reserve. First serial model committed on `feat/fastlink-v3-cpu-baseline`; 12 tests pass; limitations documented.
 - [ ] **V3 instrumentation:** Add complete wire-byte accounting and separate sender hash, manifest, cache validation, reconstruction, prefill/decode and network timings.
 - [ ] **V3 RPC:** Verify behavior of the existing local adapter against a clean pinned stock build; do not edit its dirty llama.cpp source tree.
 - [ ] **V3 telemetry:** Expose real worker/backend metrics only where APIs provide measured values; report unavailable metrics as unavailable.
