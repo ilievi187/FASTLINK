@@ -13,3 +13,19 @@
 The reconstructed file matched SHA-256 after first and third transfers and `cmp` passed after the edit.
 
 **Limitations:** highly compressible synthetic input; local-only test; no GPU, no remote WAN/LAN test, no traffic capture, no measurement of server CPU / cache storage overhead; counts are **encoded payload only**, excluding manifests and framing. No inference acceleration claim is supported.
+
+## 2026-11-07 — v3 scheduling cost model (WP-C) — SIMULATED, no measurements
+
+Deliverables FL3-C1..C3 for the network-sim worktree: VRAM-aware layer
+placement matrix for a declared 27B Q4-class 128K workload across a
+dedicated-or-mixed RX 7900 XT 20 GiB plus RX 6600 XT 8 GiB remote;
+prefill/decode pipeline comparison (strictly synchronous vs batched vs
+pipelined); link-degradation and worker-crash fault injection with a
+computed retry/timeout policy.
+
+- Runner: `qa/sim_run.sh` (runs all three scripts, each printing
+  deterministic tables; 91 model unit tests).
+- Full numeric reports: `docs/NETWORK_SIM.md`.
+- Status: simulated planning arithmetic only, no GPU, no remote host, no
+  measurement exists behind these numbers; reproduction commands are the
+  source of truth.

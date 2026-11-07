@@ -22,3 +22,19 @@
 - No GPU benchmarks, model inferences, remote network tests, services, profiles or launchers were changed. The live Heretic v2 baseline remains untouched.
 - Branch: `feat/fastlink-v3-cpu-baseline`; worktree: `.worktrees/fastlink-v3-cpu-baseline`.
 - This is only a serial cost model, not FastLink v3 inference transport. No performance claim.
+
+## 2026-11-07 — WP-C scheduling simulations (FL3-C1..C3)
+
+- Worktree `fastlink-v3-network-sim`, branch `feat/fastlink-v3-network-sim`.
+- Added `qa/sim_common.py` (declared shared inputs) and three deterministic
+  CPU-only simulation runner scripts with with unit tests:
+  `qa/sim_placement.py` (FL3-C1 ranked VRAM placement matrix),
+  `qa/sim_pipeline.py` (FL3-C2 sync vs batched vs pipelined), and
+  `qa/sim_faults.py` (FL3-C3 degradation/loss/crash + retry policy).
+- Named entry point `qa/sim_run.sh`; verbatim outputs and a computed
+  selection recommendation in `docs/NETWORK_SIM.md`.
+- 91 python model unit tests pass; `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets`
+  (5 tests) pass.
+- Everything is SIMULATED from declared inputs; no GPU, remote host,
+  model, service or network action was taken.
