@@ -3,6 +3,14 @@
 
 use std::io::{self, Read, Write};
 
+pub mod codec;
+pub use codec::{
+    codec_name, decode_chunk, encode_chunk_adaptive, encode_lz4, encode_rle, encode_with_codec,
+    encode_zstd, evaluate_codec_candidate, select_codec_measured, synthetic_incompressible_chunk,
+    synthetic_sparse_chunk, synthetic_tensor_like_chunk, AdaptiveCodecChoice,
+    CodecCandidateMetrics, CodecCostPolicy, LZ4, RAW, RLE, ZSTD,
+};
+
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;
 pub const CHUNK_BYTES: usize = 64 * 1024;
@@ -38,69 +46,8 @@ pub fn chunk_count(total_bytes: u64) -> io::Result<u32> {
     u32::try_from(count).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many chunks"))
 }
 
-pub const RAW: u8 = 0;
-pub const RLE: u8 = 1;
-
 pub fn encode_chunk(chunk: &[u8]) -> (u8, Vec<u8>) {
-    // A tiny lossless codec for easy-to-test sparse/uniform data.
-    // Future milestone: benchmark LZ4/Zstd and choose by measured wall-clock time.
-    let mut encoded = Vec::new();
-    let mut idx = 0;
-    while idx < chunk.len() {
-        let byte = chunk[idx];
-        let mut count = 1usize;
-        while idx + count < chunk.len() && count < u8::MAX as usize && chunk[idx + count] == byte {
-            count += 1;
-        }
-        encoded.push(count as u8);
-        encoded.push(byte);
-        idx += count;
-    }
-    if encoded.len().saturating_add(32) < chunk.len() {
-        (RLE, encoded)
-    } else {
-        (RAW, chunk.to_vec())
-    }
-}
-
-pub fn decode_chunk(codec: u8, bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
-    if expected > CHUNK_BYTES || bytes.len() > MAX_ENCODED_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "chunk exceeds limit",
-        ));
-    }
-    let decoded = match codec {
-        RAW => bytes.to_vec(),
-        RLE => {
-            if !bytes.len().is_multiple_of(2) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid RLE payload",
-                ));
-            }
-            let mut output = Vec::with_capacity(expected);
-            for pair in bytes.as_chunks::<2>().0 {
-                let run = pair[0] as usize;
-                if run == 0 || output.len() + run > expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "RLE exceeds expected size",
-                    ));
-                }
-                output.extend(std::iter::repeat_n(pair[1], run));
-            }
-            output
-        }
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "unknown codec")),
-    };
-    if decoded.len() != expected {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "decoded size mismatch",
-        ));
-    }
-    Ok(decoded)
+    encode_chunk_adaptive(chunk, CodecCostPolicy::default())
 }
 
 pub fn read_u8(r: &mut impl Read) -> io::Result<u8> {
