@@ -13,7 +13,7 @@
 **2026-11-07 · v3 isolated kickoff**
 
 8. Preserve v2 on port 18879; inventory actual service state before each test. **Active; untouched.**
-9. Deliver CPU-only RPC cost model and baseline tooling before GPU integration. **In progress on `feat/fastlink-v3-cpu-baseline`; twelve model tests pass.**
+9. Deliver CPU-only RPC cost model and baseline tooling before GPU integration. **Serial placement and fault-simulator models implemented on `feat/fastlink-v3-cpu-baseline`; 34 Python tests pass (models only).**
 10. Build security/correctness/cache/telemetry gates and mock worker before any backend deployment. **Not started.**
 11. Compare the pinned stock RPC, existing adapter, and v3 on isolated ports/workers. **Requires safe maintenance window for GPU benchmarking.**
 12. Only after controlled A/B verifies correctness, stability, security and benefit: stage a separate release candidate and migration/rollback procedure. **Not started.**

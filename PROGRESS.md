@@ -19,6 +19,8 @@
 - Created `qa/cost_model.py`: explicit link RTT/throughput/serialization and per-stage compute/queue/transfer calculator plus declared VRAM feasibility check. It performs no device discovery and is not GPU telemetry.
 - Added twelve model tests, including finite inputs, integer RTT count, per-round-trip serialization, empty-pipeline rejection and memory declaration validation. OpenCode's read-only review found edge cases; regressions were run RED, fixed, then verified green.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets`: pass (5 Rust tests).
-- No GPU benchmarks, model inferences, remote network tests, services, profiles or launchers were changed. The live Heretic v2 baseline remains untouched.
-- Branch: `feat/fastlink-v3-cpu-baseline`; worktree: `.worktrees/fastlink-v3-cpu-baseline`.
+- OpenCode implemented `qa/network_sim.py` and 22 tests on separate branch `feat/fastlink-v3-network-sim`; orchestrator reviewed ownership and verified all tests, then integrated it to the CPU branch in merge commit `a578ecd`. Simulator models declared RTT, throughput, serialization, queue, loss, retry and disconnect; no live network was used.
+- Combined Python suite: 38/38 pass. Rust fmt/clippy/test suite remains green (5 Rust tests).
+- Added CPU-only localhost TCP byte-counting benchmark harness. Three repetitions each for random-cold, random-warm, one-byte-delta, and sparse-cold 1 MiB fixtures; all reconstructed SHA256s matched. Medians and stream/payload bytes are documented in `BENCHMARKS.md`; raw JSON at `qa/results/loopback-cpu-1mib-repeats-20261107.json`. These are file-sync measurements, not GPU or inference metrics.
+- No GPU benchmark, model inference, live LAN experiment, service, profile or launcher was changed. Live Heretic v2 remains the untouched rollback baseline.
 - This is only a serial cost model, not FastLink v3 inference transport. No performance claim.
