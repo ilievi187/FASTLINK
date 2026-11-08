@@ -1,0 +1,14 @@
+FL3-E5 Step 3 — cross-branch suite Run 4 (after FL3-A4 commit deac1d0)
+Timestamp: 2026-11-07T21:46:00+02:00 (approx)
+Operator: Antigravity (OpenCode agent), CPU-only, loopback-only, no GPU, no SSH
+Exact command sequence per Rust checkout: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --all-targets`
+Network-sim extra (WP-C gate): `cd qa && python3 -m unittest test_sim_placement test_sim_pipeline test_sim_faults` (57/0 OK)
+
+| Checkout | SHA | fmt | clippy | test result | overall |
+|---|---|---|---|---|---|
+| /home/nightknight/Projects/FASTLINK (qa/fastlink-v3-mission-qa) | 8aeed68 | PASS (0) | PASS (0) | `cargo test --all-targets` PASS (exit 0) | PASS |
+| /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-cpu-baseline [feat/fastlink-v3-cpu-baseline] | deac1d0 | PASS (0) | PASS (0) | `cargo test --all-targets` PASS (exit 0). Observed integration: codec_adaptive 3/3, concurrency_isolation 2/2 (FL3-A4), resume_and_backpressure 3/3 | PASS |
+| /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-network-sim [feat/fastlink-v3-network-sim] | a50ecd8 | PASS (0) | PASS (0) | Rust PASS (exit 0) + Python sim 57/0 OK | PASS |
+| /home/nightknight/Projects/FASTLINK-heretic-agent [agent/heretic-m1-hardening] | c3a89b7 | PASS (0) | PASS (0) | integration 15/0/0 observed in tail; `cargo test --all-targets` exit 0 | PASS |
+
+Adapter (CMake) not run (CPU-only QA scope). No source files in other worktrees edited.
