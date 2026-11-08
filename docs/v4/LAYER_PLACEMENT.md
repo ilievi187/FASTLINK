@@ -63,3 +63,14 @@ Overhead on every non-empty side is 469,762,048 bytes (256 MiB + 192 MiB) before
 | 64K | remote | 22 | 6 | 16 | 1862302816 | 503316480 | 33554432 | 3155829354 |
 | 128K | local | 11 | 2 | 9 | 931151408 | 335544320 | 18874368 | 1930865359 |
 | 128K | remote | 21 | 6 | 15 | 1777652688 | 1006632960 | 31457280 | 3614055474 |
+
+## Where KV is placed
+
+KV stays with the attention layer that owns it. `kv_layer_home` in `src/qwen35_4b.rs` uses the selected split above. The state runtime labels every accepted KV span with the 8K row (`KV_PLACEMENT_CONTEXT` = 8192). The 32K, 64K, and 128K rows make the same local/remote choice for every attention layer, because each selected prefix is 9, 10, 10, or 11 layers and the attention layers are 3, 7, 11, 15, 19, 23, 27, and 31.
+
+| attention layer | home | free budget of that worker |
+|---:|---|---:|
+| 3, 7 | local, NightKnightPC 7900 XT | 3,700,000,000 bytes |
+| 11, 15, 19, 23, 27, 31 | remote, detti 6600 XT | 7,000,000,000 bytes |
+
+The 6600 XT is the worker with more free capacity, and it holds six of the eight KV layers. The 7900 XT holds KV only for layers 3 and 7, which is the prefix that the memory-fit split leaves on that card. At 8K the 7900 XT could hold all 32 layers, but that is not the selected split, so those six KV layers stay on the 6600 XT. This is a label on the CPU state path. It does not allocate a GPU or open a second host. Decode tok/s is still not estimated.

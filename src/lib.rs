@@ -12,6 +12,7 @@ pub mod retry;
 pub mod scheduler;
 pub mod server;
 pub mod state_cache;
+pub mod state_sync;
 pub use codec::{
     codec_name, decode_chunk, decode_v4_chunk, encode_chunk_adaptive, encode_lz4, encode_rle,
     encode_with_codec, encode_zstd, evaluate_codec_candidate, select_best_stride,
@@ -42,6 +43,11 @@ pub use server::{
     server_handshake, spawn_server, store_chunk_isolated, validate_connect_address,
     validate_listen_address, verify_cache_integrity, BoundedQueue, RunningServer, SendOptions,
     ServerConfig, ServerCoord, CMD_SYNC,
+};
+pub use state_sync::{
+    bump_state_layer, check_state_ref, end_state_session, fetch_kv, fetch_ssm,
+    invalidate_state_layer, restart_state_worker, sync_kv, sync_ssm, RefStatus, StateSyncReport,
+    CMD_STATE,
 };
 
 pub const MAGIC: &[u8; 4] = b"FLNK";

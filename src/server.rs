@@ -25,6 +25,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::codec::{LZ4, RAW, RLE, ZSTD};
+use crate::state_cache::PersistentStateCache;
+use crate::state_sync::{self, CMD_STATE};
 use crate::{
     chunk_count, decode_chunk, digest, encode_chunk, expected_chunk_len, hex, mib_per_sec,
     read_u16, read_u32, read_u64, read_u8, recover_atomic_writes, write_u16, write_u32, write_u64,
@@ -167,6 +169,7 @@ pub struct ServerCoord {
     total_sessions_completed: AtomicU64,
     total_sessions_aborted: AtomicU64,
     total_backpressure_waits: AtomicU64,
+    state_cache: Mutex<Option<Arc<PersistentStateCache>>>,
 }
 
 impl ServerCoord {
@@ -206,6 +209,22 @@ impl ServerCoord {
 
     pub fn total_backpressure_waits(&self) -> u64 {
         self.total_backpressure_waits.load(Ordering::Relaxed)
+    }
+
+    /// Open the persistent SSM/KV cache under `root/state`.
+    pub fn install_state_cache(&self, root: &Path) -> io::Result<()> {
+        let cache = PersistentStateCache::open(&root.join("state"))
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        *self.state_cache.lock().expect("state cache mutex poisoned") = Some(Arc::new(cache));
+        Ok(())
+    }
+
+    fn state_cache(&self) -> io::Result<Arc<PersistentStateCache>> {
+        self.state_cache
+            .lock()
+            .expect("state cache mutex poisoned")
+            .clone()
+            .ok_or_else(|| invalid("state cache is not installed"))
     }
 }
 
@@ -383,6 +402,14 @@ pub fn process_session_with_config(
     server_handshake(&mut stream)?;
 
     let command = read_u8(&mut stream)?;
+    if command == CMD_STATE {
+        let cache = coord.state_cache()?;
+        let result = state_sync::handle_state_session(&mut stream, &cache);
+        if result.is_ok() {
+            session_guard.completed = true;
+        }
+        return result;
+    }
     if command != CMD_SYNC {
         return Err(invalid("unknown command"));
     }
@@ -563,6 +590,7 @@ pub fn process_session_with_config(
 /// Process a single client SYNC session with default server configuration.
 pub fn process_session(stream: TcpStream, root: &Path) -> io::Result<()> {
     let coord = ServerCoord::new();
+    coord.install_state_cache(root)?;
     process_session_with_config(stream, root, ServerConfig::default(), &coord)
 }
 
@@ -738,6 +766,7 @@ pub fn spawn_server(address: &str, root: &Path, config: ServerConfig) -> io::Res
         config.connection_queue_capacity,
     ));
     let coord = Arc::new(ServerCoord::new());
+    coord.install_state_cache(root)?;
 
     let worker_count = config.max_concurrent_sessions.max(1);
     let mut worker_threads = Vec::with_capacity(worker_count);
@@ -810,6 +839,7 @@ pub fn serve(address: &str, root: &Path) -> io::Result<()> {
         config.connection_queue_capacity,
     ));
     let coord = Arc::new(ServerCoord::new());
+    coord.install_state_cache(root)?;
     let worker_count = config.max_concurrent_sessions.max(1);
     for _ in 0..worker_count {
         let q = Arc::clone(&conn_queue);

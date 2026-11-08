@@ -8,7 +8,24 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Wait until server-side session accounting catches the clients.
+///
+/// The client returns after the status byte. The server increments its
+/// counters in `Drop`, which can run after the client has already joined
+/// under CPU contention. The byte checks stay exact. This wait is only the
+/// scheduling gap.
+fn wait_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if ready() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    ready()
+}
 
 fn temp_test_dir(prefix: &str) -> PathBuf {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -108,11 +125,20 @@ fn four_concurrent_clients_transfer_overlapping_and_unique_files_byte_exact_with
         );
     }
 
-    assert!(server.coord().total_sessions_completed() >= 4);
     assert!(
-        server.coord().peak_concurrent_sessions() >= 1,
-        "expected session execution across worker pool"
+        wait_until(Duration::from_secs(5), || {
+            server.coord().total_sessions_completed() >= 4
+                && client_files
+                    .iter()
+                    .all(|(name, _)| root.join("outputs").join(name).is_file())
+        }),
+        "completed={} aborted={}",
+        server.coord().total_sessions_completed(),
+        server.coord().total_sessions_aborted()
     );
+    // Peak overlap is scheduling, not a byte-level invariant. Under load the
+    // four sessions can be serialized and still all complete byte-exact.
+    assert!(server.coord().peak_concurrent_sessions() >= 1);
 
     // Verify all 4 materialized output files are byte-exact
     for (client_id, (fname, _)) in client_files.iter().enumerate() {
@@ -196,15 +222,15 @@ fn concurrent_session_isolation_when_one_client_aborts_mid_transfer_others_compl
         }
     }
 
-    // Wait for client 0's server session to finish cleanup (robust under heavy system load)
-    for _ in 0..200 {
-        if server.coord().total_sessions_aborted() >= 1
-            && server.coord().total_sessions_completed() >= 3
-        {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            server.coord().total_sessions_aborted() >= 1
+                && server.coord().total_sessions_completed() >= 3
+        }),
+        "completed={} aborted={}",
+        server.coord().total_sessions_completed(),
+        server.coord().total_sessions_aborted()
+    );
 
     // Client 0's output must NOT exist, while clients 1..=3 must be byte-exact
     assert!(!root.join("outputs").join(&files[0].0).exists());

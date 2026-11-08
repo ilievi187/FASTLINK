@@ -53,6 +53,27 @@ pub const PLACEMENT_CONTEXTS: [u64; 4] = [8_192, 32_768, 65_536, 131_072];
 pub enum PlacementError {
     Context,
     Budget,
+    /// `layer` is outside the model or is not a full-attention layer.
+    Layer,
+}
+
+/// Which worker holds an attention layer's KV in the selected split.
+///
+/// Local is the 7900 XT prefix. Remote is the 6600 XT, the worker with the
+/// larger free-byte budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerHome {
+    Local7900Xt,
+    Remote6600Xt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvLayerHome {
+    pub context_tokens: u64,
+    pub layer: u32,
+    pub home: WorkerHome,
+    pub local_layers: u32,
+    pub remote_layers: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +252,34 @@ pub fn placement_table() -> Result<[PlacementRow; 4], PlacementError> {
     Ok(rows)
 }
 
+/// KV for `layer` lives on the host that owns that attention layer.
+///
+/// The split is [`select_split`] at the measured free budgets. The 6600 XT
+/// free budget is larger, and the selected rows put the later attention
+/// layers there. Decode tok/s is not part of this decision.
+pub fn kv_layer_home(context_tokens: u64, layer: u32) -> Result<KvLayerHome, PlacementError> {
+    if !is_attention_layer(layer) {
+        return Err(PlacementError::Layer);
+    }
+    let row = select_split(
+        context_tokens,
+        FREE_VRAM_7900_XT_BYTES,
+        FREE_VRAM_6600_XT_BYTES,
+    )?;
+    let home = if layer < row.local_layers {
+        WorkerHome::Local7900Xt
+    } else {
+        WorkerHome::Remote6600Xt
+    };
+    Ok(KvLayerHome {
+        context_tokens,
+        layer,
+        home,
+        local_layers: row.local_layers,
+        remote_layers: row.remote_layers,
+    })
+}
+
 /// Largest local prefix that still fits, or `None` when even `k = 0` does not.
 pub fn max_feasible_local_layers(context_tokens: u64) -> Result<Option<u32>, PlacementError> {
     let mut found = None;
@@ -394,5 +443,45 @@ mod tests {
         assert!(!row.feasible);
         assert!(row.decode_tokens_per_s.is_none());
         assert_eq!(row.local_layers + row.remote_layers, BLOCK_COUNT);
+    }
+
+    #[test]
+    fn attention_kv_follows_the_selected_split() {
+        assert!(matches!(
+            kv_layer_home(8_192, 0),
+            Err(PlacementError::Layer)
+        ));
+        let rows = placement_table().unwrap();
+        let mut homes = Vec::new();
+        for row in &rows {
+            for layer in 0..BLOCK_COUNT {
+                if !is_attention_layer(layer) {
+                    continue;
+                }
+                let placed = kv_layer_home(row.context_tokens, layer).unwrap();
+                let expect = if layer < row.local_layers {
+                    WorkerHome::Local7900Xt
+                } else {
+                    WorkerHome::Remote6600Xt
+                };
+                assert_eq!(placed.home, expect);
+                assert_eq!(placed.local_layers, row.local_layers);
+                homes.push((row.context_tokens, layer, placed.home));
+            }
+        }
+        let first = homes
+            .iter()
+            .filter(|(_, layer, _)| *layer == homes[0].1)
+            .map(|(_, _, home)| *home)
+            .collect::<Vec<_>>();
+        assert!(first.windows(2).all(|pair| pair[0] == pair[1]));
+        for (_, layer, home) in &homes {
+            let expect = if *layer < 9 {
+                WorkerHome::Local7900Xt
+            } else {
+                WorkerHome::Remote6600Xt
+            };
+            assert_eq!(*home, expect);
+        }
     }
 }

@@ -196,3 +196,26 @@ fn partial_files_are_not_promoted_and_corrupt_records_do_not_reload() {
     ));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn version_bump_keeps_bytes_and_layer_invalidation_is_scoped() {
+    let root = fresh_root();
+    let cache = PersistentStateCache::open(&root).unwrap();
+    let bytes = ssm(9);
+    let first = cache.put_ssm(5, 0, &bytes).unwrap();
+    let other = cache.put_ssm(5, 1, &ssm(8)).unwrap();
+    let bumped = cache.bump_layer_version(5, 0).unwrap();
+    assert_eq!(bumped.len(), 1);
+    assert!(bumped[0].version > first.version);
+    assert_eq!(bumped[0].hash, first.hash);
+    assert!(matches!(cache.get(&first), Err(StateError::Invalidated)));
+    assert_eq!(cache.get(&bumped[0]).unwrap(), bytes);
+    assert_eq!(cache.get(&other).unwrap(), ssm(8));
+    assert_eq!(cache.invalidate_layer(5, 0).unwrap(), 1);
+    assert!(matches!(
+        cache.get(&bumped[0]),
+        Err(StateError::Invalidated)
+    ));
+    assert_eq!(cache.get(&other).unwrap(), ssm(8));
+    let _ = fs::remove_dir_all(&root);
+}

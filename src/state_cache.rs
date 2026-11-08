@@ -365,6 +365,142 @@ impl PersistentStateCache {
         Ok(())
     }
 
+    /// Live record for an exact tensor id. Does not read the payload.
+    pub fn lookup_tensor(&self, session: u64, id: TensorId) -> Result<StateRef, StateError> {
+        let guard = self.lock()?;
+        let stored = guard
+            .sessions
+            .get(&session)
+            .ok_or(StateError::SessionClosed)?;
+        let record = stored
+            .records
+            .iter()
+            .find(|record| record.id == id)
+            .ok_or(StateError::NotFound)?;
+        Ok(reference_for(session, guard.generation, record))
+    }
+
+    /// Drop every live record for `layer` in `session` and delete its bytes.
+    ///
+    /// Other sessions and other layers of this session stay. Returns how many
+    /// records were removed. An empty layer returns 0.
+    pub fn invalidate_layer(&self, session: u64, layer: u32) -> Result<u32, StateError> {
+        let mut guard = self.lock()?;
+        if !guard.sessions.contains_key(&session) {
+            return Err(StateError::SessionClosed);
+        }
+        let dir = self.session_dir(session);
+        let removed = {
+            let stored = guard
+                .sessions
+                .get_mut(&session)
+                .ok_or(StateError::SessionClosed)?;
+            let mut kept = Vec::new();
+            let mut removed = Vec::new();
+            for existing in stored.records.drain(..) {
+                if existing.id.layer == layer {
+                    stored.invalidated.push(InvalidKey {
+                        id: existing.id,
+                        version: existing.version,
+                    });
+                    removed.push(existing);
+                } else {
+                    kept.push(existing);
+                }
+            }
+            stored.records = kept;
+            write_manifest(&dir, stored)?;
+            removed
+        };
+        for existing in &removed {
+            let path = dir.join("tensors").join(tensor_file_name(existing));
+            if path.exists() {
+                ensure_not_symlink(&path)?;
+                fs::remove_file(path)?;
+            }
+        }
+        u32::try_from(removed.len()).map_err(|_| invalid("invalidated record count overflow"))
+    }
+
+    /// Mint a new version for each live record of `layer`, keeping the bytes and hash.
+    ///
+    /// The previous version is invalidated. A later hash offer can re-validate
+    /// without reading a second copy of the payload into the caller.
+    pub fn bump_layer_version(
+        &self,
+        session: u64,
+        layer: u32,
+    ) -> Result<Vec<StateRef>, StateError> {
+        let mut guard = self.lock()?;
+        let generation = guard.generation;
+        let targets: Vec<Stored> = {
+            let stored = guard
+                .sessions
+                .get(&session)
+                .ok_or(StateError::SessionClosed)?;
+            let targets: Vec<Stored> = stored
+                .records
+                .iter()
+                .filter(|record| record.id.layer == layer)
+                .cloned()
+                .collect();
+            if targets.is_empty() {
+                return Err(StateError::NotFound);
+            }
+            targets
+        };
+        let dir = self.session_dir(session);
+        let mut refs = Vec::with_capacity(targets.len());
+        for existing in targets {
+            let bytes = read_capped(
+                &self.tensor_path(session, &existing),
+                existing.byte_len,
+                cap_for(existing.id.kind),
+            )?;
+            if digest(&bytes) != existing.hash {
+                return Err(StateError::Invalidated);
+            }
+            let version = {
+                let stored = guard
+                    .sessions
+                    .get(&session)
+                    .ok_or(StateError::SessionClosed)?;
+                next_version(stored, existing.id)?
+            };
+            let record = Stored {
+                id: existing.id,
+                version,
+                hash: existing.hash,
+                byte_len: existing.byte_len,
+            };
+            atomic_write(&dir.join("tensors"), &tensor_file_name(&record), &bytes)?;
+            {
+                let stored = guard
+                    .sessions
+                    .get_mut(&session)
+                    .ok_or(StateError::SessionClosed)?;
+                if let Some(position) = stored.records.iter().position(|candidate| {
+                    candidate.version == existing.version && candidate.id == existing.id
+                }) {
+                    let old = stored.records.remove(position);
+                    stored.invalidated.push(InvalidKey {
+                        id: old.id,
+                        version: old.version,
+                    });
+                }
+                stored.records.push(record.clone());
+                write_manifest(&dir, stored)?;
+            }
+            let old_path = dir.join("tensors").join(tensor_file_name(&existing));
+            if old_path.exists() {
+                ensure_not_symlink(&old_path)?;
+                fs::remove_file(old_path)?;
+            }
+            refs.push(reference_for(session, generation, &record));
+        }
+        Ok(refs)
+    }
+
     fn store_new(
         &self,
         session: u64,
@@ -391,26 +527,7 @@ impl PersistentStateCache {
                 .sessions
                 .get(&session)
                 .ok_or(StateError::SessionClosed)?;
-            let previous_record = stored
-                .records
-                .iter()
-                .filter(|record| {
-                    record.id.kind == id.kind
-                        && record.id.layer == id.layer
-                        && record.id.head == id.head
-                })
-                .map(|record| record.version);
-            let previous_invalid = stored
-                .invalidated
-                .iter()
-                .filter(|key| {
-                    key.id.kind == id.kind && key.id.layer == id.layer && key.id.head == id.head
-                })
-                .map(|key| key.version);
-            let previous = previous_record.chain(previous_invalid).max().unwrap_or(0);
-            previous
-                .checked_add(1)
-                .ok_or_else(|| invalid("version overflow"))?
+            next_version(stored, id)?
         };
         let record = Stored {
             id,
@@ -485,6 +602,25 @@ impl PersistentStateCache {
             .lock()
             .map_err(|_| invalid("state cache lock poisoned"))
     }
+}
+
+fn next_version(stored: &Session, id: TensorId) -> Result<u64, StateError> {
+    let previous_record = stored
+        .records
+        .iter()
+        .filter(|record| {
+            record.id.kind == id.kind && record.id.layer == id.layer && record.id.head == id.head
+        })
+        .map(|record| record.version);
+    let previous_invalid = stored
+        .invalidated
+        .iter()
+        .filter(|key| key.id.kind == id.kind && key.id.layer == id.layer && key.id.head == id.head)
+        .map(|key| key.version);
+    let previous = previous_record.chain(previous_invalid).max().unwrap_or(0);
+    previous
+        .checked_add(1)
+        .ok_or_else(|| invalid("version overflow"))
 }
 
 fn reference_for(session: u64, generation: u64, record: &Stored) -> StateRef {
