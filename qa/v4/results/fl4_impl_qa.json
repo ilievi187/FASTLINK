@@ -1,0 +1,412 @@
+{
+  "all_core_pass": true,
+  "builds": {
+    "src_identical": true,
+    "v3_integrate": {
+      "head": "ff9f0ec",
+      "path": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-integrate"
+    },
+    "v4_wt": {
+      "head": "a5b25bd",
+      "path": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4"
+    }
+  },
+  "cache_invalidation": {
+    "after_corruption": {
+      "output_byte_exact": true,
+      "retransferred_or_recovered": true,
+      "send_ok": true,
+      "silent_corruption": false
+    },
+    "corrupted_cached_chunk": true,
+    "mutated_content_resync": {
+      "chunks_transferred": 1,
+      "output_byte_exact": true,
+      "send_ok": true
+    },
+    "note": "byte-exact or clean-fail required; no stale reuse/silent corruption",
+    "pass": true
+  },
+  "concurrent4": {
+    "all_byte_exact": true,
+    "corruption_detected": false,
+    "n": 4,
+    "pass": true,
+    "sessions": [
+      {
+        "byte_exact": true,
+        "chunks_transferred": 16,
+        "i": 0,
+        "ok": true
+      },
+      {
+        "byte_exact": true,
+        "chunks_transferred": 16,
+        "i": 1,
+        "ok": true
+      },
+      {
+        "byte_exact": true,
+        "chunks_transferred": 16,
+        "i": 2,
+        "ok": true
+      },
+      {
+        "byte_exact": true,
+        "chunks_transferred": 16,
+        "i": 3,
+        "ok": true
+      }
+    ]
+  },
+  "cpu_only": true,
+  "determinism": {
+    "identical_deterministic_output": "PASS",
+    "src_sha256": "5a9bc8b3c1150c0e2421d5743837d38af8317179cef86125b9e39c23c576102a",
+    "v3": {
+      "match_src": true,
+      "ok": true,
+      "out_sha256": "5a9bc8b3c1150c0e2421d5743837d38af8317179cef86125b9e39c23c576102a"
+    },
+    "v4": {
+      "match_src": true,
+      "ok": true,
+      "out_sha256": "5a9bc8b3c1150c0e2421d5743837d38af8317179cef86125b9e39c23c576102a"
+    },
+    "v4_eq_v3_output": true
+  },
+  "efficiency": {
+    "v3_integrate_build": {
+      "build": "v3",
+      "cold": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 596491.75,
+        "cache_hit_rate": 0.0,
+        "cache_miss_rate": 1.0,
+        "chunks_reused": 0,
+        "chunks_total": 64,
+        "chunks_transferred": 64,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 119,
+        "encode_transfer_ms": 35.178,
+        "encoded_payload_bytes": 2383042,
+        "manifest_ms": 83.018,
+        "mode": "v3_always_send_first_sync",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 67,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 267,
+        "wire_bytes_total": 2385967,
+        "wire_bytes_tx": 2385700
+      },
+      "cwd": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-integrate",
+      "delta": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 16910.25,
+        "cache_hit_rate": 0.984375,
+        "cache_miss_rate": 0.015625,
+        "chunks_reused": 63,
+        "chunks_total": 64,
+        "chunks_transferred": 1,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 87,
+        "encode_transfer_ms": 2.667,
+        "encoded_payload_bytes": 65536,
+        "manifest_ms": 83.166,
+        "mode": "incremental_delta",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 4,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 15,
+        "wire_bytes_total": 67641,
+        "wire_bytes_tx": 67626
+      },
+      "warm_resend": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 523.25,
+        "cache_hit_rate": 1.0,
+        "cache_miss_rate": 0.0,
+        "chunks_reused": 64,
+        "chunks_total": 64,
+        "chunks_transferred": 0,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 46,
+        "encode_transfer_ms": 2.485,
+        "encoded_payload_bytes": 0,
+        "manifest_ms": 42.853,
+        "mode": "chunk_cache_hit_resend",
+        "note": "same content resent: chunks reused (0 transferred) but manifest/need still exchanged \u2014 chunk-level cache, NOT full v4 persistent-residency session",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 3,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 11,
+        "wire_bytes_total": 2093,
+        "wire_bytes_tx": 2082
+      }
+    },
+    "v4_build": {
+      "build": "v4",
+      "cold": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 596491.75,
+        "cache_hit_rate": 0.0,
+        "cache_miss_rate": 1.0,
+        "chunks_reused": 0,
+        "chunks_total": 64,
+        "chunks_transferred": 64,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 120,
+        "encode_transfer_ms": 36.712,
+        "encoded_payload_bytes": 2383042,
+        "manifest_ms": 83.064,
+        "mode": "v3_always_send_first_sync",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 67,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 267,
+        "wire_bytes_total": 2385967,
+        "wire_bytes_tx": 2385700
+      },
+      "cwd": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4",
+      "delta": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 16910.25,
+        "cache_hit_rate": 0.984375,
+        "cache_miss_rate": 0.015625,
+        "chunks_reused": 63,
+        "chunks_total": 64,
+        "chunks_transferred": 1,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 86,
+        "encode_transfer_ms": 2.997,
+        "encoded_payload_bytes": 65536,
+        "manifest_ms": 82.209,
+        "mode": "incremental_delta",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 4,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 15,
+        "wire_bytes_total": 67641,
+        "wire_bytes_tx": 67626
+      },
+      "warm_resend": {
+        "byte_exact": true,
+        "bytes_per_generated_token_PROXY": null,
+        "bytes_per_logical_mib": 523.25,
+        "cache_hit_rate": 1.0,
+        "cache_miss_rate": 0.0,
+        "chunks_reused": 64,
+        "chunks_total": 64,
+        "chunks_transferred": 0,
+        "decode_ms": {
+          "provenance": "not emitted by CLI",
+          "value": null
+        },
+        "elapsed_ms": 47,
+        "encode_transfer_ms": 2.977,
+        "encoded_payload_bytes": 0,
+        "manifest_ms": 43.363,
+        "mode": "chunk_cache_hit_resend",
+        "note": "same content resent: chunks reused (0 transferred) but manifest/need still exchanged \u2014 chunk-level cache, NOT full v4 persistent-residency session",
+        "ok": true,
+        "per_token_provenance": "PROXY not computed: no LLM inference/model run (CPU-only QA)",
+        "rpc_calls_proxy_note": "protocol proxy: 1(manifest)+1(need)+chunks_transferred+1(status), not LLM inference RPC",
+        "rpc_calls_proxy_per_sync": 3,
+        "sync_events_per_op": 1,
+        "wire_bytes_rx": 11,
+        "wire_bytes_total": 2093,
+        "wire_bytes_tx": 2082
+      }
+    }
+  },
+  "gpu": false,
+  "loopback_only": true,
+  "mem_stability": {
+    "bound_kb": 65536,
+    "bounded": true,
+    "delta_kb": 352,
+    "file_bytes_each": 524288,
+    "max_kb": 4044,
+    "min_kb": 3692,
+    "pass": true,
+    "rss_samples_kb": [
+      3268,
+      3400,
+      3500,
+      3596,
+      3692,
+      3796,
+      3900,
+      3988,
+      3988,
+      3992,
+      3996,
+      4000,
+      4004,
+      4004,
+      4012,
+      4016,
+      4016,
+      4016,
+      4016,
+      4016,
+      4016,
+      4016,
+      4016,
+      4020,
+      4020,
+      4020,
+      4020,
+      4020,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044,
+      4044
+    ],
+    "transfers": 80
+  },
+  "meta": "FL4-IMPL QA (OpenCode)",
+  "model": false,
+  "network_efficiency_summary": {
+    "always_send_cold_wire_bytes_total_4MiB": 2385967,
+    "bytes_per_generated_token": "NOT MEASURED \u2014 no LLM inference/GPU/model run (CPU-only). Proxy: bytes_per_sync_op and bytes_per_logical_mib reported.",
+    "cold_rpc_calls_proxy_per_sync": 67,
+    "honest_note": "Persistent residency (FL4-IMPL core) absent from current src; reduction % cannot be measured. Warm resend demonstrates chunk-cache hits (0 chunks transferred, wire=manifest/need overhead) under existing always-send session model.",
+    "mode": "v3_always_send_baseline_measured (chunk-cache reuse on warm resend observed)",
+    "v4_persistent_residency_implemented": false,
+    "v4_vs_v3_always_send_reduction_measured": "N/A \u2014 v4 persistent-residency not implemented in feat/fastlink-v4 src (identical to v3 integrate); no residency-vs-always-send delta measurable yet",
+    "warm_resend_cache_hit_rate": 1.0,
+    "warm_resend_chunks_transferred": 0,
+    "warm_resend_wire_bytes_total_4MiB": 2093,
+    "warm_rpc_calls_proxy_per_sync": 3
+  },
+  "pass_fail": {
+    "cache_invalidation": true,
+    "cargo_test": true,
+    "concurrent4": true,
+    "determinism": true,
+    "e4": true,
+    "e5": true,
+    "e6": true,
+    "mem_stability": true,
+    "restart_reconnect": true
+  },
+  "regression": {
+    "cargo_test": {
+      "ok": true,
+      "rc": 0,
+      "tail": "ete_intact ... ok\ntest four_concurrent_clients_transfer_overlapping_and_unique_files_byte_exact_without_cache_corruption ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s\n\n\nrunning 2 tests\ntest public_scheduler_picks_the_reference_split ... ok\ntest memory_budget_eviction_does_not_change_a_committed_output ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s\n\n\nrunning 16 tests\ntest loopback_only_guards ... ok\ntest handshake_magic_mismatch_is_rejected ... ok\ntest invalid_filename_is_rejected_before_any_output ... ok\ntest zero_byte_file_transfers_and_reconstructs ... ok\ntest malformed_manifest_frame_is_rejected ... ok\ntest mid_chunk_disconnect_leaves_no_output ... ok\ntest truncated_transfer_leaves_no_output ... ok\ntest unknown_codec_is_rejected_before_payload_length ... ok\ntest corrupt_chunk_digest_is_rejected_and_no_output ... ok\ntest duplicate_chunks_transferred_once ... ok\ntest single_chunk_delta_only_transfers_missing ... ok\ntest stale_in_progress_is_discarded_not_committed ... ok\ntest cold_transfer_over_tcp ... ok\ntest concurrent_transfers_all_byte_identical ... ok\ntest warm_transfer_reuses_cache ... ok\ntest failed_transfer_never_replaces_prior_output ... ok\n\ntest result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s\n\n\nrunning 3 tests\ntest bounded_queue_enforces_capacity_and_records_backpressure ... ok\ntest mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_full_resend ... ok\ntest send_file_resumable_automatically_recovers_from_mid_transfer_disconnect ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s\n\n\nrunning 3 tests\ntest retry_policy_constants_and_timeout_formula_match_fl3_c3_table ... ok\ntest simulated_link_degradation_forced_timeouts_recover_on_retry_and_resume_by_manifest ... ok\ntest terminal_failure_after_exhausting_retries_and_reconnects_commits_zero_output_bytes ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s\n\n\n   Compiling fastlink v0.1.0 (/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s\n     Running unittests src/lib.rs (target/debug/deps/fastlink-06246cba590b8fd5)\n     Running unittests src/main.rs (target/debug/deps/fastlink-3edd75ce8454bef8)\n     Running tests/codec_adaptive.rs (target/debug/deps/codec_adaptive-7a9efd49b0738e67)\n     Running tests/concurrency_isolation.rs (target/debug/deps/concurrency_isolation-d7f767c28952df85)\n     Running tests/d5_cache_schedule.rs (target/debug/deps/d5_cache_schedule-cf701d1f07205a9b)\n     Running tests/protocol.rs (target/debug/deps/protocol-4a873b8a7f7ed3af)\n     Running tests/resume_and_backpressure.rs (target/debug/deps/resume_and_backpressure-1cfffc19b6993e20)\n     Running tests/retry_policy.rs (target/debug/deps/retry_policy-8efdc47a38a2b08a)\n"
+    },
+    "e4_harness.py": {
+      "ok": true,
+      "rc": 0,
+      "script": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/e4_harness.py",
+      "tail": "[e4] building (debug)...\n[e4] binary: /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/target/release/fastlink\n[e4] cold transfer...\n[e4] warm transfer...\n[e4] delta transfer...\n[e4] codec CPU cost...\n[e4] kill/resume fault test...\n[e4] wrote /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/results/e4_20261108T020743Z.json\n[e4] summary: {\"all_required_pass\": true, \"cold_byte_exact\": true, \"delta_byte_exact\": true, \"kill_resume_byte_exact\": true, \"kill_resume_mid_kill_achieved\": true, \"warm_byte_exact\": true, \"warm_zero_transferred\": true}\n\n"
+    },
+    "e5_harness.py": {
+      "ok": true,
+      "rc": 0,
+      "script": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/e5_harness.py",
+      "tail": "[e5] sustained load (50x1MiB cold+warm, RSS)...\n[e5] concurrent stress probe (cpu-baseline, read-only)...\n[e5] wrote /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/results/e5_20261108T020747Z.json\n[e5] summary: {\"sustained\": {\"cold_all_byte_exact\": true, \"warm_all_byte_exact\": true, \"warm_all_zero_transferred\": true, \"rss_bounded\": true, \"all_pass\": true}, \"concurrent\": {\"all_ok\": true, \"all_byte_exact\": true, \"all_pass\": true}}\n\n"
+    },
+    "e6_harness.py": {
+      "ok": true,
+      "rc": 0,
+      "script": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/e6_harness.py",
+      "tail": "[e6] scenario_a...\n[e6] scenario_b...\n[e6] scenario_c...\n[e6] scenario_d...\n[e6] wrote /home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/results/e6_20261108T020756Z.json\n[e6] summary: {\"all_no_silent_corruption\": true, \"all_ok_status\": true, \"verdicts\": {\"a\": \"byte_exact_retransfer\", \"b\": \"byte_exact_resume\", \"c\": \"clean_fail_order_enforced\", \"d\": \"no_partial_then_byte_exact_resume\"}, \"all_pass\": true}\n\n"
+    },
+    "sim_run": {
+      "ok": true,
+      "rc": 0,
+      "tail": "### python simulation smoke (deterministic re-runs)\nok: sim_placement ran without error (deterministic output)\nok: sim_pipeline ran without error (deterministic output)\nok: sim_faults ran without error (deterministic output)\n\n### model unit tests\nRan 91 tests in 0.314s\n\nOK\n\n"
+    }
+  },
+  "restart_reconnect": {
+    "byte_exact_after_resume": true,
+    "chunks_transferred_on_resume": 16,
+    "killed_at_chunks": 48,
+    "mid_transfer_kill": true,
+    "note": "resync only affected/missing via manifest; others intact (chunk cache preserved)",
+    "pass": true,
+    "resume_ok": true
+  },
+  "timestamp": "2026-11-08T04:07:32+0200"
+}
