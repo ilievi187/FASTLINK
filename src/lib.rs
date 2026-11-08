@@ -3,6 +3,8 @@
 
 use std::io::{self, Read, Write};
 
+pub mod rpc_client;
+
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;
 pub const CHUNK_BYTES: usize = 64 * 1024;
