@@ -55,7 +55,542 @@
       "decode_tps": 35.7,
       "output_head": " The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly",
       "status": "ok"
+    },
+    "A_8192": {
+      "config": "A",
+      "desc": "CPU-only, NightKnightPC",
+      "host": "local",
+      "llama_server_bin": "/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter/build-fl-gpu/bin/llama-server",
+      "bench_client": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/v4/bench_client.py",
+      "model_path": "/mnt/gamez/AI/model-tests/qwen3d-sensenova/Qwen3.5-4B-3D-Coder-Q4_K_M.gguf",
+      "model_sha256": {
+        "sha256": "32c37c83d3ca055d30aefa679f1a1670d3e2eb889ee7cc805792d53f219cfae8",
+        "provenance": "known from docs/v4/MEMORY_BUDGET.md (hash not recomputed this run; use --compute-model-hash to verify)",
+        "known_from_docs": "32c37c83d3ca055d30aefa679f1a1670d3e2eb889ee7cc805792d53f219cfae8"
+      },
+      "llama_cpp_version": {
+        "ok": true,
+        "version_text": "version: 0.8.0-dev (build 6, commit e98cb85)",
+        "raw_head": "version: 0.8.0-dev (build 6, commit e98cb85)\nbuilt with GNU 16.2.1 for Linux x86_64"
+      },
+      "n_predict": 64,
+      "seed": 43,
+      "deterministic_prompt": "SEED_TEXT repeated/detokenized to (target_context - n_predict) tokens; see bench_client.build_prompt",
+      "repetitions_target": 3,
+      "context": 8192,
+      "target_context_tokens": 8192,
+      "server_args": [
+        "/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter/build-fl-gpu/bin/llama-server",
+        "-m",
+        "/mnt/gamez/AI/model-tests/qwen3d-sensenova/Qwen3.5-4B-3D-Coder-Q4_K_M.gguf",
+        "--cache-type-k",
+        "q4_0",
+        "--cache-type-v",
+        "q4_0",
+        "-fa",
+        "on",
+        "-c",
+        "8192",
+        "--threads",
+        "8",
+        "-lv",
+        "2",
+        "--host",
+        "127.0.0.1",
+        "--device",
+        "none",
+        "-ngl",
+        "0",
+        "--port",
+        "8210"
+      ],
+      "kv_cache": {
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0"
+      },
+      "layer_placement": {
+        "host": "local",
+        "ngl": "0",
+        "device": "none",
+        "tensor_split": null,
+        "split_mode": null,
+        "rpc": null,
+        "local_gpu_layers": 0,
+        "remote_gpu_layers": null,
+        "placement_provenance": "parsed from server args; actual loaded layers may differ if --fit adjusts"
+      },
+      "server_env": null,
+      "matrix_validation": {
+        "target_contexts": [
+          8192,
+          32768,
+          65536,
+          131072
+        ],
+        "this_target": 8192,
+        "prompt_target_tokens": 8128,
+        "n_predict_reserved": 64,
+        "deterministic_seed": 42,
+        "note": "actual prompt occupancy validated per repetition by bench_client.prompt_occupancy_ok"
+      },
+      "decode_time_s": 4.299594,
+      "decode_tps": 14.066,
+      "inter_token_latency_ms": {
+        "count": 63,
+        "max": 82.897,
+        "mean": 68.248,
+        "min": 60.526,
+        "p50": 67.443,
+        "p95": 77.861
+      },
+      "output_head": " the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the ",
+      "output_tokens": 64,
+      "prefill_tps": 58.205,
+      "prompt_occupancy_note": "actual=8128 target=8128 (target_context=8192 minus n_predict=64, deterministic seed text)",
+      "prompt_occupancy_ok": true,
+      "prompt_target_tokens": 8128,
+      "prompt_tokens": 8128,
+      "total_s": 144.603824,
+      "ttft_s": 139.644496,
+      "status": "ok",
+      "repetitions_count": 3,
+      "repetitions_ok": 3,
+      "median": {
+        "prompt_tokens": 8128,
+        "output_tokens": 64,
+        "ttft_s": 139.644496,
+        "total_s": 144.131007,
+        "prefill_tps": 58.205,
+        "decode_tps": 14.066,
+        "inter_token_latency_ms_p50": 69.436,
+        "inter_token_latency_ms_p95": 77.861
+      },
+      "repetitions": [
+        {
+          "decode_time_s": 5.218746,
+          "decode_tps": 12.072,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 136.349,
+            "mean": 82.837,
+            "min": 73.349,
+            "p50": 81.779,
+            "p95": 85.411
+          },
+          "output_head": " the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the ",
+          "output_tokens": 64,
+          "prefill_tps": 60.202,
+          "prompt_occupancy_note": "actual=8128 target=8128 (target_context=8192 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 8128,
+          "prompt_tokens": 8128,
+          "seed": 42,
+          "target_context_tokens": 8192,
+          "total_s": 140.237772,
+          "ttft_s": 135.011011,
+          "status": "ok"
+        },
+        {
+          "decode_time_s": 4.299594,
+          "decode_tps": 14.653,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 82.897,
+            "mean": 68.248,
+            "min": 60.526,
+            "p50": 67.443,
+            "p95": 77.861
+          },
+          "output_head": " the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the ",
+          "output_tokens": 64,
+          "prefill_tps": 57.933,
+          "prompt_occupancy_note": "actual=8128 target=8128 (target_context=8192 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 8128,
+          "prompt_tokens": 8128,
+          "seed": 43,
+          "target_context_tokens": 8192,
+          "total_s": 144.603824,
+          "ttft_s": 140.301115,
+          "status": "ok"
+        },
+        {
+          "decode_time_s": 4.478935,
+          "decode_tps": 14.066,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 116.933,
+            "mean": 71.094,
+            "min": 65.972,
+            "p50": 69.436,
+            "p95": 75.171
+          },
+          "output_head": " the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the ",
+          "output_tokens": 64,
+          "prefill_tps": 58.205,
+          "prompt_occupancy_note": "actual=8128 target=8128 (target_context=8192 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 8128,
+          "prompt_tokens": 8128,
+          "seed": 44,
+          "target_context_tokens": 8192,
+          "total_s": 144.131007,
+          "ttft_s": 139.644496,
+          "status": "ok"
+        }
+      ],
+      "inter_token_latency_ms_p50": 69.436,
+      "inter_token_latency_ms_p95": 77.861,
+      "system_ram_before": {
+        "MemTotal_kB": 31900640,
+        "MemFree_kB": 6154212,
+        "MemAvailable_kB": 6693060,
+        "Buffers_kB": 852,
+        "Cached_kB": 1880436,
+        "SwapTotal_kB": 63806088,
+        "SwapFree_kB": 47348204
+      },
+      "system_ram_after": {
+        "MemTotal_kB": 31900640,
+        "MemFree_kB": 3401208,
+        "MemAvailable_kB": 5218244,
+        "Buffers_kB": 832,
+        "Cached_kB": 3163296,
+        "SwapTotal_kB": 63806088,
+        "SwapFree_kB": 42089036
+      },
+      "gpu_vram_before": {
+        "method": "sysfs_drm",
+        "cards": [
+          {
+            "card": "card0",
+            "mem_info_vram_total_B": 536870912,
+            "mem_info_vram_used_B": 16662528,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 14139392
+          },
+          {
+            "card": "card1",
+            "mem_info_vram_total_B": 21458059264,
+            "mem_info_vram_used_B": 19542974464,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 816427008
+          }
+        ],
+        "rocm_smi": {
+          "card0": {
+            "VRAM Total Memory (B)": "21458059264",
+            "VRAM Total Used Memory (B)": "19542974464"
+          },
+          "card1": {
+            "VRAM Total Memory (B)": "536870912",
+            "VRAM Total Used Memory (B)": "16662528"
+          }
+        }
+      },
+      "gpu_vram_after": {
+        "method": "sysfs_drm",
+        "cards": [
+          {
+            "card": "card0",
+            "mem_info_vram_total_B": 536870912,
+            "mem_info_vram_used_B": 16662528,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 14139392
+          },
+          {
+            "card": "card1",
+            "mem_info_vram_total_B": 21458059264,
+            "mem_info_vram_used_B": 19523821568,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 791261184
+          }
+        ],
+        "rocm_smi": {
+          "card0": {
+            "VRAM Total Memory (B)": "21458059264",
+            "VRAM Total Used Memory (B)": "19523821568"
+          },
+          "card1": {
+            "VRAM Total Memory (B)": "536870912",
+            "VRAM Total Used Memory (B)": "16662528"
+          }
+        }
+      }
+    },
+    "A_32768": {
+      "config": "A",
+      "desc": "CPU-only, NightKnightPC",
+      "host": "local",
+      "llama_server_bin": "/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter/build-fl-gpu/bin/llama-server",
+      "bench_client": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v4/qa/v4/bench_client.py",
+      "model_path": "/mnt/gamez/AI/model-tests/qwen3d-sensenova/Qwen3.5-4B-3D-Coder-Q4_K_M.gguf",
+      "model_sha256": {
+        "sha256": "32c37c83d3ca055d30aefa679f1a1670d3e2eb889ee7cc805792d53f219cfae8",
+        "provenance": "known from docs/v4/MEMORY_BUDGET.md (hash not recomputed this run; use --compute-model-hash to verify)",
+        "known_from_docs": "32c37c83d3ca055d30aefa679f1a1670d3e2eb889ee7cc805792d53f219cfae8"
+      },
+      "llama_cpp_version": {
+        "ok": true,
+        "version_text": "version: 0.8.0-dev (build 6, commit e98cb85)",
+        "raw_head": "version: 0.8.0-dev (build 6, commit e98cb85)\nbuilt with GNU 16.2.1 for Linux x86_64"
+      },
+      "n_predict": 64,
+      "seed": 43,
+      "deterministic_prompt": "SEED_TEXT repeated/detokenized to (target_context - n_predict) tokens; see bench_client.build_prompt",
+      "repetitions_target": 3,
+      "context": 32768,
+      "target_context_tokens": 32768,
+      "server_args": [
+        "/mnt/gamez/AI/llama.cpp-fastlink-rpc-adapter/build-fl-gpu/bin/llama-server",
+        "-m",
+        "/mnt/gamez/AI/model-tests/qwen3d-sensenova/Qwen3.5-4B-3D-Coder-Q4_K_M.gguf",
+        "--cache-type-k",
+        "q4_0",
+        "--cache-type-v",
+        "q4_0",
+        "-fa",
+        "on",
+        "-c",
+        "32768",
+        "--threads",
+        "8",
+        "-lv",
+        "2",
+        "--host",
+        "127.0.0.1",
+        "--device",
+        "none",
+        "-ngl",
+        "0",
+        "--port",
+        "8210"
+      ],
+      "kv_cache": {
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0"
+      },
+      "layer_placement": {
+        "host": "local",
+        "ngl": "0",
+        "device": "none",
+        "tensor_split": null,
+        "split_mode": null,
+        "rpc": null,
+        "local_gpu_layers": 0,
+        "remote_gpu_layers": null,
+        "placement_provenance": "parsed from server args; actual loaded layers may differ if --fit adjusts"
+      },
+      "server_env": null,
+      "matrix_validation": {
+        "target_contexts": [
+          8192,
+          32768,
+          65536,
+          131072
+        ],
+        "this_target": 32768,
+        "prompt_target_tokens": 32704,
+        "n_predict_reserved": 64,
+        "deterministic_seed": 42,
+        "note": "actual prompt occupancy validated per repetition by bench_client.prompt_occupancy_ok"
+      },
+      "decode_time_s": 6.927284,
+      "decode_tps": 8.679,
+      "inter_token_latency_ms": {
+        "count": 63,
+        "max": 137.026,
+        "mean": 109.957,
+        "min": 104.074,
+        "p50": 109.661,
+        "p95": 112.211
+      },
+      "output_head": ". The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softl",
+      "output_tokens": 64,
+      "prefill_tps": 29.722,
+      "prompt_occupancy_note": "actual=32704 target=32704 (target_context=32768 minus n_predict=64, deterministic seed text)",
+      "prompt_occupancy_ok": true,
+      "prompt_target_tokens": 32704,
+      "prompt_tokens": 32704,
+      "total_s": 1109.611461,
+      "ttft_s": 1100.322787,
+      "status": "ok",
+      "repetitions_count": 3,
+      "repetitions_ok": 3,
+      "median": {
+        "prompt_tokens": 32704,
+        "output_tokens": 64,
+        "ttft_s": 1100.322787,
+        "total_s": 1107.617855,
+        "prefill_tps": 29.722,
+        "decode_tps": 8.679,
+        "inter_token_latency_ms_p50": 116.243,
+        "inter_token_latency_ms_p95": 120.126
+      },
+      "repetitions": [
+        {
+          "decode_time_s": 7.286354,
+          "decode_tps": 8.646,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 165.71,
+            "mean": 115.656,
+            "min": 100.706,
+            "p50": 116.796,
+            "p95": 120.476
+          },
+          "output_head": ". The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softl",
+          "output_tokens": 64,
+          "prefill_tps": 29.722,
+          "prompt_occupancy_note": "actual=32704 target=32704 (target_context=32768 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 32704,
+          "prompt_tokens": 32704,
+          "seed": 42,
+          "target_context_tokens": 32768,
+          "total_s": 1107.617855,
+          "ttft_s": 1100.322787,
+          "status": "ok"
+        },
+        {
+          "decode_time_s": 6.927284,
+          "decode_tps": 9.094,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 137.026,
+            "mean": 109.957,
+            "min": 104.074,
+            "p50": 109.661,
+            "p95": 112.211
+          },
+          "output_head": ". The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softl",
+          "output_tokens": 64,
+          "prefill_tps": 29.659,
+          "prompt_occupancy_note": "actual=32704 target=32704 (target_context=32768 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 32704,
+          "prompt_tokens": 32704,
+          "seed": 43,
+          "target_context_tokens": 32768,
+          "total_s": 1109.611461,
+          "ttft_s": 1102.674489,
+          "status": "ok"
+        },
+        {
+          "decode_time_s": 7.258799,
+          "decode_tps": 8.679,
+          "inter_token_latency_ms": {
+            "count": 63,
+            "max": 150.144,
+            "mean": 115.219,
+            "min": 105.248,
+            "p50": 116.243,
+            "p95": 120.126
+          },
+          "output_head": ". The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softl",
+          "output_tokens": 64,
+          "prefill_tps": 30.601,
+          "prompt_occupancy_note": "actual=32704 target=32704 (target_context=32768 minus n_predict=64, deterministic seed text)",
+          "prompt_occupancy_ok": true,
+          "prompt_target_tokens": 32704,
+          "prompt_tokens": 32704,
+          "seed": 44,
+          "target_context_tokens": 32768,
+          "total_s": 1075.980084,
+          "ttft_s": 1068.711088,
+          "status": "ok"
+        }
+      ],
+      "inter_token_latency_ms_p50": 116.243,
+      "inter_token_latency_ms_p95": 120.126,
+      "system_ram_before": {
+        "MemTotal_kB": 31900640,
+        "MemFree_kB": 3381264,
+        "MemAvailable_kB": 5212948,
+        "Buffers_kB": 1232,
+        "Cached_kB": 3177224,
+        "SwapTotal_kB": 63806088,
+        "SwapFree_kB": 42102680
+      },
+      "system_ram_after": {
+        "MemTotal_kB": 31900640,
+        "MemFree_kB": 6766384,
+        "MemAvailable_kB": 9018068,
+        "Buffers_kB": 1008,
+        "Cached_kB": 3604332,
+        "SwapTotal_kB": 63806088,
+        "SwapFree_kB": 48963564
+      },
+      "gpu_vram_before": {
+        "method": "sysfs_drm",
+        "cards": [
+          {
+            "card": "card0",
+            "mem_info_vram_total_B": 536870912,
+            "mem_info_vram_used_B": 16662528,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 14139392
+          },
+          {
+            "card": "card1",
+            "mem_info_vram_total_B": 21458059264,
+            "mem_info_vram_used_B": 19523821568,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 791261184
+          }
+        ],
+        "rocm_smi": {
+          "card0": {
+            "VRAM Total Memory (B)": "21458059264",
+            "VRAM Total Used Memory (B)": "19523821568"
+          },
+          "card1": {
+            "VRAM Total Memory (B)": "536870912",
+            "VRAM Total Used Memory (B)": "16662528"
+          }
+        }
+      },
+      "gpu_vram_after": {
+        "method": "sysfs_drm",
+        "cards": [
+          {
+            "card": "card0",
+            "mem_info_vram_total_B": 536870912,
+            "mem_info_vram_used_B": 16662528,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 14139392
+          },
+          {
+            "card": "card1",
+            "mem_info_vram_total_B": 21458059264,
+            "mem_info_vram_used_B": 17756258304,
+            "mem_info_gtt_total_B": 16333127680,
+            "mem_info_gtt_used_B": 209113088
+          }
+        ],
+        "rocm_smi": {
+          "card0": {
+            "VRAM Total Memory (B)": "21458059264",
+            "VRAM Total Used Memory (B)": "17756258304"
+          },
+          "card1": {
+            "VRAM Total Memory (B)": "536870912",
+            "VRAM Total Used Memory (B)": "16662528"
+          }
+        }
+      }
+    },
+    "F_131072": {
+      "status": "ok",
+      "prefill_tps": 40.951,
+      "decode_tps": 18.649,
+      "ttft_s": 3199.16,
+      "prompt_tokens": 131008,
+      "output_tokens": 64
     }
   },
-  "updated_at": "2026-11-08T02:28:12+0200"
+  "updated_at": "2026-11-08T04:02:32+0200",
+  "harness": {
+    "name": "qa/v4/baseline_runner.py (hardened, FL4-HARN)"
+  }
 }
