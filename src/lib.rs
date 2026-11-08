@@ -6,16 +6,27 @@ use std::io::{self, Read, Write};
 pub mod cache_budget;
 pub mod codec;
 pub mod recovery;
+pub mod residency;
 pub mod retry;
 pub mod scheduler;
 pub mod server;
 pub use codec::{
-    codec_name, decode_chunk, encode_chunk_adaptive, encode_lz4, encode_rle, encode_with_codec,
-    encode_zstd, evaluate_codec_candidate, select_codec_measured, synthetic_incompressible_chunk,
-    synthetic_sparse_chunk, synthetic_tensor_like_chunk, AdaptiveCodecChoice,
-    CodecCandidateMetrics, CodecCostPolicy, LZ4, RAW, RLE, ZSTD,
+    codec_name, decode_chunk, decode_v4_chunk, encode_chunk_adaptive, encode_lz4, encode_rle,
+    encode_with_codec, encode_zstd, evaluate_codec_candidate, select_best_stride,
+    select_codec_measured, synthetic_dense_numeric_bytes, synthetic_incompressible_bytes,
+    synthetic_incompressible_chunk, synthetic_sparse_bytes, synthetic_sparse_chunk,
+    synthetic_structured_bytes, synthetic_tensor_like_chunk, AdaptiveCodecChoice,
+    CodecCandidateMetrics, CodecCostPolicy, LZ4, RAW, RLE, V4_MAX_CHUNK_BYTES,
+    V4_MAX_ENCODED_BYTES, ZSTD,
 };
 pub use recovery::{recover_atomic_writes, RecoveryReport};
+pub use residency::{
+    classify_tensor_workload, select_v4_adaptive_plan, send_batch_tcp, sync_decision,
+    v3_always_send_wire_bytes, BatchedSyncFrame, BatchedTensorOp, EncodedChunkUpdate,
+    PersistentTensorRegistry, RemoteWorkerStore, SyncDecision, TensorRegistryEntry, V4AdaptivePlan,
+    V4Cluster, V4LoopbackServer, V4WireAccounting, WorkloadClass, OP_DELTA, OP_FULL, OP_REUSE,
+    V4_BATCH_MAGIC, V4_BATCH_VERSION,
+};
 pub use retry::{
     send_file_with_policy, AttemptFault, FaultInjectionPlan, LinkEstimate, PolicyTransferReport,
     RetryPolicy, NOMINAL_LINK_QUEUE_MS, NOMINAL_LINK_RTT_MS, NOMINAL_LINK_SERIALIZATION_MS,

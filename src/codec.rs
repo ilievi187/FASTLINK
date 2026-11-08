@@ -18,6 +18,11 @@ pub const ZSTD: u8 = 3;
 /// RFC 8878 Zstandard frame magic number (little-endian `0xFD2FB528`).
 pub const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
+/// Maximum logical chunk size supported by the v4 adaptive chunker (`256 KiB`).
+pub const V4_MAX_CHUNK_BYTES: usize = 256 * 1024;
+/// Maximum encoded payload length for a single v4 chunk (`512 KiB`).
+pub const V4_MAX_ENCODED_BYTES: usize = V4_MAX_CHUNK_BYTES * 2;
+
 pub fn codec_name(codec: u8) -> &'static str {
     match codec {
         RAW => "RAW",
@@ -278,7 +283,7 @@ fn untranspose_stride(permuted: &[u8], stride: usize) -> Vec<u8> {
     out
 }
 
-fn select_best_stride(chunk: &[u8]) -> u8 {
+pub fn select_best_stride(chunk: &[u8]) -> u8 {
     let sample_len = chunk.len().min(1024);
     if sample_len < 32 {
         return 1;
@@ -378,6 +383,15 @@ pub fn encode_zstd(chunk: &[u8]) -> Vec<u8> {
 
 /// Decompress a ZSTD-framed chunk with strict header and bounds verification.
 pub fn decode_zstd(bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
+    decode_zstd_with_limit(bytes, expected, CHUNK_BYTES, MAX_ENCODED_BYTES)
+}
+
+fn decode_zstd_with_limit(
+    bytes: &[u8],
+    expected: usize,
+    max_chunk_bytes: usize,
+    max_encoded_bytes: usize,
+) -> io::Result<Vec<u8>> {
     if bytes.len() < 8 {
         return Err(invalid_data("truncated ZSTD frame header"));
     }
@@ -395,7 +409,7 @@ pub fn decode_zstd(bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
     let stage_mode = header_byte & 0x03;
     let declared_len =
         (bytes[5] as usize) | ((bytes[6] as usize) << 8) | ((bytes[7] as usize) << 16);
-    if declared_len != expected || expected > CHUNK_BYTES {
+    if declared_len != expected || expected > max_chunk_bytes {
         return Err(invalid_data("ZSTD frame size mismatch"));
     }
     let payload = &bytes[8..];
@@ -403,11 +417,11 @@ pub fn decode_zstd(bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
         0 => decode_lz4(payload, expected)?,
         1 => decode_rle(payload, expected)?,
         2 => {
-            let rle_bytes = decode_lz4_bounded(payload, MAX_ENCODED_BYTES)?;
+            let rle_bytes = decode_lz4_bounded(payload, max_encoded_bytes)?;
             decode_rle(&rle_bytes, expected)?
         }
         3 => {
-            let lz4_bytes = decode_rle_bounded(payload, MAX_ENCODED_BYTES)?;
+            let lz4_bytes = decode_rle_bounded(payload, max_encoded_bytes)?;
             decode_lz4(&lz4_bytes, expected)?
         }
         _ => return Err(invalid_data("unknown ZSTD stage mode")),
@@ -526,7 +540,28 @@ pub fn encode_with_codec(codec: u8, chunk: &[u8]) -> io::Result<Vec<u8>> {
 /// be at most `2 * expected` bytes before the run loop runs. `expected` cannot
 /// exceed one chunk, and the encoded buffer cannot exceed `MAX_ENCODED_BYTES`.
 pub fn decode_chunk(codec: u8, bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
-    if expected > CHUNK_BYTES || bytes.len() > MAX_ENCODED_BYTES {
+    decode_chunk_with_limit(codec, bytes, expected, CHUNK_BYTES, MAX_ENCODED_BYTES)
+}
+
+/// Decode a v4 chunk up to `V4_MAX_CHUNK_BYTES` (`256 KiB`) with strict bounds enforcement.
+pub fn decode_v4_chunk(codec: u8, bytes: &[u8], expected: usize) -> io::Result<Vec<u8>> {
+    decode_chunk_with_limit(
+        codec,
+        bytes,
+        expected,
+        V4_MAX_CHUNK_BYTES,
+        V4_MAX_ENCODED_BYTES,
+    )
+}
+
+fn decode_chunk_with_limit(
+    codec: u8,
+    bytes: &[u8],
+    expected: usize,
+    max_chunk_bytes: usize,
+    max_encoded_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    if expected > max_chunk_bytes || bytes.len() > max_encoded_bytes {
         return Err(invalid_data("chunk exceeds limit"));
     }
     let decoded = match codec {
@@ -543,7 +578,7 @@ pub fn decode_chunk(codec: u8, bytes: &[u8], expected: usize) -> io::Result<Vec<
             decode_rle(bytes, expected)?
         }
         LZ4 => decode_lz4(bytes, expected)?,
-        ZSTD => decode_zstd(bytes, expected)?,
+        ZSTD => decode_zstd_with_limit(bytes, expected, max_chunk_bytes, max_encoded_bytes)?,
         _ => return Err(invalid_data("unknown codec")),
     };
     if decoded.len() != expected {
@@ -787,8 +822,13 @@ pub fn encode_chunk_adaptive(chunk: &[u8], policy: CodecCostPolicy) -> (u8, Vec<
 
 /// Generate deterministic incompressible synthetic chunk data (`CHUNK_BYTES` bytes).
 pub fn synthetic_incompressible_chunk() -> Vec<u8> {
+    synthetic_incompressible_bytes(CHUNK_BYTES)
+}
+
+/// Generate deterministic incompressible synthetic data of arbitrary `len` bytes.
+pub fn synthetic_incompressible_bytes(len: usize) -> Vec<u8> {
     let mut state = 0x243F_6A88_85A3_08D3u64;
-    (0..CHUNK_BYTES)
+    (0..len)
         .map(|_| {
             // SplitMix64 PRNG
             state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -802,25 +842,42 @@ pub fn synthetic_incompressible_chunk() -> Vec<u8> {
 
 /// Generate deterministic sparse synthetic chunk data (`CHUNK_BYTES` bytes with isolated non-zero values).
 pub fn synthetic_sparse_chunk() -> Vec<u8> {
-    let mut data = vec![0u8; CHUNK_BYTES];
-    data[0] = 1;
-    data[CHUNK_BYTES / 2] = 7;
-    data[CHUNK_BYTES - 1] = 2;
+    synthetic_sparse_bytes(CHUNK_BYTES)
+}
+
+/// Generate deterministic sparse/RLE-friendly synthetic data of arbitrary `len` bytes.
+pub fn synthetic_sparse_bytes(len: usize) -> Vec<u8> {
+    let mut data = vec![0u8; len];
+    if len > 0 {
+        data[0] = 1;
+        data[len / 2] = 7;
+        data[len - 1] = 2;
+    }
     data
 }
 
-/// Generate deterministic tensor-like synthetic chunk data (BF16/FP16 activation tensor with
-/// narrow exponent range `0x3B..=0x3C` at stride 2 and non-periodic low mantissa bytes).
-pub fn synthetic_tensor_like_chunk() -> Vec<u8> {
-    let mut data = Vec::with_capacity(CHUNK_BYTES);
+/// Generate deterministic structured (LZ4-friendly, non-strided) synthetic data of arbitrary `len` bytes.
+pub fn synthetic_structured_bytes(len: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(len);
+    for i in 0..len {
+        let block = i / 32;
+        let offset = i % 32;
+        data.push(((offset * 19 + (block % 8) * 5) & 0xFF) as u8);
+    }
+    data
+}
+
+/// Generate deterministic dense numeric tensor data of arbitrary `len` bytes
+/// (BF16/FP16 strided numeric tensor where byte-lane transpose + ZSTD entropy stage wins).
+pub fn synthetic_dense_numeric_bytes(len: usize) -> Vec<u8> {
+    let mut data = Vec::with_capacity(len);
     let mut state = 0x1357_9BDF_2468_ACE0u64;
-    for i in 0..(CHUNK_BYTES / 2) {
+    let pairs = len / 2;
+    for i in 0..pairs {
         state = state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        // Quantized BF16 mantissa with high-frequency per-element variation
         let mantissa = (((state >> 32) as u8) & 0xFC) ^ ((i % 7) as u8);
-        // Channel-clustered BF16 exponent (e.g. 0x3C for [1.0, 2.0), 0x3B for [0.5, 1.0))
         let exponent = if (i / 64).is_multiple_of(3) {
             0x3Bu8
         } else {
@@ -829,7 +886,16 @@ pub fn synthetic_tensor_like_chunk() -> Vec<u8> {
         data.push(mantissa);
         data.push(exponent);
     }
+    if !len.is_multiple_of(2) {
+        data.push(0x3C);
+    }
     data
+}
+
+/// Generate deterministic tensor-like synthetic chunk data (BF16/FP16 activation tensor with
+/// narrow exponent range `0x3B..=0x3C` at stride 2 and non-periodic low mantissa bytes).
+pub fn synthetic_tensor_like_chunk() -> Vec<u8> {
+    synthetic_dense_numeric_bytes(CHUNK_BYTES)
 }
 
 #[cfg(test)]
