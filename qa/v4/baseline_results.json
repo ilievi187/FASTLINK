@@ -5,9 +5,57 @@
       "desc": "single GPU RX 6600 XT (detti, ~7GB free)",
       "context": 8192,
       "n_predict": 64,
-      "status": "error",
-      "error": "detti server on :8212 not healthy after 180s"
+      "prompt_tokens": 8128,
+      "output_tokens": 65,
+      "ttft_s": 21.3287,
+      "total_s": 22.3176,
+      "prefill_tps": 381.1,
+      "decode_tps": 64.7,
+      "output_head": " the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the ",
+      "status": "ok"
+    },
+    "C_32768": {
+      "config": "C",
+      "desc": "single GPU RX 6600 XT (detti, ~7GB free)",
+      "context": 32768,
+      "n_predict": 64,
+      "prompt_tokens": 24801,
+      "output_tokens": 65,
+      "ttft_s": 157.0257,
+      "total_s": 158.1318,
+      "prefill_tps": 157.9,
+      "decode_tps": 57.9,
+      "output_head": " The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly",
+      "status": "ok"
+    },
+    "C_65536": {
+      "config": "C",
+      "desc": "single GPU RX 6600 XT (detti, ~7GB free)",
+      "context": 65536,
+      "n_predict": 64,
+      "prompt_tokens": 62001,
+      "output_tokens": 65,
+      "ttft_s": 909.0328,
+      "total_s": 910.419,
+      "prefill_tps": 68.2,
+      "decode_tps": 46.2,
+      "output_head": " The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly",
+      "status": "ok"
+    },
+    "C_131072": {
+      "config": "C",
+      "desc": "single GPU RX 6600 XT (detti, ~7GB free)",
+      "context": 131072,
+      "n_predict": 64,
+      "prompt_tokens": 124001,
+      "output_tokens": 65,
+      "ttft_s": 3545.0475,
+      "total_s": 3546.8396,
+      "prefill_tps": 35.0,
+      "decode_tps": 35.7,
+      "output_head": " The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly across the open meadow at the edge of the quiet valley. The quick brown fox jumps over the lazy dog near the river bank while the wind blows softly",
+      "status": "ok"
     }
   },
-  "updated_at": "2026-11-08T01:06:06+0200"
+  "updated_at": "2026-11-08T02:28:12+0200"
 }
