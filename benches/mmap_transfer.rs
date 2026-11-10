@@ -262,7 +262,6 @@ fn bench_mmap_latency() -> LatencyPercentiles {
     p
 }
 
-#[cfg(unix)]
 fn bench_mmap_throughput(label: &str, tensor: &[u8]) -> f64 {
     let shm_name = "/fastlink_bench_tp_8m";
     let len = tensor.len();
