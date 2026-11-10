@@ -62,3 +62,31 @@ correctness — not an end-to-end RPC transfer or a performance claim.
 connection; latency and throughput exclude connection setup. No `llama.cpp`
 adapter process was started, so this is a transport measurement, not an
 end-to-end RPC transfer or a GPU performance claim.
+
+## 2026-11-10 — O-3 async Pool + batched bench, transport review + benchmark refresh
+
+- Reviewed `src/transport.rs`: `send_tensor`/`receive_tensor` over loopback TCP,
+  framed with the existing `frame_tensor`, single `write_all`, per-chunk
+  `decode_chunk` verification. Correctness confirmed: header order matches,
+  `count == chunk_count(total_len)` validated, `encoded_len` bounds-checked
+  (1..=MAX_ENCODED_BYTES), unknown codec / odd RLE / size-mismatch all rejected,
+  truncated read returns `Underflow`. Edge cases: empty tensor rejected by
+  `frame_tensor`; `total_len == 0` early-returned; trailing bytes after `count`
+  chunks are ignored (acceptable). Perf: preallocated `wire` Vec, coalesced write,
+  `Pool::batch_send` amortises the 12-byte header + 5-byte per-chunk header across
+  multiple tensors.
+- Known WIP: `benches/rpc_latency_batched.rs` has clippy findings (unused
+  `CHUNK_BYTES` import, unused `mut` on a connect sock) and the ack is read on a
+  freshly connected `sock` while data is sent on the pool client, so the batched
+  bench can hang waiting for the ACK; these are pre-existing, not touched here.
+- Refreshed transport latency/throughput numbers in
+  `docs/BENCHMARKS.md` and `README.md` (added a Raw TCP vs framed comparison);
+  numbers come from one loopback machine and are not a guarantee.
+
+**Measured (optimized bench, loopback, single connection):** single-chunk RTT
+(framed) min 0.093 / median 0.099 / mean 0.107 ms; 8 MiB RAW wire 603.5 MB/s with
++652 B overhead; 8 MiB RLE wire 15.9 MB/s. Raw TCP streaming is ~10× higher
+throughput (skips framing/hash/decode).
+
+**Explicit limitation:** loopback only, unauthenticated, unencrypted; transport
+measurement, not an end-to-end RPC or GPU claim. Batched `Pool` numbers pending.

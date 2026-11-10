@@ -57,6 +57,13 @@ A local test with an 8 MiB mostly-zero file gave:
 
 SHA-256 matched the reconstructed file. **These figures exclude chunk manifests, framing, TCP headers, and local hashing costs.** They are NOT representative of high-entropy activations or AI inference throughput. See [Benchmarks](docs/BENCHMARKS.md).
 
+The transport benchmark in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) compares the
+FASTLINK framed transport against a bare raw-TCP `write_all` on the same loopback
+machine. The framed path adds ~652 B of per-tensor overhead (12-byte tensor header
++ 128 x 5-byte chunk headers) over raw for incompressible data; raw TCP streaming
+is ~10x higher throughput because it skips framing, content-addressing and decode.
+See the full latency/throughput table there.
+
 ## Why this exists
 
 A naive distributed execution system may repeatedly transfer inputs, weights, metadata, and intermediate buffers. FASTLINK explores ways to avoid transfers through content-addressing, locality, delta updates, selective compression, and eventually scheduling and graph replay. Compression only wins when it reduces **total execution time**.
