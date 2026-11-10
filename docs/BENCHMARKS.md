@@ -72,27 +72,27 @@ is still WIP.
 one machine, so not a performance guarantee. The batched `Pool` measurement is
 in progress (see PROGRESS.md).
 
-## 2026-11-10 23:00 +02:00 — Canonical loopback snapshot
+## 2026-11-10 23:27 +02:00 — Canonical loopback snapshot
 
-Snapshot ID: `rpc-latency-linux-2026-11-10-230038-76e77cc`; machine-readable
+Snapshot ID: `rpc-latency-linux-2026-11-10-232742-db55920`; machine-readable
 results: [`benches/results_rpc_latency.json`](../benches/results_rpc_latency.json);
 raw stdout: [`benches/results_rpc_latency_20261110.txt`](../benches/results_rpc_latency_20261110.txt).
 This run used Linux x86_64, AMD Ryzen 7 7800X3D, rustc 1.99.0, source commit
-`76e77cc262abc8e663c6c2f8f6074706185d74fc`.
+`db559208d5cb3ae4354665f59d2745fe3daa5bc0`.
 
 | Measurement | Result |
 | --- | ---: |
-| Single-chunk RTT, 64 KiB, raw TCP (min / median / mean) | 0.018 / 0.020 / 0.020 ms |
-| Single-chunk RTT, 64 KiB, framed RAW (min / median / mean) | 0.090 / 0.095 / 0.100 ms |
-| 8 MiB patterned raw TCP throughput | 8,401.5 MB/s |
-| 8 MiB patterned FASTLINK RAW (raw-equivalent / wire) | 547.2 / 547.2 MB/s |
+| Single-chunk RTT, 64 KiB, raw TCP (min / median / mean) | 0.017 / 0.020 / 0.021 ms |
+| Single-chunk RTT, 64 KiB, framed RAW (min / median / mean) | 0.093 / 0.101 / 0.106 ms |
+| 8 MiB patterned raw TCP throughput | 8,103.0 MB/s |
+| 8 MiB patterned FASTLINK RAW (raw-equivalent / wire) | 601.6 / 601.6 MB/s |
 | Patterned wire bytes per tensor (raw / FASTLINK) | 8,388,608 / 8,389,260 B (+652 B, +0.0078%) |
-| 8 MiB uniform raw TCP throughput | 8,293.6 MB/s |
-| 8 MiB uniform FASTLINK RLE (raw-equivalent / wire) | 2,030.5 / 16.1 MB/s |
+| 8 MiB uniform raw TCP throughput | 8,014.9 MB/s |
+| 8 MiB uniform FASTLINK RLE (raw-equivalent / wire) | 1,960.6 / 15.6 MB/s |
 | Uniform wire bytes per tensor (raw / FASTLINK) | 8,388,608 / 66,700 B (−99.20%) |
-| TCP connection setup (client connect) | 0.027 ms |
+| TCP connection setup (client connect) | 0.039 ms |
 
-Raw TCP's patterned throughput was 15.4× the FASTLINK framed path in this one
+Raw TCP's patterned throughput was 13.5× the FASTLINK framed path in this one
 run. This is not a speedup guarantee: raw TCP skips chunk hashing, framing,
 codec/decode work. RLE raw-equivalent MB/s divides original uncompressed bytes
 by elapsed time; wire MB/s divides encoded wire bytes by elapsed time. Decimal

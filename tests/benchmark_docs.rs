@@ -1,5 +1,5 @@
-const SNAPSHOT_ID: &str = "rpc-latency-linux-2026-11-10-232427-2e3254a";
-const SHARED_VALUES: &[&str] = &["8,329.0 MB/s", "607.8 MB/s", "13.7×"];
+const SNAPSHOT_ID: &str = "rpc-latency-linux-2026-11-10-232742-db55920";
+const SHARED_VALUES: &[&str] = &["8,103.0 MB/s", "601.6 MB/s", "13.5×"];
 
 fn assert_snapshot_is_published(name: &str, text: &str) {
     assert!(
@@ -34,11 +34,11 @@ fn canonical_transport_snapshot_matches_all_current_reports() {
 
     for expected in [
         SNAPSHOT_ID,
-        "8329.0",
-        "607.8",
-        "6865.5",
-        "1896.7",
-        "0.099",
+        "8103.0",
+        "601.6",
+        "8014.9",
+        "1960.6",
+        "0.101",
         "66700",
     ] {
         assert!(
@@ -47,9 +47,9 @@ fn canonical_transport_snapshot_matches_all_current_reports() {
         );
     }
     for expected in [
-        "throughput=8329.0",
-        "raw=607.8 MB/s",
-        "wire=607.9 MB/s",
+        "throughput=8103.0",
+        "raw=601.6 MB/s",
+        "wire=601.6 MB/s",
         "wire_bytes_per_tensor=66700",
     ] {
         assert!(
