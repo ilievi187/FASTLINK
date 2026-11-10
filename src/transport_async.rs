@@ -35,10 +35,7 @@
 use std::io::{self, Read, Write};
 use std::sync::Mutex;
 
-use crate::{
-    expected_chunk_len, decode_chunk, MAX_ENCODED_BYTES,
-    rpc_client::frame_tensor,
-};
+use crate::{decode_chunk, expected_chunk_len, rpc_client::frame_tensor, MAX_ENCODED_BYTES};
 
 /// Server acknowledgment byte sent after a successful `batch_send`.
 pub const ACK: u8 = 0;
@@ -194,8 +191,7 @@ impl Pool {
     /// This is the sync version; use `batch_send_async` for async I/O.
     pub fn batch_send(&self, tensors: &[&[u8]]) -> io::Result<usize> {
         let mut guard = self.clients.lock().unwrap();
-        let idx = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % guard.len();
+        let idx = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % guard.len();
         let client = guard.get_mut(idx).unwrap();
         client.batch_send(tensors)
     }

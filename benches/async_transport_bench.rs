@@ -4,8 +4,8 @@
 //!
 //! Built with: cargo bench --features rpc-v3-transport
 
-use fastlink::CHUNK_BYTES;
 use fastlink::rpc_client::frame_tensor;
+use fastlink::CHUNK_BYTES;
 
 const BATCH_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
 const TENSOR_BYTES: usize = 8 * 1024 * 1024;
