@@ -20,6 +20,9 @@ jobs:
         run: cargo build --all-targets
       - name: Test
         run: cargo test --all-targets
+      - name: Doc coherence (M-5)
+        if: runner.os == 'Linux'
+        run: cargo test --all-targets
       - name: Transport benchmark smoke test
         if: runner.os == 'Linux'
         run: cargo bench --bench rpc_latency

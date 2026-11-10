@@ -128,3 +128,9 @@ For a comparable loopback remeasurement:
    snapshot against README, this file, PROGRESS.md, RESULTS.md, and the harness
    constants. CI also runs `cargo bench --bench rpc_latency` on Ubuntu to verify
    the loopback harness executes; its timing is not compared against this host.
+
+9. CI's `cargo test --all-targets` runs the dedicated `tests/benchmark_docs.rs`
+   test (`canonical_transport_snapshot_matches_all_current_reports`), which asserts
+   the canonical snapshot `rpc-latency-linux-2026-11-10-232742-db55920` values are
+   present across `README.md`, `docs/BENCHMARKS.md`, `PROGRESS.md`, and `RESULTS.md`;
+   the same snapshot's source commit is `db559208d5cb3ae4354665f59d2745fe3daa5bc0`.
