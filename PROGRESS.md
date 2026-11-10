@@ -83,10 +83,6 @@ end-to-end RPC transfer or a GPU performance claim.
   `docs/BENCHMARKS.md` and `README.md` (added a Raw TCP vs framed comparison);
   numbers come from one loopback machine and are not a guarantee.
 
-**Measured (optimized bench, loopback, single connection):** single-chunk RTT
-(framed) min 0.093 / median 0.099 / mean 0.107 ms; 8 MiB RAW wire 603.5 MB/s with
-+652 B overhead; 8 MiB RLE wire 15.9 MB/s. Raw TCP streaming is ~10× higher
-throughput (skips framing/hash/decode).
+**Measured (canonical optimized loopback snapshot `rpc-latency-linux-2026-11-10-224820-8fc776c`):** raw/framed 64 KiB RTT min/median/mean 0.016/0.018/0.019 and 0.093/0.102/0.108 ms; patterned 8 MiB raw TCP 8,605.5 MB/s vs FASTLINK RAW 564.9 MB/s raw-equivalent / 565.0 MB/s wire (+652 B); uniform raw TCP 7,758.1 MB/s vs FASTLINK RLE 1,869.6 MB/s raw-equivalent / 14.9 MB/s wire; connection setup0.033ms. Single local Linux run, no speed guarantee or GPU/inference claim. Full provenance and methodology in `benches/results_rpc_latency.json` and `docs/BENCHMARKS.md`.
 
-**Explicit limitation:** loopback only, unauthenticated, unencrypted; transport
-measurement, not an end-to-end RPC or GPU claim. Batched `Pool` numbers pending.
+**Explicit limitation:** loopback only, unauthenticated, unencrypted; single TCP connection per scenario. Transport measurement, not end-to-end RPC or GPU result. Batched `Pool` numbers pending.

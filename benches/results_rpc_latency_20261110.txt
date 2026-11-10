@@ -1,0 +1,17 @@
+FASTLINK-RPC/1 Transport vs Raw TCP Benchmark
+chunk_bytes=65536 tensor_bytes=8388608
+
+--- [1] Single-Chunk Round-Trip Latency (64 KiB) ---
+single-chunk RTT (Raw TCP): payload=65536 B rounds=500 min=0.016 ms median=0.018 ms mean=0.019 ms
+single-chunk RTT: payload=65536 B rounds=500 min=0.093 ms median=0.102 ms mean=0.108 ms
+
+--- [2] 8 MiB Patterned Incompressible Throughput ---
+Raw TCP streaming (patterned): rounds=32 elapsed=31.19 ms throughput=8605.5 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RAW codec): rounds=32 elapsed=475.16 ms raw=564.9 MB/s wire=565.0 MB/s wire_bytes_per_tensor=8389260 raw_bytes_per_tensor=8388608 delta_bytes=652
+
+--- [3] 8 MiB Uniform Compressible Throughput ---
+Raw TCP streaming (uniform): rounds=32 elapsed=34.60 ms throughput=7758.1 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RLE codec): rounds=32 elapsed=143.58 ms raw=1869.6 MB/s wire=14.9 MB/s wire_bytes_per_tensor=66700 raw_bytes_per_tensor=8388608 delta_bytes=-8321908
+
+--- [4] Connection Setup Cost ---
+connection setup (client connect): 0.033 ms

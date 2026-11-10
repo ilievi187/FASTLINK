@@ -1,10 +1,13 @@
 //! Lightweight loopback TCP transport for FASTLINK-RPC/1 framed tensors.
 //!
-//! This module adds no codec logic and no dependency. [`send_tensor`] frames a
-//! tensor with the existing [`crate::rpc_client::frame_tensor`] and writes the
-//! FASTLINK-RPC/1 adapter payloads over one TCP connection; [`receive_tensor`]
-//! reads the same records back, reconstructs the tensor and verifies every
-//! chunk while decoding it.
+//! This transport currently bounds-checks frame lengths, codec payloads and decoded
+chunk sizes, but its wire format carries **no BLAKE3 chunk identity**. It therefore
+does not verify chunk-content integrity or authenticate the peer. The per-chunk
+BLAKE3 identifiers produced during framing are not sent. The module adds no codec
+logic and no dependency. [`send_tensor`] frames with the existing
+[`crate::rpc_client::frame_tensor`] and writes the FASTLINK-RPC/1 adapter payloads
+over one TCP connection; [`receive_tensor`] reads the records and checks their
+bounded decoding and lengths.
 //!
 //! Wire layout (all integers little-endian):
 //!

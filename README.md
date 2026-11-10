@@ -57,12 +57,11 @@ A local test with an 8 MiB mostly-zero file gave:
 
 SHA-256 matched the reconstructed file. **These figures exclude chunk manifests, framing, TCP headers, and local hashing costs.** They are NOT representative of high-entropy activations or AI inference throughput. See [Benchmarks](docs/BENCHMARKS.md).
 
-The transport benchmark in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) compares the
-FASTLINK framed transport against a bare raw-TCP `write_all` on the same loopback
-machine. The framed path adds ~652 B of per-tensor overhead (12-byte tensor header
-+ 128 x 5-byte chunk headers) over raw for incompressible data; raw TCP streaming
-is ~10x higher throughput because it skips framing, content-addressing and decode.
-See the full latency/throughput table there.
+The latest checked-in loopback snapshot (`rpc-latency-linux-2026-11-10-224820-8fc776c`)
+measured raw TCP at 8,605.5 MB/s and FASTLINK RAW at 564.9 MB/s for one
+patterned 8 MiB tensor (about 15.2× in this single run). FASTLINK added 652 B of
+framing. This is one Linux loopback measurement, not an inference, LAN/WAN, or
+performance guarantee; use [the reproducibility checklist and full table](docs/BENCHMARKS.md).
 
 ## Why this exists
 

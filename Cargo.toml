@@ -24,8 +24,14 @@ rpc-v3-transport = ["tokio/rt"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+libc = "0.2"
 
 [[bench]]
 name = "rpc_latency_batched"
+harness = false
+test = false
+
+[[bench]]
+name = "mmap_transfer"
 harness = false
 test = false
