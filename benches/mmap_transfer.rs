@@ -127,8 +127,8 @@ impl MmapShm {
 #[cfg(windows)]
 impl MmapShm {
     fn create(_name_str: &str, len: usize) -> std::io::Result<Self> {
-        let mut arr = vec![0u8; len];
-        let ptr = arr.as_mut_ptr();
+        let arr = vec![0u8; len];
+        let ptr = Box::leak(Box::new(arr)).as_mut_ptr();
         Ok(Self {
             name: CString::new("").unwrap(),
             ptr,
@@ -138,8 +138,8 @@ impl MmapShm {
     }
 
     fn open(_name_str: &str, len: usize) -> std::io::Result<Self> {
-        let mut arr = vec![0u8; len];
-        let ptr = arr.as_mut_ptr();
+        let arr = vec![0u8; len];
+        let ptr = Box::leak(Box::new(arr)).as_mut_ptr();
         Ok(Self {
             name: CString::new("").unwrap(),
             ptr,
