@@ -6,6 +6,11 @@ use std::io::{self, Read, Write};
 pub mod rpc_client;
 pub mod transport;
 
+#[cfg(feature = "rpc-v3-transport")]
+mod transport_async;
+#[cfg(feature = "rpc-v3-transport")]
+pub use transport_async::{AsyncClient, Pool, ACK};
+
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;
 pub const CHUNK_BYTES: usize = 64 * 1024;
