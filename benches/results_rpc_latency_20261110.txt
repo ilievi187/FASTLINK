@@ -6,17 +6,17 @@ chunk_bytes=65536 tensor_bytes=8388608
 ============================================================
 
 --- [1] Single-Chunk Round-Trip Latency (64 KiB) ---
-single-chunk RTT (Raw TCP): payload=65536 B rounds=500 min=0.018 ms median=0.020 ms mean=0.020 ms
-single-chunk RTT: payload=65536 B rounds=500 min=0.090 ms median=0.095 ms mean=0.100 ms
+single-chunk RTT (Raw TCP): payload=65536 B rounds=500 min=0.017 ms median=0.020 ms mean=0.021 ms
+single-chunk RTT: payload=65536 B rounds=500 min=0.093 ms median=0.101 ms mean=0.106 ms
 
 --- [2] 8 MiB Patterned Incompressible Throughput ---
-Raw TCP streaming (patterned): rounds=32 elapsed=31.95 ms throughput=8401.5 MB/s bytes_per_tensor=8388608
-FASTLINK framed (RAW codec)  : rounds=32 elapsed=490.58 ms raw=547.2 MB/s wire=547.2 MB/s wire_bytes_per_tensor=8389260 raw_bytes_per_tensor=8388608 delta_bytes=652
+Raw TCP streaming (patterned): rounds=32 elapsed=33.13 ms throughput=8103.0 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RAW codec)  : rounds=32 elapsed=446.20 ms raw=601.6 MB/s wire=601.6 MB/s wire_bytes_per_tensor=8389260 raw_bytes_per_tensor=8388608 delta_bytes=652
 
 --- [3] 8 MiB Uniform Compressible Throughput ---
-Raw TCP streaming (uniform)  : rounds=32 elapsed=32.37 ms throughput=8293.6 MB/s bytes_per_tensor=8388608
-FASTLINK framed (RLE codec)  : rounds=32 elapsed=132.20 ms raw=2030.5 MB/s wire=16.1 MB/s wire_bytes_per_tensor=66700 raw_bytes_per_tensor=8388608 delta_bytes=-8321908
+Raw TCP streaming (uniform)  : rounds=32 elapsed=33.49 ms throughput=8014.9 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RLE codec)  : rounds=32 elapsed=136.91 ms raw=1960.6 MB/s wire=15.6 MB/s wire_bytes_per_tensor=66700 raw_bytes_per_tensor=8388608 delta_bytes=-8321908
 
 --- [4] Connection Setup Cost ---
-connection setup (client connect): 0.027 ms
+connection setup (client connect): 0.039 ms
 ============================================================

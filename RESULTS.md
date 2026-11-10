@@ -105,22 +105,23 @@ The older comparison below is from `cargo bench --bench mmap_transfer` (64 KiB c
 This is a different harness and measurement run from the `mmap_transfer` table above.
 The earlier report's JSON does not record its host/kernel/CPU, so host identity
 cannot be confirmed from that artifact. Snapshot
-`rpc-latency-linux-2026-11-10-230038-76e77cc` ran `cargo bench --bench rpc_latency`
-on Linux x86_64 / AMD Ryzen 7 7800X3D / rustc 1.99.0. Its machine-readable data
+`rpc-latency-linux-2026-11-10-232427-2e3254a` ran `cargo bench --bench rpc_latency`
+on Linux x86_64 / AMD Ryzen 7 7800X3D / rustc 1.99.0, at source commit
+`2e3254a0928879b992f4ae3f962c8e991f32f2a9`. Its machine-readable data
 is `benches/results_rpc_latency.json`; captured benchmark stdout is
 `benches/results_rpc_latency_20261110.txt`.
 
 | Measurement | Result |
 |---|---:|
-| 64 KiB RTT median, raw TCP / framed RAW | 0.020 / 0.095 ms |
-| 8 MiB patterned raw TCP / FASTLINK RAW (raw-equivalent) | 8,401.5 MB/s / 547.2 MB/s |
-| Patterned FASTLINK wire throughput | 547.2 MB/s |
+| 64 KiB RTT median, raw TCP / framed RAW | 0.018 / 0.099 ms |
+| 8 MiB patterned raw TCP / FASTLINK RAW (raw-equivalent) | 8,329.0 MB/s / 607.8 MB/s |
+| Patterned FASTLINK wire throughput | 607.9 MB/s |
 | FASTLINK framing overhead per patterned tensor | +652 B |
-| 8 MiB uniform raw TCP / FASTLINK RLE (raw-equivalent) | 8,293.6 / 2,030.5 MB/s |
-| Uniform FASTLINK wire throughput | 16.1 MB/s |
+| 8 MiB uniform raw TCP / FASTLINK RLE (raw-equivalent) | 6,865.5 / 1,896.7 MB/s |
+| Uniform FASTLINK wire throughput | 15.1 MB/s |
 | Uniform encoded bytes per tensor | 66,700 B |
 
-The raw/framed patterned throughput ratio was 15.4× in this one loopback run; it
+The raw/framed patterned throughput ratio was 13.7× in this one loopback run; it
 is not a performance guarantee. This harness does not exercise a GPU, actual
 `llama.cpp` RPC, LAN/WAN networking, multiple clients, or per-chunk integrity
 verification. Full measurement definitions and repeatability guidance are in

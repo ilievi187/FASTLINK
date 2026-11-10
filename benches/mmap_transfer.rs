@@ -16,8 +16,10 @@ use fastlink::CHUNK_BYTES;
 use std::ffi::CString;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};

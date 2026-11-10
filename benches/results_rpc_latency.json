@@ -1,7 +1,7 @@
 {
-  "snapshot_id": "rpc-latency-linux-2026-11-10-230038-76e77cc",
-  "timestamp_local": "2026-11-10T23:00:38+02:00",
-  "source_commit": "76e77cc262abc8e663c6c2f8f6074706185d74fc",
+  "snapshot_id": "rpc-latency-linux-2026-11-10-232742-db55920",
+  "timestamp_local": "2026-11-10T23:27:42+02:00",
+  "source_commit": "db559208d5cb3ae4354665f59d2745fe3daa5bc0",
   "command": "cargo bench --bench rpc_latency",
   "profile": "optimized Cargo bench profile",
   "host": {
@@ -24,19 +24,19 @@
     "units": "decimal MB/s (10^6 bytes/s)"
   },
   "measurements": {
-    "raw_tcp_patterned_rtt_ms": {"min": 0.018, "median": 0.020, "mean": 0.020},
-    "fastlink_patterned_rtt_ms": {"min": 0.090, "median": 0.095, "mean": 0.100},
-    "raw_tcp_patterned_throughput_mbs": 8401.5,
-    "fastlink_patterned_raw_throughput_mbs": 547.2,
-    "fastlink_patterned_wire_throughput_mbs": 547.2,
-    "raw_tcp_uniform_throughput_mbs": 8293.6,
-    "fastlink_uniform_raw_equivalent_throughput_mbs": 2030.5,
-    "fastlink_uniform_wire_throughput_mbs": 16.1,
+    "raw_tcp_patterned_rtt_ms": {"min": 0.017, "median": 0.020, "mean": 0.021},
+    "fastlink_patterned_rtt_ms": {"min": 0.093, "median": 0.101, "mean": 0.106},
+    "raw_tcp_patterned_throughput_mbs": 8103.0,
+    "fastlink_patterned_raw_throughput_mbs": 601.6,
+    "fastlink_patterned_wire_throughput_mbs": 601.6,
+    "raw_tcp_uniform_throughput_mbs": 8014.9,
+    "fastlink_uniform_raw_equivalent_throughput_mbs": 1960.6,
+    "fastlink_uniform_wire_throughput_mbs": 15.6,
     "patterned_raw_bytes_per_tensor": 8388608,
     "patterned_fastlink_wire_bytes_per_tensor": 8389260,
     "uniform_raw_bytes_per_tensor": 8388608,
     "uniform_fastlink_wire_bytes_per_tensor": 66700,
-    "connection_setup_ms": 0.027
+    "connection_setup_ms": 0.039
   },
   "limitations": [
     "Single Linux loopback host and single TCP connection; not a LAN/WAN or multi-client result.",
