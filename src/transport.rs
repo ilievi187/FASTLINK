@@ -92,7 +92,13 @@ pub fn receive_tensor(sock: &mut TcpStream) -> io::Result<Vec<u8>> {
         ));
     }
 
-    let mut tensor = Vec::new();
+    let total_len_usize = usize::try_from(total_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "tensor exceeds memory address space",
+        )
+    })?;
+    let mut tensor = Vec::with_capacity(total_len_usize);
     for index in 0..count {
         let codec = read_u8(sock)?;
         let encoded_len = read_u32(sock)? as usize;
