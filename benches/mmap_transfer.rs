@@ -54,6 +54,7 @@ struct MmapShm {
 unsafe impl Send for MmapShm {}
 unsafe impl Sync for MmapShm {}
 
+#[cfg(unix)]
 impl MmapShm {
     fn create(name_str: &str, len: usize) -> std::io::Result<Self> {
         let name = CString::new(name_str).unwrap();
@@ -123,6 +124,7 @@ impl MmapShm {
     }
 }
 
+#[cfg(unix)]
 impl Drop for MmapShm {
     fn drop(&mut self) {
         unsafe {
@@ -131,6 +133,11 @@ impl Drop for MmapShm {
             libc::shm_unlink(self.name.as_ptr());
         }
     }
+}
+
+#[cfg(windows)]
+impl Drop for MmapShm {
+    fn drop(&mut self) {}
 }
 
 // -----------------------------------------------------------------------------
