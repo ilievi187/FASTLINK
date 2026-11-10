@@ -14,6 +14,7 @@ FASTLINK is an **independent, Apache-2.0-licensed FOSS research project** for st
 - Simple adaptive RAW/RLE encoding, selected only when smaller. More general codecs are planned.
 - Versioned binary wire format and bounded decode sizes.
 - Local-only server, with explicit protection against accidental network exposure.
+- Loopback TCP transport for framed tensors with a single-chunk latency and 8 MiB throughput bench.
 - Linux and Windows builds from one Rust codebase.
 - Unit tests and a three-stage local transfer demonstration.
 
@@ -55,6 +56,13 @@ A local test with an 8 MiB mostly-zero file gave:
 | One-byte change | 1 | 518 |
 
 SHA-256 matched the reconstructed file. **These figures exclude chunk manifests, framing, TCP headers, and local hashing costs.** They are NOT representative of high-entropy activations or AI inference throughput. See [Benchmarks](docs/BENCHMARKS.md).
+
+The latest checked-in loopback snapshot (`rpc-latency-linux-2026-11-10-232742-db55920`)
+measured raw TCP at 8,103.0 MB/s and FASTLINK RAW at 601.6 MB/s for one patterned
+8 MiB tensor (13.5× in this single run). FASTLINK added 652 B of framing; 64 KiB
+median RTT was 0.020 ms raw / 0.101 ms framed. This is one Linux loopback
+measurement, not an inference, LAN/WAN, or performance guarantee; use [the
+reproducibility checklist and full table](docs/BENCHMARKS.md).
 
 ## Why this exists
 

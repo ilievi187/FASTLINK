@@ -1,0 +1,22 @@
+    Finished `bench` profile [optimized] target(s) in 0.01s
+     Running benches/rpc_latency.rs (target/release/deps/rpc_latency-076ecf0c877b7455)
+============================================================
+FASTLINK-RPC/1 Transport vs Raw TCP Benchmark
+chunk_bytes=65536 tensor_bytes=8388608
+============================================================
+
+--- [1] Single-Chunk Round-Trip Latency (64 KiB) ---
+single-chunk RTT (Raw TCP): payload=65536 B rounds=500 min=0.017 ms median=0.020 ms mean=0.021 ms
+single-chunk RTT: payload=65536 B rounds=500 min=0.093 ms median=0.101 ms mean=0.106 ms
+
+--- [2] 8 MiB Patterned Incompressible Throughput ---
+Raw TCP streaming (patterned): rounds=32 elapsed=33.13 ms throughput=8103.0 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RAW codec)  : rounds=32 elapsed=446.20 ms raw=601.6 MB/s wire=601.6 MB/s wire_bytes_per_tensor=8389260 raw_bytes_per_tensor=8388608 delta_bytes=652
+
+--- [3] 8 MiB Uniform Compressible Throughput ---
+Raw TCP streaming (uniform)  : rounds=32 elapsed=33.49 ms throughput=8014.9 MB/s bytes_per_tensor=8388608
+FASTLINK framed (RLE codec)  : rounds=32 elapsed=136.91 ms raw=1960.6 MB/s wire=15.6 MB/s wire_bytes_per_tensor=66700 raw_bytes_per_tensor=8388608 delta_bytes=-8321908
+
+--- [4] Connection Setup Cost ---
+connection setup (client connect): 0.039 ms
+============================================================

@@ -3,6 +3,15 @@
 
 use std::io::{self, Read, Write};
 
+pub mod cache;
+pub mod rpc_client;
+pub mod transport;
+
+#[cfg(feature = "rpc-v3-transport")]
+mod transport_async;
+#[cfg(feature = "rpc-v3-transport")]
+pub use transport_async::{AsyncClient, KeepAliveConfig, Pool, ACK};
+
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;
 pub const CHUNK_BYTES: usize = 64 * 1024;
@@ -42,8 +51,6 @@ pub const RAW: u8 = 0;
 pub const RLE: u8 = 1;
 
 pub fn encode_chunk(chunk: &[u8]) -> (u8, Vec<u8>) {
-    // A tiny lossless codec for easy-to-test sparse/uniform data.
-    // Future milestone: benchmark LZ4/Zstd and choose by measured wall-clock time.
     let mut encoded = Vec::new();
     let mut idx = 0;
     while idx < chunk.len() {
