@@ -14,6 +14,7 @@ FASTLINK is an **independent, Apache-2.0-licensed FOSS research project** for st
 - Simple adaptive RAW/RLE encoding, selected only when smaller. More general codecs are planned.
 - Versioned binary wire format and bounded decode sizes.
 - Local-only server, with explicit protection against accidental network exposure.
+- Loopback TCP transport for framed tensors with a single-chunk latency and 8 MiB throughput bench.
 - Linux and Windows builds from one Rust codebase.
 - Unit tests and a three-stage local transfer demonstration.
 

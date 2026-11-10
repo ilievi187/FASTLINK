@@ -6,7 +6,8 @@
 - Simple RLE handles long runs but is ineffective for high-entropy tensors; Zstd/LZ4 experiments are planned.
 - No resumable transaction, quota/eviction, concurrency or peer discovery.
 - Full-file manifest hashing and cache integrity checks add disk reads and CPU overhead.
-- Metrics count encoded payload bytes, not total on-the-wire traffic. Benchmarks use synthetic data only.
+- The file-sync CLI counts encoded payload bytes; the transport bench additionally reports wire bytes. Benchmarks use synthetic data only.
+- The experimental TCP transport is loopback-only, unauthenticated, unencrypted and single-connection; it is a measurement path, not a secure channel.
 - Windows compatibility is intended via Rust standard library but requires CI verification.
 - 64 GB transfer cap, 1,000,000 chunks, 240-byte file-name cap.
 - Single-connection server serializes clients; untrusted clients can hold a session.

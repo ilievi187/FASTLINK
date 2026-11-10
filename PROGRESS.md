@@ -32,3 +32,33 @@
 outer FLR1/FLR3 envelope (SHA-256, original RPC header, ≥128 KiB raw tensor) is
 not generated, and no adapter process was started, so this is framing
 correctness — not an end-to-end RPC transfer or a performance claim.
+
+## 2026-11-10 — O-2 loopback TCP transport and latency bench
+
+- Added `src/transport.rs`: `send_tensor`/`receive_tensor` over loopback TCP.
+  Frames tensors with the existing `frame_tensor`, coalesces the 12-byte tensor
+  header and every FASTLINK-RPC/1 adapter payload into one `write_all`, and
+  reconstructs on receive with per-chunk `decode_chunk` verification.
+- Added `benches/rpc_latency.rs` (plain std timing, no new dependencies):
+  single-chunk RTT, 8 MiB loopback throughput, wire-byte overhead versus raw,
+  and connection-setup time.
+- Added `tests/transport_integration.rs`: byte-exact round-trips (single-chunk,
+  multi-chunk, 8 MiB), empty/truncated/malformed header rejection, and a
+  latency > 0 plus bytes >= raw sanity check on incompressible data.
+- `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` and
+  `cargo test --all-targets` pass. No dependency added; core codec untouched.
+
+**Measured (optimized bench profile, loopback, TCP_NODELAY, single connection):**
+
+- Single-chunk RTT (64 KiB patterned, 500 rounds): min 0.092 ms, median
+  0.100 ms, mean 0.103 ms.
+- 8 MiB patterned (RAW): 597.2 MB/s raw / 597.3 MB/s wire; 8,389,260 wire bytes
+  vs 8,388,608 raw (+652 B: 12-byte tensor header + 640 B of chunk headers).
+- 8 MiB uniform (RLE): 1,957.9 MB/s raw / 15.6 MB/s wire; 66,700 wire bytes vs
+  8,388,608 raw (−8,321,908 B).
+- Connection setup (client connect): 0.039 ms.
+
+**Explicit limitation:** Loopback-only, unauthenticated, unencrypted, single
+connection; latency and throughput exclude connection setup. No `llama.cpp`
+adapter process was started, so this is a transport measurement, not an
+end-to-end RPC transfer or a GPU performance claim.
