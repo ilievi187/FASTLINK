@@ -4,6 +4,7 @@
 use std::io::{self, Read, Write};
 
 pub mod rpc_client;
+pub mod transport;
 
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;

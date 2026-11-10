@@ -12,3 +12,8 @@ publish = false
 
 [dependencies]
 blake3 = "1.8"
+
+[[bench]]
+name = "rpc_latency"
+harness = false
+test = false
