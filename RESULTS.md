@@ -12,7 +12,7 @@
   - Memory-Mapped Tensor Transfer: `benches/mmap_transfer.rs` (`cargo bench --bench mmap_transfer`)  
   - Single-GPU Baseline: `benches/detti_gpu_bench.py`  
 - **Machine-Readable Raw Data:** `benches/results_distributed_gpu.json` (inference/VRAM and the older `mmap_transfer` report); latest `rpc_latency` transport run: `benches/results_rpc_latency.json`.
-- The distributed report JSON does not capture host CPU, kernel, RAM, or per-scenario GPU utilization; do not infer those values from it. The separately captured `rpc_latency` host metadata is in section 4.3.
+- The distributed report JSON does not capture host CPU, kernel, or RAM. It records RX 6600 XT compute peaks for only 2 of 4 scenarios; RX 7900 XT compute peaks are absent, and zero-valued entries are treated as missing. The separately captured `rpc_latency` host metadata is in section 4.3.
 
 ---
 
@@ -49,8 +49,8 @@ Hardware telemetry sampled via DRM sysfs on Linux (`NightKnightPC`) and Windows 
 
 | Node / Host | Physical GPU Adapter | Architecture | Total VRAM | Dedicated Used | Used % | Free VRAM | Process Dedicated | Compute Util |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| **`NightKnightPC` (Local)** | AMD Radeon RX 7900 XT | Navi 31 (RDNA 3) | **20,464.0 MB** | **19,510.8 MB** | **95.34%** | 953.2 MB | 18,800.0 MB | N/A (not in attached raw JSON) |
-| **`detti` (Remote)** | AMD Radeon RX 6600 XT | Navi 23 (RDNA 2) | **8,192.0 MB** | **6,779.3 MB** | **82.76%** | 1,412.7 MB | 6,015.3 MB | N/A (raw JSON records 0.0; treat as unavailable) |
+| **`NightKnightPC` (Local)** | AMD Radeon RX 7900 XT | Navi 31 (RDNA 3) | **20,464.0 MB** | **19,510.8 MB** | **95.34%** | 953.2 MB | 18,800.0 MB | N/A (not recorded in JSON) |
+| **`detti` (Remote)** | AMD Radeon RX 6600 XT | Navi 23 (RDNA 2) | **8,192.0 MB** | **6,779.3 MB** | **82.76%** | 1,412.7 MB | 6,015.3 MB | 89.8–96.8% on 2 of 4 scenarios |
 | **Combined Topology** | **Dual AMD GPU** | **RDNA 3 + 2** | **28,656.0 MB** | **26,290.1 MB** | **91.74%** | **2,365.9 MB** | **24,815.3 MB** | — |
 
 ---
@@ -113,7 +113,7 @@ is `benches/results_rpc_latency.json`; captured benchmark stdout is
 | Measurement | Result |
 |---|---:|
 | 64 KiB RTT median, raw TCP / framed RAW | 0.020 / 0.095 ms |
-| 8 MiB patterned raw TCP / FASTLINK RAW (raw-equivalent) | 8,401.5 / 547.2 MB/s |
+| 8 MiB patterned raw TCP / FASTLINK RAW (raw-equivalent) | 8,401.5 MB/s / 547.2 MB/s |
 | Patterned FASTLINK wire throughput | 547.2 MB/s |
 | FASTLINK framing overhead per patterned tensor | +652 B |
 | 8 MiB uniform raw TCP / FASTLINK RLE (raw-equivalent) | 8,293.6 / 2,030.5 MB/s |

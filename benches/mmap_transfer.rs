@@ -238,6 +238,7 @@ fn bench_mmap_latency() -> LatencyPercentiles {
     p
 }
 
+#[cfg(unix)]
 fn bench_mmap_throughput(label: &str, tensor: &[u8]) -> f64 {
     let shm_name = "/fastlink_bench_tp_8m";
     let len = tensor.len();
@@ -518,6 +519,7 @@ fn main() {
     let fl_lat = bench_fastlink_latency();
 
     println!("\nLatency Summary (64 KiB RTT):");
+    #[cfg(unix)]
     println!("  mmap shm     : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", mmap_lat.min, mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_lat.mean);
     println!("  Raw TCP      : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", raw_lat.min, raw_lat.p50, raw_lat.p95, raw_lat.p99, raw_lat.mean);
     println!("  FASTLINK-RPC : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", fl_lat.min, fl_lat.p50, fl_lat.p95, fl_lat.p99, fl_lat.mean);
@@ -542,6 +544,7 @@ fn main() {
     println!("Transfer Mechanism Comparison Matrix:");
     println!("  Method       | 64KB p50  | 64KB p95  | 64KB p99  | 8MB Patterned | 8MB Uniform");
     println!("  -------------+-----------+-----------+-----------+---------------+------------");
+    #[cfg(unix)]
     println!(
         "  mmap shm     | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s",
         mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_pat_tp, mmap_uni_tp

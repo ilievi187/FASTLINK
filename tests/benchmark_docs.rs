@@ -95,4 +95,7 @@ fn results_do_not_mislabel_cpu_shared_memory_copy_as_gpu_zero_copy() {
     let results = include_str!("../RESULTS.md");
     assert!(results.contains("CPU-only shared-memory copy"));
     assert!(results.contains("does not exercise a GPU"));
+    assert!(!results.contains("0 extra copy buffers"));
+    assert!(!results.contains("zero-copy GPU tensor staging"));
+    assert!(!results.contains("FLR1 frame verification"));
 }
