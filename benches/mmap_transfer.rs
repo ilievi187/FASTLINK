@@ -561,7 +561,6 @@ fn main() {
     println!("Transfer Mechanism Comparison Matrix:");
     println!("  Method       | 64KB p50  | 64KB p95  | 64KB p99  | 8MB Patterned | 8MB Uniform");
     println!("  -------------+-----------+-----------+-----------+---------------+------------");
-    #[cfg(unix)]
     println!(
         "  mmap shm     | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s",
         mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_pat_tp, mmap_uni_tp
