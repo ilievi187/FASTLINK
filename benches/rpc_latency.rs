@@ -55,12 +55,41 @@ fn serve_connection(mut sock: TcpStream) {
     }
 }
 
+/// Serve raw TCP connection: read raw bytes of `expected_len`, ACK, repeat.
+fn serve_raw_connection(mut sock: TcpStream, expected_len: usize) {
+    sock.set_nodelay(true).expect("server TCP_NODELAY");
+    let mut buf = vec![0u8; expected_len.min(64 * 1024)];
+    loop {
+        let mut remaining = expected_len;
+        while remaining > 0 {
+            let to_read = remaining.min(buf.len());
+            match sock.read_exact(&mut buf[..to_read]) {
+                Ok(_) => remaining -= to_read,
+                Err(_) => return,
+            }
+        }
+        if sock.write_all(&[ACK]).is_err() {
+            return;
+        }
+    }
+}
+
 fn start_server() -> (std::net::SocketAddr, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
     let handle = thread::spawn(move || {
         let (sock, _) = listener.accept().expect("accept");
         serve_connection(sock);
+    });
+    (addr, handle)
+}
+
+fn start_raw_server(expected_len: usize) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let handle = thread::spawn(move || {
+        let (sock, _) = listener.accept().expect("accept");
+        serve_raw_connection(sock, expected_len);
     });
     (addr, handle)
 }
@@ -83,6 +112,73 @@ fn round_trip(sock: &mut TcpStream, tensor: &[u8]) -> std::io::Result<Duration> 
         ));
     }
     Ok(started.elapsed())
+}
+
+fn raw_round_trip(sock: &mut TcpStream, tensor: &[u8]) -> std::io::Result<Duration> {
+    let started = Instant::now();
+    sock.write_all(tensor)?;
+    let mut ack = [0u8; 1];
+    sock.read_exact(&mut ack)?;
+    if ack[0] != ACK {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unexpected ack",
+        ));
+    }
+    Ok(started.elapsed())
+}
+
+fn bench_raw_latency() {
+    let (addr, server) = start_raw_server(CHUNK_BYTES);
+    let mut sock = connect(addr);
+    let tensor = patterned_tensor(CHUNK_BYTES);
+
+    for _ in 0..WARMUP_ROUNDS {
+        raw_round_trip(&mut sock, &tensor).expect("raw latency warmup");
+    }
+    let mut samples = Vec::with_capacity(LATENCY_ROUNDS);
+    for _ in 0..LATENCY_ROUNDS {
+        let elapsed = raw_round_trip(&mut sock, &tensor).expect("raw latency round-trip");
+        samples.push(elapsed.as_secs_f64() * 1000.0);
+    }
+    samples.sort_unstable_by(|a, b| a.total_cmp(b));
+    let min = samples[0];
+    let median = samples[samples.len() / 2];
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    println!(
+        "single-chunk RTT (Raw TCP): payload={payload} B rounds={rounds} min={min:.3} ms median={median:.3} ms mean={mean:.3} ms",
+        payload = tensor.len(),
+        rounds = LATENCY_ROUNDS,
+    );
+    drop(sock);
+    let _ = server.join();
+}
+
+fn bench_raw_throughput(label: &str, tensor: &[u8]) {
+    let (addr, server) = start_raw_server(tensor.len());
+    let mut sock = connect(addr);
+    for _ in 0..THROUGHPUT_WARMUP_ROUNDS {
+        raw_round_trip(&mut sock, tensor).expect("raw throughput warmup");
+    }
+
+    let started = Instant::now();
+    for _ in 0..THROUGHPUT_ROUNDS {
+        sock.write_all(tensor).expect("send raw tensor");
+        let mut ack = [0u8; 1];
+        sock.read_exact(&mut ack).expect("ack");
+    }
+    let elapsed = started.elapsed();
+    let secs = elapsed.as_secs_f64();
+    let raw_bytes = tensor.len() as u64 * THROUGHPUT_ROUNDS as u64;
+    println!(
+        "{label}: rounds={THROUGHPUT_ROUNDS} elapsed={:.2} ms throughput={:.1} MB/s \
+         bytes_per_tensor={}",
+        secs * 1000.0,
+        raw_bytes as f64 / secs / 1e6,
+        tensor.len(),
+    );
+    drop(sock);
+    let _ = server.join();
 }
 
 fn bench_latency() {
@@ -160,13 +256,26 @@ fn bench_connection_setup() {
 }
 
 fn main() {
-    println!("FASTLINK-RPC/1 loopback transport bench");
+    println!("============================================================");
+    println!("FASTLINK-RPC/1 Transport vs Raw TCP Benchmark");
     println!("chunk_bytes={CHUNK_BYTES} tensor_bytes={TENSOR_BYTES}");
+    println!("============================================================");
+
+    println!("\n--- [1] Single-Chunk Round-Trip Latency (64 KiB) ---");
+    bench_raw_latency();
     bench_latency();
-    bench_throughput(
-        "throughput patterned (RAW)",
-        &patterned_tensor(TENSOR_BYTES),
-    );
-    bench_throughput("throughput uniform   (RLE)", &vec![0xAB; TENSOR_BYTES]);
+
+    println!("\n--- [2] 8 MiB Patterned Incompressible Throughput ---");
+    let pat = patterned_tensor(TENSOR_BYTES);
+    bench_raw_throughput("Raw TCP streaming (patterned)", &pat);
+    bench_throughput("FASTLINK framed (RAW codec)  ", &pat);
+
+    println!("\n--- [3] 8 MiB Uniform Compressible Throughput ---");
+    let uni = vec![0xAB; TENSOR_BYTES];
+    bench_raw_throughput("Raw TCP streaming (uniform)  ", &uni);
+    bench_throughput("FASTLINK framed (RLE codec)  ", &uni);
+
+    println!("\n--- [4] Connection Setup Cost ---");
     bench_connection_setup();
+    println!("============================================================");
 }
