@@ -126,22 +126,24 @@ impl MmapShm {
 
 #[cfg(windows)]
 impl MmapShm {
-    fn create(_name_str: &str, _len: usize) -> std::io::Result<Self> {
-        let mut arr = [0u8; 1];
+    fn create(_name_str: &str, len: usize) -> std::io::Result<Self> {
+        let mut arr = vec![0u8; len];
+        let ptr = arr.as_mut_ptr();
         Ok(Self {
             name: CString::new("").unwrap(),
-            ptr: arr.as_mut_ptr(),
-            len: 0,
+            ptr,
+            len,
             fd: 0,
         })
     }
 
-    fn open(_name_str: &str, _len: usize) -> std::io::Result<Self> {
-        let mut arr = [0u8; 1];
+    fn open(_name_str: &str, len: usize) -> std::io::Result<Self> {
+        let mut arr = vec![0u8; len];
+        let ptr = arr.as_mut_ptr();
         Ok(Self {
             name: CString::new("").unwrap(),
-            ptr: arr.as_mut_ptr(),
-            len: 0,
+            ptr,
+            len,
             fd: 0,
         })
     }
