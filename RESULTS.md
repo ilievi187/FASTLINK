@@ -80,7 +80,7 @@ Measured across standard deterministic prompt scenarios (`temperature=0.0`, `cac
 
 ## 4. Tensor Transfer Harnesses: CPU shared-memory copy vs Raw TCP vs FASTLINK-RPC/1
 
-The older comparison below is from `cargo bench --bench mmap_transfer` (64 KiB chunks, 500 latency rounds; 8 MiB tensors, 32 throughput rounds). Its `mmap` branch is a CPU shared-memory memcpy loop: the producer copies into a POSIX mapping and the consumer thread copies out into a heap buffer. It does not exercise a GPU and is not zero-copy.
+The older comparison below is from `cargo bench --bench mmap_transfer` (64 KiB chunks, 500 latency rounds; 8 MiB tensors, 32 throughput rounds). Its `mmap` branch is a CPU shared-memory memcpy loop: the producer copies into a POSIX mapping and the consumer thread copies out into a heap buffer. It does not exercise a GPU and is not zero-copy. The figures are retained in `benches/results_distributed_gpu.json`, but the original console output was not archived, so this is historical context rather than the canonical reproducible transport snapshot. The collector currently seeds fallback metrics and does not reject a nonzero benchmark exit; treat these older figures as unverified until that path is hardened and rerun.
 
 ### 4.1. Single-Chunk (64 KiB) Round-Trip Latency
 
