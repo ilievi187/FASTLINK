@@ -22,8 +22,8 @@
 This report contains the supplied distributed multi-GPU inference measurements and a separate CPU-only shared-memory-copy/TCP transport microbenchmark. The `mmap_transfer` harness does not integrate with a GPU; its shared-memory numbers are not GPU staging or zero-copy measurements. A separately run `rpc_latency` snapshot is recorded in section 4.3.
 
 Key findings:
-1. **Distributed Dual-GPU Inference Throughput:**
-   - Concurrent distributed execution across the 7900 XT and 6600 XT delivers an aggregate throughput of **117.41 – 118.94 decode tok/s** across all prompt workloads.
+1. **Concurrent Dual-GPU Request Throughput (summed per-device rates):**
+   - Concurrent independent requests to the RX 7900 XT and RX 6600 XT produce a summed rate of **117.41 – 118.94 decode tok/s** across the four prompt workloads.
    - In the single-GPU baseline rows, the RX 7900 XT records **84.58 – 86.29 decode tok/s** with **0.11 – 0.17s TTFT**; the RX 6600 XT records **26.68 – 29.98 decode tok/s** with **0.32 – 1.43s TTFT**.
    - In the distributed rows, the two per-GPU rates sum to **117.41 – 118.94 tok/s**. The displayed **3.72x – 3.80x** is aggregate rate divided by the concurrent RX 6600 XT-side rate, not a measured speedup against the single-GPU baseline.
 2. **Multi-GPU VRAM Telemetry & Memory Headroom:**
@@ -50,8 +50,8 @@ Hardware telemetry sampled via DRM sysfs on Linux (`NightKnightPC`) and Windows 
 
 | Node / Host | Physical GPU Adapter | Architecture | Total VRAM | Dedicated Used | Used % | Free VRAM | Process Dedicated | Compute Util |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| **`NightKnightPC` (Local)** | AMD Radeon RX 7900 XT | Navi 31 (RDNA 3) | **20,464.0 MB** | **19,510.8 MB** | **95.34%** | 953.2 MB | 18,800.0 MB | 92.4% peak |
-| **`detti` (Remote)** | AMD Radeon RX 6600 XT | Navi 23 (RDNA 2) | **8,192.0 MB** | **6,779.3 MB** | **82.76%** | 1,412.7 MB | 6,015.3 MB | 96.8% peak |
+| **`NightKnightPC` (Local)** | AMD Radeon RX 7900 XT | Navi 31 (RDNA 3) | **20,464.0 MB** | **19,510.8 MB** | **95.34%** | 953.2 MB | 18,800.0 MB | N/A (not in attached raw JSON) |
+| **`detti` (Remote)** | AMD Radeon RX 6600 XT | Navi 23 (RDNA 2) | **8,192.0 MB** | **6,779.3 MB** | **82.76%** | 1,412.7 MB | 6,015.3 MB | N/A (raw JSON records 0.0; treat as unavailable) |
 | **Combined Topology** | **Dual AMD GPU** | **RDNA 3 + 2** | **28,656.0 MB** | **26,290.1 MB** | **91.74%** | **2,365.9 MB** | **24,815.3 MB** | — |
 
 ---
@@ -97,13 +97,15 @@ The older comparison below is from `cargo bench --bench mmap_transfer` (64 KiB c
 
 | Transfer Mechanism | 8 MiB Patterned (Incompressible) | 8 MiB Uniform (Compressible) | Wire Bytes per 8MB Tensor | Wire Bandwidth Delta |
 |---|---:|---:|---:|---|
-| **`mmap` Shared Memory** | **26,166.1 MB/s** | **26,849.9 MB/s** | 8,388,608 B (shared pages) | 0 extra copy buffers |
+| **`mmap` CPU shared-memory copy** | **26,166.1 MB/s** | **26,849.9 MB/s** | N/A (no network wire) | Producer + consumer memcpy; 8 MiB destination buffer |
 | **Raw TCP Socket Streaming** | **7,779.5 MB/s** | **7,398.2 MB/s** | 8,388,608 B (raw socket) | Kernel socket buffer copy |
 | **FASTLINK-RPC/1 Transport** | **574.1 MB/s** | **1,930.9 MB/s** | **66,700 B (RLE)** | **−8,321,908 B (−99.20%)** |
 
 ### 4.3. Latest single-connection `rpc_latency` loopback snapshot
 
-This is a different harness and host from the `mmap_transfer` table above. Snapshot
+This is a different harness and measurement run from the `mmap_transfer` table above.
+The earlier report's JSON does not record its host/kernel/CPU, so host identity
+cannot be confirmed from that artifact. Snapshot
 `rpc-latency-linux-2026-11-10-230038-76e77cc` ran `cargo bench --bench rpc_latency`
 on Linux x86_64 / AMD Ryzen 7 7800X3D / rustc 1.99.0. Its machine-readable data
 is `benches/results_rpc_latency.json`; captured benchmark stdout is

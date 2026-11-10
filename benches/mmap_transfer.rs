@@ -10,7 +10,6 @@
 //! ```text
 //! cargo bench --bench mmap_transfer
 //! ```
-#![cfg(unix)]
 
 use fastlink::transport::{receive_tensor, send_tensor};
 use fastlink::CHUNK_BYTES;
@@ -165,6 +164,7 @@ fn calculate_percentiles(mut samples: Vec<f64>) -> LatencyPercentiles {
 // -----------------------------------------------------------------------------
 // MMAP Benchmarks
 // -----------------------------------------------------------------------------
+#[cfg(unix)]
 fn bench_mmap_latency() -> LatencyPercentiles {
     let shm_name = "/fastlink_bench_lat_64k";
     let shm = MmapShm::create(shm_name, CHUNK_BYTES).expect("create shm");
@@ -505,6 +505,7 @@ fn main() {
     println!("================================================================================");
 
     println!("\n--- [1] Single-Chunk Round-Trip Latency (64 KiB, 500 rounds) ---");
+    #[cfg(unix)]
     let mmap_lat = bench_mmap_latency();
     let raw_lat = bench_raw_latency();
     let fl_lat = bench_fastlink_latency();
@@ -516,6 +517,7 @@ fn main() {
 
     println!("\n--- [2] 8 MiB Patterned Incompressible Tensor Throughput ---");
     let pat = patterned_tensor(TENSOR_BYTES);
+    #[cfg(unix)]
     let mmap_pat_tp = bench_mmap_throughput("mmap shm transfer (patterned) ", &pat);
     let raw_pat_tp = bench_raw_throughput("Raw TCP streaming (patterned) ", &pat);
     let (fl_pat_raw, _fl_pat_wire, _, _) =
@@ -523,6 +525,7 @@ fn main() {
 
     println!("\n--- [3] 8 MiB Uniform Compressible Tensor Throughput ---");
     let uni = vec![0xAB; TENSOR_BYTES];
+    #[cfg(unix)]
     let mmap_uni_tp = bench_mmap_throughput("mmap shm transfer (uniform)   ", &uni);
     let raw_uni_tp = bench_raw_throughput("Raw TCP streaming (uniform)   ", &uni);
     let (fl_uni_raw, _fl_uni_wire, _, _) =
