@@ -57,11 +57,12 @@ A local test with an 8 MiB mostly-zero file gave:
 
 SHA-256 matched the reconstructed file. **These figures exclude chunk manifests, framing, TCP headers, and local hashing costs.** They are NOT representative of high-entropy activations or AI inference throughput. See [Benchmarks](docs/BENCHMARKS.md).
 
-The latest checked-in loopback snapshot (`rpc-latency-linux-2026-11-10-224820-8fc776c`)
-measured raw TCP at 8,605.5 MB/s and FASTLINK RAW at 564.9 MB/s for one
-patterned 8 MiB tensor (about 15.2× in this single run). FASTLINK added 652 B of
-framing. This is one Linux loopback measurement, not an inference, LAN/WAN, or
-performance guarantee; use [the reproducibility checklist and full table](docs/BENCHMARKS.md).
+The latest checked-in loopback snapshot (`rpc-latency-linux-2026-11-10-230038-76e77cc`)
+measured raw TCP at 8,401.5 MB/s and FASTLINK RAW at 547.2 MB/s for one patterned
+8 MiB tensor (15.4× in this single run). FASTLINK added 652 B of framing; 64 KiB
+median RTT was 0.020 ms raw / 0.095 ms framed. This is one Linux loopback
+measurement, not an inference, LAN/WAN, or performance guarantee; use [the
+reproducibility checklist and full table](docs/BENCHMARKS.md).
 
 ## Why this exists
 

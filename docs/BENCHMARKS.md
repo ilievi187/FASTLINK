@@ -72,27 +72,27 @@ is still WIP.
 one machine, so not a performance guarantee. The batched `Pool` measurement is
 in progress (see PROGRESS.md).
 
-## 2026-11-10 22:48 +02:00 — Canonical loopback snapshot
+## 2026-11-10 23:00 +02:00 — Canonical loopback snapshot
 
-Snapshot ID: `rpc-latency-linux-2026-11-10-224820-8fc776c`; machine-readable
+Snapshot ID: `rpc-latency-linux-2026-11-10-230038-76e77cc`; machine-readable
 results: [`benches/results_rpc_latency.json`](../benches/results_rpc_latency.json);
 raw stdout: [`benches/results_rpc_latency_20261110.txt`](../benches/results_rpc_latency_20261110.txt).
 This run used Linux x86_64, AMD Ryzen 7 7800X3D, rustc 1.99.0, source commit
-`8fc776cfd49389abfd54160b1819369aa1361038`.
+`76e77cc262abc8e663c6c2f8f6074706185d74fc`.
 
 | Measurement | Result |
 | --- | ---: |
-| Single-chunk RTT, 64 KiB, raw TCP (min / median / mean) | 0.016 / 0.018 / 0.019 ms |
-| Single-chunk RTT, 64 KiB, framed RAW (min / median / mean) | 0.093 / 0.102 / 0.108 ms |
-| 8 MiB patterned raw TCP throughput | 8,605.5 MB/s |
-| 8 MiB patterned FASTLINK RAW (raw-equivalent / wire) | 564.9 / 565.0 MB/s |
+| Single-chunk RTT, 64 KiB, raw TCP (min / median / mean) | 0.018 / 0.020 / 0.020 ms |
+| Single-chunk RTT, 64 KiB, framed RAW (min / median / mean) | 0.090 / 0.095 / 0.100 ms |
+| 8 MiB patterned raw TCP throughput | 8,401.5 MB/s |
+| 8 MiB patterned FASTLINK RAW (raw-equivalent / wire) | 547.2 / 547.2 MB/s |
 | Patterned wire bytes per tensor (raw / FASTLINK) | 8,388,608 / 8,389,260 B (+652 B, +0.0078%) |
-| 8 MiB uniform raw TCP throughput | 7,758.1 MB/s |
-| 8 MiB uniform FASTLINK RLE (raw-equivalent / wire) | 1,869.6 / 14.9 MB/s |
+| 8 MiB uniform raw TCP throughput | 8,293.6 MB/s |
+| 8 MiB uniform FASTLINK RLE (raw-equivalent / wire) | 2,030.5 / 16.1 MB/s |
 | Uniform wire bytes per tensor (raw / FASTLINK) | 8,388,608 / 66,700 B (−99.20%) |
-| TCP connection setup (client connect) | 0.033 ms |
+| TCP connection setup (client connect) | 0.027 ms |
 
-Raw TCP's patterned throughput was 15.2× the FASTLINK framed path in this one
+Raw TCP's patterned throughput was 15.4× the FASTLINK framed path in this one
 run. This is not a speedup guarantee: raw TCP skips chunk hashing, framing,
 codec/decode work. RLE raw-equivalent MB/s divides original uncompressed bytes
 by elapsed time; wire MB/s divides encoded wire bytes by elapsed time. Decimal
@@ -121,7 +121,9 @@ For a comparable loopback remeasurement:
    change as a repeatable performance improvement. The checked-in snapshot is a
    single run and should be presented as such.
 7. Keep transport results distinct from the detti GPU/inference benchmark in
-   `RESULTS.md`. This loopback test does not include GPU work or end-to-end RPC.
+   `RESULTS.md`. The loopback wire carries no BLAKE3 chunk ID, so bounded decode
+   does not establish chunk-content integrity; it also does not exercise a GPU,
+   LAN/WAN, or end-to-end RPC.
 8. `cargo test --all-targets` includes a CI smoke test that checks the canonical
    snapshot against README, this file, PROGRESS.md, RESULTS.md, and the harness
    constants. CI also runs `cargo bench --bench rpc_latency` on Ubuntu to verify

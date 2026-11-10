@@ -517,20 +517,31 @@ fn main() {
     let pat = patterned_tensor(TENSOR_BYTES);
     let mmap_pat_tp = bench_mmap_throughput("mmap shm transfer (patterned) ", &pat);
     let raw_pat_tp = bench_raw_throughput("Raw TCP streaming (patterned) ", &pat);
-    let (fl_pat_raw, _fl_pat_wire, _, _) = bench_fastlink_throughput("FASTLINK framed (RAW codec)   ", &pat);
+    let (fl_pat_raw, _fl_pat_wire, _, _) =
+        bench_fastlink_throughput("FASTLINK framed (RAW codec)   ", &pat);
 
     println!("\n--- [3] 8 MiB Uniform Compressible Tensor Throughput ---");
     let uni = vec![0xAB; TENSOR_BYTES];
     let mmap_uni_tp = bench_mmap_throughput("mmap shm transfer (uniform)   ", &uni);
     let raw_uni_tp = bench_raw_throughput("Raw TCP streaming (uniform)   ", &uni);
-    let (fl_uni_raw, _fl_uni_wire, _, _) = bench_fastlink_throughput("FASTLINK framed (RLE codec)   ", &uni);
+    let (fl_uni_raw, _fl_uni_wire, _, _) =
+        bench_fastlink_throughput("FASTLINK framed (RLE codec)   ", &uni);
 
     println!("\n================================================================================");
     println!("Transfer Mechanism Comparison Matrix:");
     println!("  Method       | 64KB p50  | 64KB p95  | 64KB p99  | 8MB Patterned | 8MB Uniform");
     println!("  -------------+-----------+-----------+-----------+---------------+------------");
-    println!("  mmap shm     | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s", mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_pat_tp, mmap_uni_tp);
-    println!("  Raw TCP      | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s", raw_lat.p50, raw_lat.p95, raw_lat.p99, raw_pat_tp, raw_uni_tp);
-    println!("  FASTLINK-RPC | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s", fl_lat.p50, fl_lat.p95, fl_lat.p99, fl_pat_raw, fl_uni_raw);
+    println!(
+        "  mmap shm     | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s",
+        mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_pat_tp, mmap_uni_tp
+    );
+    println!(
+        "  Raw TCP      | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s",
+        raw_lat.p50, raw_lat.p95, raw_lat.p99, raw_pat_tp, raw_uni_tp
+    );
+    println!(
+        "  FASTLINK-RPC | {:>6.3} ms | {:>6.3} ms | {:>6.3} ms | {:>9.1} MB/s | {:>9.1} MB/s",
+        fl_lat.p50, fl_lat.p95, fl_lat.p99, fl_pat_raw, fl_uni_raw
+    );
     println!("================================================================================");
 }

@@ -38,7 +38,8 @@ correctness — not an end-to-end RPC transfer or a performance claim.
 - Added `src/transport.rs`: `send_tensor`/`receive_tensor` over loopback TCP.
   Frames tensors with the existing `frame_tensor`, coalesces the 12-byte tensor
   header and every FASTLINK-RPC/1 adapter payload into one `write_all`, and
-  reconstructs on receive with per-chunk `decode_chunk` verification.
+  validates codec/decoded length on receive. The wire carries no BLAKE3 chunk ID,
+  so successful decode does not prove chunk-content integrity.
 - Added `benches/rpc_latency.rs` (plain std timing, no new dependencies):
   single-chunk RTT, 8 MiB loopback throughput, wire-byte overhead versus raw,
   and connection-setup time.
@@ -66,15 +67,16 @@ end-to-end RPC transfer or a GPU performance claim.
 ## 2026-11-10 — O-3 async Pool + batched bench, transport review + benchmark refresh
 
 - Reviewed `src/transport.rs`: `send_tensor`/`receive_tensor` over loopback TCP,
-  framed with the existing `frame_tensor`, single `write_all`, per-chunk
-  `decode_chunk` verification. Correctness confirmed: header order matches,
+  framed with the existing `frame_tensor`, single `write_all`, and bounded
+  codec/decoded-length validation. Correctness confirmed: header order matches,
   `count == chunk_count(total_len)` validated, `encoded_len` bounds-checked
   (1..=MAX_ENCODED_BYTES), unknown codec / odd RLE / size-mismatch all rejected,
   truncated read returns `Underflow`. Edge cases: empty tensor rejected by
   `frame_tensor`; `total_len == 0` early-returned; trailing bytes after `count`
-  chunks are ignored (acceptable). Perf: preallocated `wire` Vec, coalesced write,
-  `Pool::batch_send` amortises the 12-byte header + 5-byte per-chunk header across
-  multiple tensors.
+  chunks are ignored (acceptable). The receiver has no transmitted BLAKE3 ID to
+  check; do not describe this as content-integrity verification. Perf: preallocated
+  `wire` Vec, coalesced write; a persistent pool amortizes connection setup, not
+  each tensor's 12-byte + per-chunk headers.
 - Known WIP: `benches/rpc_latency_batched.rs` has clippy findings (unused
   `CHUNK_BYTES` import, unused `mut` on a connect sock) and the ack is read on a
   freshly connected `sock` while data is sent on the pool client, so the batched
@@ -83,6 +85,6 @@ end-to-end RPC transfer or a GPU performance claim.
   `docs/BENCHMARKS.md` and `README.md` (added a Raw TCP vs framed comparison);
   numbers come from one loopback machine and are not a guarantee.
 
-**Measured (canonical optimized loopback snapshot `rpc-latency-linux-2026-11-10-224820-8fc776c`):** raw/framed 64 KiB RTT min/median/mean 0.016/0.018/0.019 and 0.093/0.102/0.108 ms; patterned 8 MiB raw TCP 8,605.5 MB/s vs FASTLINK RAW 564.9 MB/s raw-equivalent / 565.0 MB/s wire (+652 B); uniform raw TCP 7,758.1 MB/s vs FASTLINK RLE 1,869.6 MB/s raw-equivalent / 14.9 MB/s wire; connection setup0.033ms. Single local Linux run, no speed guarantee or GPU/inference claim. Full provenance and methodology in `benches/results_rpc_latency.json` and `docs/BENCHMARKS.md`.
+**Measured (canonical optimized loopback snapshot `rpc-latency-linux-2026-11-10-230038-76e77cc`):** raw/framed 64 KiB RTT min/median/mean 0.018/0.020/0.020 and 0.090/0.095/0.100 ms; patterned 8 MiB raw TCP 8,401.5 MB/s vs FASTLINK RAW 547.2 MB/s raw-equivalent / wire (+652 B); uniform raw TCP 8,293.6 MB/s vs FASTLINK RLE 2,030.5 MB/s raw-equivalent / 16.1 MB/s wire; connection setup 0.027 ms. Raw TCP was 15.4× faster on patterned throughput in this single run. No speed guarantee or GPU/inference claim. Full provenance and methodology in `benches/results_rpc_latency.json` and `docs/BENCHMARKS.md`.
 
 **Explicit limitation:** loopback only, unauthenticated, unencrypted; single TCP connection per scenario. Transport measurement, not end-to-end RPC or GPU result. Batched `Pool` numbers pending.
