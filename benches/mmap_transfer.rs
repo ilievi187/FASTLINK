@@ -10,6 +10,7 @@
 //! ```text
 //! cargo bench --bench mmap_transfer
 //! ```
+#![cfg(unix)]
 
 use fastlink::transport::{receive_tensor, send_tensor};
 use fastlink::CHUNK_BYTES;
