@@ -50,7 +50,7 @@ fn canonical_transport_snapshot_matches_all_current_reports() {
         "throughput=8401.5",
         "raw=547.2 MB/s",
         "wire=547.2 MB/s",
-        "wire_bytes=66700",
+        "wire_bytes_per_tensor=66700",
     ] {
         assert!(
             raw_output.contains(expected),
