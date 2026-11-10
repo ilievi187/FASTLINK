@@ -44,6 +44,7 @@ fn patterned_tensor(len: usize) -> Vec<u8> {
 }
 
 /// Helper struct for POSIX shared memory mapped region.
+#[allow(dead_code)]
 struct MmapShm {
     name: CString,
     ptr: *mut u8,
