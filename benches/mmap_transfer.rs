@@ -18,6 +18,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::ptr;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(unix)]
 use std::sync::Arc;
@@ -76,7 +77,7 @@ impl MmapShm {
                 return Err(std::io::Error::last_os_error());
             }
             let ptr = libc::mmap(
-                ptr::null_mut(),
+                std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
@@ -105,7 +106,7 @@ impl MmapShm {
                 return Err(std::io::Error::last_os_error());
             }
             let ptr = libc::mmap(
-                ptr::null_mut(),
+                std::ptr::null_mut(),
                 len,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
@@ -123,6 +124,27 @@ impl MmapShm {
                 fd,
             })
         }
+    }
+}
+
+#[cfg(windows)]
+impl MmapShm {
+    fn create(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            name: CString::new("").unwrap(),
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            fd: 0,
+        })
+    }
+
+    fn open(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            name: CString::new("").unwrap(),
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            fd: 0,
+        })
     }
 }
 
