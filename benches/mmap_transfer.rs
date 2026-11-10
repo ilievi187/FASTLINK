@@ -127,18 +127,20 @@ impl MmapShm {
 #[cfg(windows)]
 impl MmapShm {
     fn create(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        let ptr = Box::into_ptr(Box::new([0u8; 1]));
         Ok(Self {
             name: CString::new("").unwrap(),
-            ptr: std::ptr::null_mut(),
+            ptr,
             len: 0,
             fd: 0,
         })
     }
 
     fn open(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        let ptr = Box::into_ptr(Box::new([0u8; 1]));
         Ok(Self {
             name: CString::new("").unwrap(),
-            ptr: std::ptr::null_mut(),
+            ptr,
             len: 0,
             fd: 0,
         })
