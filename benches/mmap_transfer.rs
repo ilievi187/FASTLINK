@@ -192,7 +192,6 @@ fn calculate_percentiles(mut samples: Vec<f64>) -> LatencyPercentiles {
 // -----------------------------------------------------------------------------
 // MMAP Benchmarks
 // -----------------------------------------------------------------------------
-#[cfg(unix)]
 fn bench_mmap_latency() -> LatencyPercentiles {
     let shm_name = "/fastlink_bench_lat_64k";
     let shm = MmapShm::create(shm_name, CHUNK_BYTES).expect("create shm");
@@ -533,20 +532,17 @@ fn main() {
     println!("================================================================================");
 
     println!("\n--- [1] Single-Chunk Round-Trip Latency (64 KiB, 500 rounds) ---");
-    #[cfg(unix)]
     let mmap_lat = bench_mmap_latency();
     let raw_lat = bench_raw_latency();
     let fl_lat = bench_fastlink_latency();
 
     println!("\nLatency Summary (64 KiB RTT):");
-    #[cfg(unix)]
     println!("  mmap shm     : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", mmap_lat.min, mmap_lat.p50, mmap_lat.p95, mmap_lat.p99, mmap_lat.mean);
     println!("  Raw TCP      : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", raw_lat.min, raw_lat.p50, raw_lat.p95, raw_lat.p99, raw_lat.mean);
     println!("  FASTLINK-RPC : min={:.3} ms | p50={:.3} ms | p95={:.3} ms | p99={:.3} ms | mean={:.3} ms", fl_lat.min, fl_lat.p50, fl_lat.p95, fl_lat.p99, fl_lat.mean);
 
     println!("\n--- [2] 8 MiB Patterned Incompressible Tensor Throughput ---");
     let pat = patterned_tensor(TENSOR_BYTES);
-    #[cfg(unix)]
     let mmap_pat_tp = bench_mmap_throughput("mmap shm transfer (patterned) ", &pat);
     let raw_pat_tp = bench_raw_throughput("Raw TCP streaming (patterned) ", &pat);
     let (fl_pat_raw, _fl_pat_wire, _, _) =
@@ -554,7 +550,6 @@ fn main() {
 
     println!("\n--- [3] 8 MiB Uniform Compressible Tensor Throughput ---");
     let uni = vec![0xAB; TENSOR_BYTES];
-    #[cfg(unix)]
     let mmap_uni_tp = bench_mmap_throughput("mmap shm transfer (uniform)   ", &uni);
     let raw_uni_tp = bench_raw_throughput("Raw TCP streaming (uniform)   ", &uni);
     let (fl_uni_raw, _fl_uni_wire, _, _) =
