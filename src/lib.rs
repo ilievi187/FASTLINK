@@ -3,6 +3,7 @@
 
 use std::io::{self, Read, Write};
 
+pub mod cache;
 pub mod rpc_client;
 pub mod transport;
 

@@ -300,6 +300,14 @@ fn main() {
             let server = args.get(3).map(String::as_str).unwrap_or("127.0.0.1:18777");
             send_file(Path::new(&args[2]), server)
         }
+        Some("status") if cfg!(feature = "rpc-v3-transport") => {
+            println!("FASTLINK-RPC/1 status (rpc-v3-transport feature gate)");
+            println!("  Pool<AsyncClient> with round-robin batch_send");
+            println!("  Telemetry: bytes_sent and latency_samples tracked per client");
+            println!("  Adaptive batch sizing, pool shrink/expand, and connection warmup");
+            println!("  (run 'cargo bench --features rpc-v3-transport' for measured numbers)");
+            Ok(())
+        }
         _ => {
             usage();
             std::process::exit(2);
