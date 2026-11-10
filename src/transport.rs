@@ -40,8 +40,8 @@ pub const TENSOR_HEADER_BYTES: usize = 12;
 /// payload to `sock`.
 ///
 /// Returns the total number of wire bytes written, including the 12-byte tensor
-/// header and every per-chunk adapter header. For a non-empty tensor the result
-/// is always `>= tensor.len()`.
+/// header and every per-chunk adapter header. The result is at least the
+/// encoded payload size; for incompressible tensors it is `>= tensor.len()`.
 ///
 /// All records are concatenated into one buffer and written with a single
 /// `write_all`; this keeps per-chunk network overhead to the adapter's own

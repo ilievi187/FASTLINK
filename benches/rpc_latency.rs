@@ -129,14 +129,14 @@ fn bench_throughput(label: &str, tensor: &[u8]) {
     let secs = elapsed.as_secs_f64();
     let raw_bytes = tensor.len() as u64 * THROUGHPUT_ROUNDS as u64;
     let per_tensor_wire = wire_bytes / THROUGHPUT_ROUNDS as u64;
+    let delta_bytes = per_tensor_wire as i64 - tensor.len() as i64;
     println!(
         "{label}: rounds={THROUGHPUT_ROUNDS} elapsed={:.2} ms raw={:.1} MB/s wire={:.1} MB/s \
-         wire_bytes_per_tensor={per_tensor_wire} raw_bytes_per_tensor={} overhead_bytes={}",
+         wire_bytes_per_tensor={per_tensor_wire} raw_bytes_per_tensor={} delta_bytes={delta_bytes}",
         secs * 1000.0,
         raw_bytes as f64 / secs / 1e6,
         wire_bytes as f64 / secs / 1e6,
         tensor.len(),
-        per_tensor_wire.saturating_sub(tensor.len() as u64),
     );
     drop(sock);
     let _ = server.join();
