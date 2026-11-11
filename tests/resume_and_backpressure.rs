@@ -5,9 +5,9 @@ use fastlink::{
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn temp_test_dir(prefix: &str) -> PathBuf {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -29,14 +29,21 @@ fn bounded_queue_enforces_capacity_and_records_backpressure() {
     assert_eq!(q.peak_depth(), 2);
 
     let q_prod = Arc::clone(&q);
+    let (started_tx, started_rx) = mpsc::channel();
     let producer = thread::spawn(move || {
+        started_tx.send(()).unwrap();
         for v in [30u32, 40, 50] {
             q_prod.push(v).unwrap();
         }
     });
 
-    // Give the producer a moment to block on the full capacity-2 queue
-    thread::sleep(Duration::from_millis(20));
+    // Synchronize with producer startup; avoid a fixed sleep that races the
+    // scheduler on Windows and slow CI hosts.
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while q.backpressure_waits() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
     assert!(
         q.backpressure_waits() >= 1,
         "producer should have blocked on bounded queue backpressure"
