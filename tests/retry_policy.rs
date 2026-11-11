@@ -198,14 +198,16 @@ fn terminal_failure_after_exhausting_retries_and_reconnects_commits_zero_output_
     let server = spawn_server("127.0.0.1:0", &root, ServerConfig::default()).unwrap();
     let addr = server.addr_string();
 
-    // Every reconnect cycle experiences a mid-transfer disconnect after 1 chunk (4 disconnects total:
-    // initial connect + 3 reconnects with 100/400/1600 ms backoff -> terminal abort).
+    // Disconnect before the first chunk on each attempt. Allowing one chunk
+    // per attempt is nondeterministic: enough cached chunks may accumulate to
+    // complete the file before the injected fault, defeating the terminal test.
+    // Four disconnects: initial connect + 3 reconnects -> terminal abort.
     let plan = FaultInjectionPlan {
         per_attempt_faults: vec![
-            AttemptFault::DisconnectAfterChunks(1),
-            AttemptFault::DisconnectAfterChunks(1),
-            AttemptFault::DisconnectAfterChunks(1),
-            AttemptFault::DisconnectAfterChunks(1),
+            AttemptFault::DisconnectAfterChunks(0),
+            AttemptFault::DisconnectAfterChunks(0),
+            AttemptFault::DisconnectAfterChunks(0),
+            AttemptFault::DisconnectAfterChunks(0),
         ],
         sleep_on_backoff: false,
     };
