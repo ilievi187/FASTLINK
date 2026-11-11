@@ -61,8 +61,13 @@
     "unknown_telemetry_fallback": "local_only",
     "model_memory": {
       "model": "70B-class",
-      "total_gib": 140,
-      "basis": "arithmetic_only"
+      "parameter_count": 70000000000,
+      "bytes_per_parameter": 2,
+      "total_bytes": 140000000000,
+      "decimal_gb": 140,
+      "binary_gib": 130.385160446167,
+      "basis": "arithmetic_only",
+      "fit_claim": false
     }
   }
 }

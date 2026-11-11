@@ -1,5 +1,6 @@
 """Validate deterministic heterogeneous profile fixtures (stdlib only)."""
 import json
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -46,13 +47,30 @@ def validate(p):
     if scenario.get("evidence") not in {"simulated", "predicted", "unknown"}:
         errors.append("invalid evidence label")
     memory = scenario.get("model_memory", {})
-    if memory.get("basis") != "arithmetic_only" or memory.get("total_gib") != 140:
-        errors.append("70B memory must be labeled arithmetic_only and total 140 GiB")
+    params = memory.get("parameter_count")
+    bytes_per_parameter = memory.get("bytes_per_parameter")
+    total_bytes = memory.get("total_bytes")
+    if (
+        memory.get("basis") != "arithmetic_only"
+        or params != 70_000_000_000
+        or bytes_per_parameter != 2
+        or total_bytes != params * bytes_per_parameter
+        or memory.get("decimal_gb") != total_bytes / 1_000_000_000
+        or not math.isclose(
+            memory.get("binary_gib", float("nan")),
+            total_bytes / (1024**3),
+            rel_tol=1e-9,
+        )
+        or memory.get("fit_claim") is not False
+    ):
+        errors.append("70B FP16 memory must be consistent arithmetic-only bytes/GiB, with no fit claim")
     if scenario.get("unknown_telemetry_fallback") != "local_only":
         errors.append("unknown telemetry must fall back to local_only")
     for node in nodes:
         if node.get("telemetry") not in {"unknown", "simulated", "measured"}:
             errors.append("invalid telemetry label")
+        if prov.get("status") == "synthetic" and node.get("telemetry") == "measured":
+            errors.append("synthetic profiles cannot contain measured node telemetry")
         if node.get("role") == "phone" and node.get("decode_eligible") and node.get("link_class") == "slow_wifi":
             errors.append("slow Wi-Fi phone cannot be decode eligible")
         if node.get("role") == "phone" and node.get("exclusion_reason") == "slow_wifi" and node.get("decode_eligible"):

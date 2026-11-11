@@ -6,7 +6,9 @@ and run tests with `python3 -m unittest discover -s tests -v`.
 
 Each fixture declares its node count, explicit opt-in, IDs, link edges, objective,
 provenance and evidence labels. Unknown telemetry deterministically falls back
-to local-only. The 70B-class memory figure is 140 GiB of arithmetic-only
-simulated model memory, not a measured fit; context, runtime and safety reserves
-are not included. The N=7 fixture includes a phone excluded for slow Wi-Fi.
-Never interpret these profiles as hardware benchmark results.
+to local-only. The 70B-class fixture models an idealized FP16/BF16 weight payload only:
+70,000,000,000 parameters × 2 bytes = 140,000,000,000 bytes = 140 decimal GB
+= approximately 130.385 GiB. This is arithmetic-only, not a fit claim; it
+excludes quantization metadata, context/KV/SSM, runtime workspace, and reserve.
+The N=7 fixture includes a phone excluded for slow Wi-Fi. Never interpret these
+profiles as hardware benchmark results.
