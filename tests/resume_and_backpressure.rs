@@ -183,7 +183,9 @@ fn send_file_resumable_automatically_recovers_from_mid_transfer_disconnect() {
     let server = spawn_server("127.0.0.1:0", &root, config).unwrap();
     let addr = server.addr_string();
 
-    // First attempt aborts after 2 chunks; `send_file_resumable` automatically reconnects and finishes the remaining 4 chunks
+    // First attempt aborts after writing 2 chunks. Depending on receiver
+    // scheduling, 0..=2 chunks may be durably cached before the disconnect.
+    // Reconnect must request only missing chunks and reconstruct exactly.
     let (_, metrics) = send_file_resumable(
         &src_path,
         &addr,
@@ -195,8 +197,15 @@ fn send_file_resumable_automatically_recovers_from_mid_transfer_disconnect() {
     .unwrap();
 
     assert_eq!(metrics.chunks_total, 6);
-    assert_eq!(metrics.chunks_reused, 2);
-    assert_eq!(metrics.chunks_transferred, 4);
+    assert!(
+        metrics.chunks_reused <= 2,
+        "cannot reuse more than the two attempted chunks"
+    );
+    assert_eq!(
+        metrics.chunks_reused + metrics.chunks_transferred,
+        metrics.chunks_total,
+        "reconnect must account for every chunk"
+    );
 
     let materialized = fs::read(root.join("outputs").join("auto-resume.bin")).unwrap();
     assert_eq!(digest(&materialized), digest(&payload));
