@@ -192,15 +192,10 @@ fn send_file_resumable_automatically_recovers_from_mid_transfer_disconnect() {
     .unwrap();
 
     assert_eq!(metrics.chunks_total, 6);
-    assert!(
-        metrics.chunks_reused <= 2,
-        "cannot reuse more than the two attempted chunks"
-    );
-    assert_eq!(
-        metrics.chunks_reused + metrics.chunks_transferred,
-        metrics.chunks_total,
-        "reconnect must account for every chunk"
-    );
+    // The abort count is sent frames, not durable acknowledgements. Either
+    // chunk may or may not reach storage before the receiver sees the close.
+    assert!(metrics.chunks_reused <= 2);
+    assert_eq!(metrics.chunks_reused + metrics.chunks_transferred, 6);
 
     let materialized = fs::read(root.join("outputs").join("auto-resume.bin")).unwrap();
     assert_eq!(digest(&materialized), digest(&payload));
