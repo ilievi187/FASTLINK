@@ -93,8 +93,7 @@ fn mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_fu
     assert_eq!(err.kind(), std::io::ErrorKind::ConnectionAborted);
 
     // The server processes EOF asynchronously; Windows CI can schedule the
-    // receiver after the sender has already returned. Wait for the terminal
-    // session state rather than assuming cleanup finishes within 250 ms.
+    // receiver after the sender has already returned. Wait for terminal state.
     let cleanup_deadline = Instant::now() + Duration::from_secs(5);
     while server.coord().total_sessions_aborted() == 0 && Instant::now() < cleanup_deadline {
         thread::sleep(Duration::from_millis(10));
@@ -117,8 +116,9 @@ fn mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_fu
         "outputs directory must not contain committed or partial files after abort, got: {output_entries:?}"
     );
 
-    // A sudden socket shutdown does not guarantee all 3 sent chunks reached
-    // the worker. Count only the chunks that actually committed to its cache.
+    // The client may have written three frames, but disconnect is not an
+    // acknowledgement that every frame was durably cached. Capture actual
+    // cache state after abort and require resume metrics to match it exactly.
     let cached_before_resume = chunk_hashes
         .iter()
         .take(3)
@@ -126,8 +126,7 @@ fn mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_fu
         .count();
     assert!(cached_before_resume <= 3);
 
-    // 2. Resume by manifest: reuse precisely the verified cached chunks,
-    // retransmit missing chunks, and materialize a byte-exact full output.
+    // Resume by manifest: reuse verified chunks and retransmit only missing ones.
     let (_, resumed) = send_file_once_with_options(&src_path, &addr, None).unwrap();
     assert_eq!(resumed.chunks_total, 8);
     assert_eq!(resumed.chunks_reused as usize, cached_before_resume);
