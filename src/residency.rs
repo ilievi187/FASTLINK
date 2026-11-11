@@ -57,6 +57,13 @@ pub const V4_TENSOR_OP_FIXED_BYTES: usize = 57;
 /// Per-batch transport header (`magic:4 + ver:2 + batch_id:8 + op_count:4 = 18 B`) + ACK (`status:1 + applied:4 = 5 B`).
 pub const V4_BATCH_FRAME_OVERHEAD_BYTES: usize = 23;
 
+// Experimental transport admission limits. A peer must never be able to reserve
+// unbounded memory just by declaring a large batch or tensor in its header.
+const MAX_BATCH_OPS: usize = 4_096;
+const MAX_BATCH_UPDATES: usize = 65_536;
+const MAX_BATCH_TENSOR_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BATCH_IDENTIFIER_BYTES: usize = 4_096;
+
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
@@ -728,6 +735,32 @@ impl BatchedSyncFrame {
     }
 
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
+        if self.ops.len() > MAX_BATCH_OPS {
+            return Err(invalid("batch op_count exceeds bound"));
+        }
+        let mut remaining_updates = MAX_BATCH_UPDATES;
+        let mut remaining_tensor_bytes = MAX_BATCH_TENSOR_BYTES;
+        let mut remaining_encoded_bytes = MAX_BATCH_TENSOR_BYTES;
+        for op in &self.ops {
+            if op.total_bytes == 0
+                || op.total_bytes > remaining_tensor_bytes
+                || op.chunk_bytes == 0
+                || op.chunk_bytes as usize > V4_MAX_CHUNK_BYTES
+                || op.total_bytes.div_ceil(op.chunk_bytes as u64) != op.total_chunks as u64
+                || op.updates.len() > op.total_chunks as usize
+                || op.updates.len() > remaining_updates
+            {
+                return Err(invalid("invalid or oversized v4 batch tensor geometry"));
+            }
+            remaining_tensor_bytes -= op.total_bytes;
+            remaining_updates -= op.updates.len();
+            for update in &op.updates {
+                if update.encoded_bytes.len() as u64 > remaining_encoded_bytes {
+                    return Err(invalid("batch encoded bytes exceed bound"));
+                }
+                remaining_encoded_bytes -= update.encoded_bytes.len() as u64;
+            }
+        }
         w.write_all(V4_BATCH_MAGIC)?;
         write_u16(w, V4_BATCH_VERSION)?;
         write_u64(w, self.batch_id)?;
@@ -758,7 +791,11 @@ impl BatchedSyncFrame {
 
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         let mut cursor = io::Cursor::new(bytes);
-        Self::read_from(&mut cursor)
+        let frame = Self::read_from(&mut cursor)?;
+        if cursor.position() != bytes.len() as u64 {
+            return Err(invalid("trailing bytes after v4 batch frame"));
+        }
+        Ok(frame)
     }
 
     pub fn read_from(r: &mut impl Read) -> io::Result<Self> {
@@ -773,10 +810,13 @@ impl BatchedSyncFrame {
         }
         let batch_id = read_u64(r)?;
         let op_count = read_u32(r)? as usize;
-        if op_count > 65_536 {
+        if op_count > MAX_BATCH_OPS {
             return Err(invalid("batch op_count exceeds bound"));
         }
 
+        let mut remaining_updates = MAX_BATCH_UPDATES;
+        let mut remaining_tensor_bytes = MAX_BATCH_TENSOR_BYTES;
+        let mut remaining_encoded_bytes = MAX_BATCH_TENSOR_BYTES;
         let mut ops = Vec::with_capacity(op_count);
         for _ in 0..op_count {
             let mode = read_u8(r)?;
@@ -790,16 +830,23 @@ impl BatchedSyncFrame {
             let total_bytes = read_u64(r)?;
             let chunk_bytes = read_u32(r)?;
             let total_chunks = read_u32(r)?;
-            if chunk_bytes == 0 || chunk_bytes as usize > V4_MAX_CHUNK_BYTES {
-                return Err(invalid("invalid v4 chunk_bytes in batch op"));
+            if chunk_bytes == 0
+                || chunk_bytes as usize > V4_MAX_CHUNK_BYTES
+                || total_bytes == 0
+                || total_bytes > remaining_tensor_bytes
+                || total_bytes.div_ceil(chunk_bytes as u64) != total_chunks as u64
+            {
+                return Err(invalid("invalid or oversized v4 batch tensor geometry"));
             }
+            remaining_tensor_bytes -= total_bytes;
             let mut content_hash = [0u8; 32];
             r.read_exact(&mut content_hash)?;
 
             let update_count = read_u32(r)? as usize;
-            if update_count > total_chunks as usize && total_chunks > 0 {
-                return Err(invalid("update_count exceeds total_chunks"));
+            if update_count > total_chunks as usize || update_count > remaining_updates {
+                return Err(invalid("batch update_count exceeds bound"));
             }
+            remaining_updates -= update_count;
             let mut updates = Vec::with_capacity(update_count);
             for _ in 0..update_count {
                 let chunk_index = read_u32(r)?;
@@ -811,9 +858,10 @@ impl BatchedSyncFrame {
                 let mut chunk_hash = [0u8; 32];
                 r.read_exact(&mut chunk_hash)?;
                 let enc_len = read_u32(r)? as usize;
-                if enc_len > V4_MAX_ENCODED_BYTES {
-                    return Err(invalid("enc_len exceeds V4_MAX_ENCODED_BYTES"));
+                if enc_len > V4_MAX_ENCODED_BYTES || enc_len as u64 > remaining_encoded_bytes {
+                    return Err(invalid("enc_len exceeds batch byte bound"));
                 }
+                remaining_encoded_bytes -= enc_len as u64;
                 let mut encoded_bytes = vec![0u8; enc_len];
                 r.read_exact(&mut encoded_bytes)?;
                 updates.push(EncodedChunkUpdate {
@@ -844,7 +892,7 @@ impl BatchedSyncFrame {
 
 fn write_str(w: &mut impl Write, s: &str) -> io::Result<()> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() || bytes.len() > u16::MAX as usize {
+    if bytes.is_empty() || bytes.len() > MAX_BATCH_IDENTIFIER_BYTES {
         return Err(invalid("invalid identifier length"));
     }
     write_u16(w, bytes.len() as u16)?;
@@ -853,7 +901,7 @@ fn write_str(w: &mut impl Write, s: &str) -> io::Result<()> {
 
 fn read_str(r: &mut impl Read) -> io::Result<String> {
     let len = read_u16(r)? as usize;
-    if len == 0 || len > 4096 {
+    if len == 0 || len > MAX_BATCH_IDENTIFIER_BYTES {
         return Err(invalid("invalid identifier length"));
     }
     let mut buf = vec![0u8; len];
@@ -929,10 +977,19 @@ impl RemoteWorkerStore {
         let mut staged_commits: Vec<((String, String), ResidentWorkerTensor)> =
             Vec::with_capacity(batch.ops.len());
 
+        let mut remaining_tensor_bytes = MAX_BATCH_TENSOR_BYTES;
         for op in &batch.ops {
+            if op.total_bytes == 0 || op.total_bytes > remaining_tensor_bytes {
+                return Err(invalid("batch tensor total exceeds memory bound"));
+            }
+            remaining_tensor_bytes -= op.total_bytes;
             let key = (op.session_id.clone(), op.tensor_id.clone());
-            let total_bytes = op.total_bytes as usize;
+            let total_bytes = usize::try_from(op.total_bytes)
+                .map_err(|_| invalid("batch tensor exceeds platform address space"))?;
             let chunk_bytes = op.chunk_bytes as usize;
+            if chunk_bytes == 0 || chunk_bytes > V4_MAX_CHUNK_BYTES {
+                return Err(invalid("invalid worker batch chunk geometry"));
+            }
             let expected_chunks = if total_bytes == 0 {
                 0
             } else {
