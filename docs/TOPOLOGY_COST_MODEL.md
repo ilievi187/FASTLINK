@@ -28,6 +28,19 @@ because it exists. When a multi-node decode placement is slower or infeasible,
 exclude that peer from decode or assign a non-critical role. Missing, stale, or
 low-confidence telemetry triggers the deterministic local fallback.
 
+## Current prototype boundary
+
+The checked-in `plan_with_local_fallback` primitive is deliberately limited to
+choosing one fully measured whole-model candidate against the local-only
+baseline. It does not yet partition contiguous layers or combine worker stages;
+without explicit layer ranges, a multi-node sum would be fabricated. The
+prototype's predicted latency uses per-candidate measured compute, p95 RTT, and
+activation bytes divided by measured link throughput. Per-node feasibility
+includes model shard, context KV/SSM, workspace, runtime overhead, and operator
+reserve. Missing telemetry, infeasible memory, or a candidate that does not
+beat the local baseline is excluded with an explicit reason. None of these
+estimates are measured inference outcomes.
+
 ## Reproducible benchmark matrix
 
 For N=1, 2, 3, 4, and 7, run only where that many distinct, available, authorized
