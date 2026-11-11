@@ -247,7 +247,10 @@ fn terminal_failure_after_exhausting_retries_and_reconnects_commits_zero_output_
     // Disconnect after client writes is not an acknowledgement that the server
     // durably retained every frame. Bound cache size and validate its contents.
     let verified = verify_cache_integrity(&root).unwrap();
-    assert!(verified <= 4, "a failed transfer cannot cache more than four chunks");
+    assert!(
+        verified <= 4,
+        "a failed transfer cannot cache more than four chunks"
+    );
 
     server.shutdown();
     let _ = fs::remove_dir_all(&dir);
