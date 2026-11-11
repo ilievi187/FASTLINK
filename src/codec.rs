@@ -650,12 +650,18 @@ pub fn evaluate_codec_candidate(
 ) -> io::Result<(Vec<u8>, CodecCandidateMetrics)> {
     let iters = iterations.max(1);
     let mut encoded = Vec::new();
-
-    let t_enc = Instant::now();
+    let started = Instant::now();
     for _ in 0..iters {
         encoded = encode_with_codec(codec, chunk)?;
     }
-    let encode_cpu_ms = (t_enc.elapsed().as_secs_f64() * 1_000.0) / (iters as f64);
+    let elapsed = started.elapsed();
+    // Timings below the platform clock's observable resolution are not a valid
+    // measured speed claim. Keep the candidate but reject it in favor of RAW.
+    let encode_cpu_ms = if elapsed.is_zero() {
+        f64::INFINITY
+    } else {
+        (elapsed.as_secs_f64() * 1_000.0) / (iters as f64)
+    };
 
     let decode_cpu_ms = if codec == RAW {
         0.0
