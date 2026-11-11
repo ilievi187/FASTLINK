@@ -161,9 +161,8 @@ fn simulated_link_degradation_forced_timeouts_recover_on_retry_and_resume_by_man
     assert!(report.attempt_timeouts_ms[1] > report.attempt_timeouts_ms[0]);
     assert!(report.attempt_timeouts_ms[2] > report.attempt_timeouts_ms[1]);
 
-    // The injected disconnect occurs after writing 2+3 chunks, but the
-    // receiver may have durably cached fewer bytes before socket teardown.
-    // Validate the final complete transfer, not a scheduler-dependent count.
+    // Injected disconnects follow writes, not durable server acknowledgements.
+    // Validate the complete transfer without assuming an exact cached subset.
     let metrics = report.final_metrics.unwrap();
     assert_eq!(metrics.chunks_total, 8);
     assert!(metrics.chunks_reused <= 5);
@@ -245,14 +244,11 @@ fn terminal_failure_after_exhausting_retries_and_reconnects_commits_zero_output_
         "outputs directory must be completely empty on terminal abort, got: {output_entries:?}"
     );
 
-    // At most four chunks could have been received, but TCP shutdown does not
-    // guarantee delivery/persistence of all four on a busy Windows runner.
-    // Every chunk that *was* retained must pass cache-integrity validation.
+    // Disconnect after client writes is not an acknowledgement that the server
+    // durably retained every frame. Bound the cache and ensure integrity rather
+    // than requiring a scheduler-dependent exact count.
     let verified = verify_cache_integrity(&root).unwrap();
-    assert!(
-        verified <= 4,
-        "a failed transfer cannot cache more than four chunks"
-    );
+    assert!(verified <= 4, "a failed transfer cannot cache more than four chunks");
 
     server.shutdown();
     let _ = fs::remove_dir_all(&dir);
