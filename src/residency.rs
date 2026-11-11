@@ -653,6 +653,48 @@ pub struct BatchedSyncFrame {
     pub ops: Vec<BatchedTensorOp>,
 }
 
+fn preflight_batch_admission<'a>(
+    tensors: impl IntoIterator<Item = (&'a str, u64, u64)>,
+) -> io::Result<()> {
+    let mut op_count = 0usize;
+    let mut total_bytes = 0u64;
+    let mut total_updates = 0u64;
+    let mut estimated_encoded_bytes = 0u64;
+    for (tensor_id, bytes, chunk_bytes) in tensors {
+        op_count = op_count.saturating_add(1);
+        if op_count > MAX_BATCH_OPS {
+            return Err(invalid("batch op_count exceeds bound"));
+        }
+        if tensor_id.is_empty() || tensor_id.len() > MAX_BATCH_IDENTIFIER_BYTES {
+            return Err(invalid("invalid batch tensor identifier length"));
+        }
+        if bytes == 0
+            || bytes > MAX_BATCH_TENSOR_BYTES
+            || chunk_bytes == 0
+            || chunk_bytes > V4_MAX_CHUNK_BYTES as u64
+        {
+            return Err(invalid("invalid or oversized batch tensor geometry"));
+        }
+        total_bytes = total_bytes.saturating_add(bytes);
+        let chunks = bytes.div_ceil(chunk_bytes);
+        total_updates = total_updates.saturating_add(chunks);
+        // Full transfer is the conservative upper bound even when the current
+        // remote state may permit REUSE or DELTA.
+        estimated_encoded_bytes = estimated_encoded_bytes
+            .saturating_add(bytes)
+            .saturating_add(
+                chunks.saturating_mul((V4_CHUNK_HEADER_BYTES + V4_DELTA_INDEX_HASH_BYTES) as u64),
+            );
+        if total_bytes > MAX_BATCH_TENSOR_BYTES
+            || total_updates > MAX_BATCH_UPDATES as u64
+            || estimated_encoded_bytes > MAX_BATCH_TENSOR_BYTES
+        {
+            return Err(invalid("batch exceeds admission bounds"));
+        }
+    }
+    Ok(())
+}
+
 impl BatchedSyncFrame {
     pub fn new(batch_id: u64) -> Self {
         Self {
@@ -1222,6 +1264,23 @@ impl PersistentTensorRegistry {
         worker: &mut RemoteWorkerStore,
         tokens_in_step: u64,
     ) -> io::Result<Vec<SyncDecision>> {
+        // Bound the whole caller batch before sync_decision allocates per-chunk
+        // vectors or push_decision clones their encoded payloads.
+        preflight_batch_admission(tensors.iter().map(|&(tensor_id, bytes)| {
+            let known = self.get_entry(session_id, tensor_id);
+            let chunk_bytes = match known {
+                Some(remote)
+                    if remote.valid
+                        && remote.total_bytes == bytes.len()
+                        && (512..=V4_MAX_CHUNK_BYTES).contains(&remote.chunk_bytes) =>
+                {
+                    remote.chunk_bytes
+                }
+                _ => select_v4_adaptive_plan(bytes, self.policy).chunk_bytes,
+            };
+            (tensor_id, bytes.len() as u64, chunk_bytes as u64)
+        }))?;
+
         let owner = worker.worker_id().to_string();
         let batch_id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
@@ -1590,4 +1649,34 @@ pub fn send_batch_tcp(server: &str, batch: &BatchedSyncFrame) -> io::Result<(u64
         return Err(invalid("remote worker rejected v4 batch frame"));
     }
     Ok(((encoded.len() + 5) as u64, applied))
+}
+
+#[cfg(test)]
+mod preflight_admission_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_operation_overflow_before_constructing_frame() {
+        let result = preflight_batch_admission((0..=MAX_BATCH_OPS).map(|_| ("tensor", 1, 1)));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("op_count"));
+    }
+
+    #[test]
+    fn rejects_update_overflow_from_metadata_without_payload_allocation() {
+        let result = preflight_batch_admission([("large", (MAX_BATCH_UPDATES as u64) + 1, 1)]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("admission bounds"));
+    }
+
+    #[test]
+    fn rejects_aggregate_byte_overflow_from_metadata_without_payload_allocation() {
+        let one = MAX_BATCH_TENSOR_BYTES / 2 + 1;
+        let result = preflight_batch_admission([
+            ("first", one, V4_MAX_CHUNK_BYTES as u64),
+            ("second", one, V4_MAX_CHUNK_BYTES as u64),
+        ]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("admission bounds"));
+    }
 }
