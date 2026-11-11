@@ -85,12 +85,22 @@ fn mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_fu
     let err = send_file_once_with_options(&src_path, &addr, Some(3)).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::ConnectionAborted);
 
-    // Wait briefly for the server session to observe EOF and abort cleanly
-    for _ in 0..50 {
-        if server.coord().total_sessions_aborted() >= 1 {
-            break;
+    // The client sent exactly three frames; wait until server storage confirms
+    // them before checking disconnect state. This removes scheduler timing as
+    // an assumption on fast Windows runners.
+    for hash in chunk_hashes.iter().take(3) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !cached_and_valid(&digest_path(&root, hash), hash)
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(2));
         }
-        thread::sleep(Duration::from_millis(5));
+        assert!(cached_and_valid(&digest_path(&root, hash), hash));
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while server.coord().total_sessions_aborted() < 1 && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(server.coord().total_sessions_aborted(), 1);
     assert_eq!(server.coord().total_sessions_completed(), 0);
@@ -109,14 +119,6 @@ fn mid_transfer_kill_leaves_no_partial_output_and_resumes_by_manifest_without_fu
         output_entries.is_empty(),
         "outputs directory must not contain committed or partial files after abort, got: {output_entries:?}"
     );
-
-    // Verify the first 3 chunks were persisted in the content-addressed store
-    for (i, h) in chunk_hashes.iter().enumerate().take(3) {
-        assert!(
-            cached_and_valid(&digest_path(&root, h), h),
-            "chunk {i} should be cached before mid-transfer disconnect"
-        );
-    }
 
     // 2. Resume by manifest: re-attach and send only the remaining 5 missing chunks (no full resend)
     let (_, resumed) = send_file_once_with_options(&src_path, &addr, None).unwrap();
