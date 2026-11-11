@@ -190,8 +190,11 @@ fn send_file_resumable_automatically_recovers_from_mid_transfer_disconnect() {
     .unwrap();
 
     assert_eq!(metrics.chunks_total, 6);
-    assert_eq!(metrics.chunks_reused, 2);
-    assert_eq!(metrics.chunks_transferred, 4);
+    // The client abort threshold is a sent-frame count, not a persistence
+    // acknowledgement. Under Windows scheduling the server may durably cache
+    // either one or both chunks before observing EOF. Either is a valid resume.
+    assert!((1..=2).contains(&metrics.chunks_reused));
+    assert_eq!(metrics.chunks_transferred + metrics.chunks_reused, 6);
 
     let materialized = fs::read(root.join("outputs").join("auto-resume.bin")).unwrap();
     assert_eq!(digest(&materialized), digest(&payload));
