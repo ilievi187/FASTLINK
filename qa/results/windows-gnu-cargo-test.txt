@@ -1,0 +1,100 @@
+FASTLINK Windows-target test log
+date: 2026-11-07T19:44:55+02:00
+git: cdfc5f33712abf3eadd01b942c3c29cd8be39c63
+host_os: linux
+target: x86_64-pc-windows-gnu
+runner: wine wine-11.20
+linker: x86_64-w64-mingw32-gcc (GCC) 16.2.0
+rustc: rustc 1.99.0 (b940084d7 2026-09-28)
+command: CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test --target x86_64-pc-windows-gnu --all-targets
+note: WINEDEBUG=-all so Wine fixme lines are omitted; this is a cross run under Wine, not a native Windows host.
+----
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling cpufeatures v0.3.1
+   Compiling constant_time_eq v0.4.2
+   Compiling cfg-if v1.0.5
+   Compiling arrayvec v0.7.8
+   Compiling cc v1.10.0
+   Compiling blake3 v1.8.7
+   Compiling fastlink v0.1.0 (/home/nightknight/Projects/FASTLINK-heretic-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running unittests src/lib.rs (target/x86_64-pc-windows-gnu/debug/deps/fastlink-f3a090794b3446cb.exe)
+(lsfg-vk) [ERROR]: Failed to initialize global info:
+(lsfg-vk) [ERROR]: - Unknown key in profile section: gpu
+
+running 42 tests
+test tests::checksums_change_when_content_changes ... ok
+test tests::chunk_count_boundaries ... ok
+test tests::expected_chunk_len_boundaries ... ok
+test tests::handshake_accepts_matching_reply ... ok
+test tests::handshake_rejects_bad_magic ... ok
+test tests::handshake_rejects_bad_version ... ok
+test tests::in_progress_never_equals_output ... ok
+test tests::fuzz_corpus_decode_paths_do_not_panic ... ok
+test tests::raw_underrun_rejected ... ok
+test tests::read_chunk_accepts_valid_raw ... ok
+test tests::incompressible_roundtrip ... ok
+test tests::read_chunk_rejects_bad_digest ... ok
+test tests::read_chunk_rejects_oversized_payload ... ok
+test tests::client_rejects_unbounded_missing_list ... ok
+test tests::read_chunk_rejects_raw_length_before_payload ... ok
+test tests::chunk_limit_enforced ... ok
+test tests::read_chunk_rejects_unknown_codec_before_length ... ok
+test tests::read_chunk_rejects_wrong_index ... ok
+test tests::read_manifest_rejects_bad_chunk_size ... ok
+test tests::read_manifest_rejects_bad_count ... ok
+test tests::read_manifest_rejects_empty_name ... ok
+test tests::materialize_missing_chunk_rejected ... ok
+test tests::read_manifest_rejects_name_length_before_reading_bytes ... ok
+test tests::read_manifest_rejects_overlong_name ... ok
+test tests::read_manifest_rejects_traversal_name ... ok
+test tests::rle_encoded_longer_than_twice_expected_is_rejected ... ok
+test tests::rle_oversized_run_rejected ... ok
+test tests::rle_run_zero_rejected ... ok
+test tests::rle_roundtrip_mixed ... ok
+test tests::rle_underrun_rejected ... ok
+test tests::oversized_cache_object_is_not_a_hit ... ok
+test tests::safe_basename_rejects_traversal_and_control ... ok
+test tests::rle_sparse_roundtrip ... ok
+test tests::unknown_codec_rejected ... ok
+test tests::validate_connect_address_only_loopback ... ok
+test tests::validate_listen_address_only_loopback ... ok
+test tests::store_chunk_rejects_misaddressed_bytes ... ok
+test tests::recover_does_not_promote_in_progress_when_output_is_absent ... ok
+test tests::materialize_collision_name_failure_preserves_prior_output ... ok
+test tests::recover_discards_partials_and_keeps_committed_output ... ok
+test tests::materialize_writes_verified_output ... ok
+test tests::materialize_replaces_existing_atomically ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (target/x86_64-pc-windows-gnu/debug/deps/fastlink-ffb936cc42697a8d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol.rs (target/x86_64-pc-windows-gnu/debug/deps/protocol-2dd937ddc5d1cc31.exe)
+
+running 15 tests
+test loopback_only_guards ... ok
+test malformed_manifest_frame_is_rejected ... ok
+test handshake_magic_mismatch_is_rejected ... ok
+test invalid_filename_is_rejected_before_any_output ... ok
+test zero_byte_file_transfers_and_reconstructs ... ok
+test mid_chunk_disconnect_leaves_no_output ... ok
+test truncated_transfer_leaves_no_output ... ok
+test corrupt_chunk_digest_is_rejected_and_no_output ... ok
+test cold_transfer_over_tcp ... ok
+test stale_in_progress_is_discarded_not_committed ... ok
+test duplicate_chunks_transferred_once ... ok
+test single_chunk_delta_only_transfers_missing ... ok
+test concurrent_transfers_all_byte_identical ... ok
+test warm_transfer_reuses_cache ... ok
+test failed_transfer_never_replaces_prior_output ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+EXIT:0
+finished 2026-11-07T19:46:12+02:00

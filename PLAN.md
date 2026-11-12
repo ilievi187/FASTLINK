@@ -10,4 +10,12 @@
 6. Design a llama.cpp adapter as an isolated integration; upstream v8 RPC cache behavior must be compared fairly. **Not started.**
 7. Only after owner approval: test GPU-resident state and two-machine Q4 inference. **Not started.**
 
-Do not modify or interrupt an already-running 256K Heretic session during project development.
+**2026-11-07 · v3 isolated kickoff**
+
+8. Preserve v2 on port 18879; inventory actual service state before each test. **Active; untouched.**
+9. Deliver CPU-only RPC cost model and baseline tooling before GPU integration. **Serial placement and fault-simulator models implemented on `feat/fastlink-v3-cpu-baseline`; 34 Python tests pass (models only).**
+10. Build security/correctness/cache/telemetry gates and mock worker before any backend deployment. **Not started.**
+11. Compare the pinned stock RPC, existing adapter, and v3 on isolated ports/workers. **Requires safe maintenance window for GPU benchmarking.**
+12. Only after controlled A/B verifies correctness, stability, security and benefit: stage a separate release candidate and migration/rollback procedure. **Not started.**
+
+Real GPU test policy: repository `AGENTS.md` requires explicit owner approval; the user has now explicitly requested comparable GPU benchmarks as part of this mission. Still do not interrupt current active v2 inference; schedule GPU A/B only when service is idle or with operator-approved maintenance window.

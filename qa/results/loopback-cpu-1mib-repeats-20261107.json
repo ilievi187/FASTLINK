@@ -1,0 +1,292 @@
+{
+  "cases": {
+    "random_cold": {
+      "all_checksums_match": true,
+      "median_end_to_end_ms": 130,
+      "median_fastlink_elapsed_ms": 127,
+      "payload_bytes": [
+        1048576,
+        1048576,
+        1048576
+      ],
+      "runs": 3,
+      "tcp_stream_bytes": [
+        1049350,
+        1049350,
+        1049350
+      ]
+    },
+    "random_one_byte_delta": {
+      "all_checksums_match": true,
+      "median_end_to_end_ms": 135,
+      "median_fastlink_elapsed_ms": 133,
+      "payload_bytes": [
+        65536,
+        65536,
+        65536
+      ],
+      "runs": 3,
+      "tcp_stream_bytes": [
+        66115,
+        66115,
+        66115
+      ]
+    },
+    "random_warm": {
+      "all_checksums_match": true,
+      "median_end_to_end_ms": 46,
+      "median_fastlink_elapsed_ms": 43,
+      "payload_bytes": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3,
+      "tcp_stream_bytes": [
+        566,
+        566,
+        566
+      ]
+    },
+    "sparse_cold": {
+      "all_checksums_match": true,
+      "median_end_to_end_ms": 137,
+      "median_fastlink_elapsed_ms": 135,
+      "payload_bytes": [
+        1548,
+        1548,
+        1548
+      ],
+      "runs": 3,
+      "tcp_stream_bytes": [
+        2153,
+        2153,
+        2153
+      ]
+    }
+  },
+  "classification": "CPU-only loopback FASTLINK file-sync benchmark; not inference",
+  "fixture_size_mib": 1,
+  "repeat_count": 3,
+  "runs": [
+    {
+      "cases": [
+        {
+          "chunks_reused": 0,
+          "chunks_total": 16,
+          "chunks_transferred": 16,
+          "elapsed_ms": 127,
+          "encoded_payload_bytes": 1048576,
+          "end_to_end_ms": 130,
+          "file_bytes": 1048576,
+          "name": "random_cold",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 1048576,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 1049350
+        },
+        {
+          "chunks_reused": 16,
+          "chunks_total": 16,
+          "chunks_transferred": 0,
+          "elapsed_ms": 42,
+          "encoded_payload_bytes": 0,
+          "end_to_end_ms": 45,
+          "file_bytes": 1048576,
+          "name": "random_warm",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 0,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 566
+        },
+        {
+          "chunks_reused": 15,
+          "chunks_total": 16,
+          "chunks_transferred": 1,
+          "elapsed_ms": 133,
+          "encoded_payload_bytes": 65536,
+          "end_to_end_ms": 135,
+          "file_bytes": 1048576,
+          "name": "random_one_byte_delta",
+          "ok": true,
+          "output_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "raw_missing_bytes": 65536,
+          "source_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "tcp_stream_bytes": 66115
+        },
+        {
+          "chunks_reused": 13,
+          "chunks_total": 16,
+          "chunks_transferred": 3,
+          "elapsed_ms": 135,
+          "encoded_payload_bytes": 1548,
+          "end_to_end_ms": 137,
+          "file_bytes": 1048576,
+          "name": "sparse_cold",
+          "ok": true,
+          "output_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "raw_missing_bytes": 196608,
+          "source_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "tcp_stream_bytes": 2153
+        }
+      ],
+      "classification": "CPU-only loopback FASTLINK file-sync benchmark; not inference",
+      "fixture_size_mib": 1,
+      "summary": {
+        "all_correct": true,
+        "case_count": 4,
+        "elapsed_ms_median": 132.5,
+        "payload_bytes_total": 1115660,
+        "tcp_stream_bytes_total": 1118184
+      }
+    },
+    {
+      "cases": [
+        {
+          "chunks_reused": 0,
+          "chunks_total": 16,
+          "chunks_transferred": 16,
+          "elapsed_ms": 126,
+          "encoded_payload_bytes": 1048576,
+          "end_to_end_ms": 129,
+          "file_bytes": 1048576,
+          "name": "random_cold",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 1048576,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 1049350
+        },
+        {
+          "chunks_reused": 16,
+          "chunks_total": 16,
+          "chunks_transferred": 0,
+          "elapsed_ms": 44,
+          "encoded_payload_bytes": 0,
+          "end_to_end_ms": 46,
+          "file_bytes": 1048576,
+          "name": "random_warm",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 0,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 566
+        },
+        {
+          "chunks_reused": 15,
+          "chunks_total": 16,
+          "chunks_transferred": 1,
+          "elapsed_ms": 126,
+          "encoded_payload_bytes": 65536,
+          "end_to_end_ms": 129,
+          "file_bytes": 1048576,
+          "name": "random_one_byte_delta",
+          "ok": true,
+          "output_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "raw_missing_bytes": 65536,
+          "source_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "tcp_stream_bytes": 66115
+        },
+        {
+          "chunks_reused": 13,
+          "chunks_total": 16,
+          "chunks_transferred": 3,
+          "elapsed_ms": 135,
+          "encoded_payload_bytes": 1548,
+          "end_to_end_ms": 137,
+          "file_bytes": 1048576,
+          "name": "sparse_cold",
+          "ok": true,
+          "output_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "raw_missing_bytes": 196608,
+          "source_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "tcp_stream_bytes": 2153
+        }
+      ],
+      "classification": "CPU-only loopback FASTLINK file-sync benchmark; not inference",
+      "fixture_size_mib": 1,
+      "summary": {
+        "all_correct": true,
+        "case_count": 4,
+        "elapsed_ms_median": 129.0,
+        "payload_bytes_total": 1115660,
+        "tcp_stream_bytes_total": 1118184
+      }
+    },
+    {
+      "cases": [
+        {
+          "chunks_reused": 0,
+          "chunks_total": 16,
+          "chunks_transferred": 16,
+          "elapsed_ms": 137,
+          "encoded_payload_bytes": 1048576,
+          "end_to_end_ms": 139,
+          "file_bytes": 1048576,
+          "name": "random_cold",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 1048576,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 1049350
+        },
+        {
+          "chunks_reused": 16,
+          "chunks_total": 16,
+          "chunks_transferred": 0,
+          "elapsed_ms": 43,
+          "encoded_payload_bytes": 0,
+          "end_to_end_ms": 46,
+          "file_bytes": 1048576,
+          "name": "random_warm",
+          "ok": true,
+          "output_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "raw_missing_bytes": 0,
+          "source_sha256": "ab5e9f8ffe86d7650e1fab5ee7c98b2f2cff222f8b40840e6a77a3aa2aaa8087",
+          "tcp_stream_bytes": 566
+        },
+        {
+          "chunks_reused": 15,
+          "chunks_total": 16,
+          "chunks_transferred": 1,
+          "elapsed_ms": 134,
+          "encoded_payload_bytes": 65536,
+          "end_to_end_ms": 136,
+          "file_bytes": 1048576,
+          "name": "random_one_byte_delta",
+          "ok": true,
+          "output_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "raw_missing_bytes": 65536,
+          "source_sha256": "006da3c861e4374aa0ce08fc5ea6c2d7adf6fc7e50b3c4a5c3251c1ed9d14d11",
+          "tcp_stream_bytes": 66115
+        },
+        {
+          "chunks_reused": 13,
+          "chunks_total": 16,
+          "chunks_transferred": 3,
+          "elapsed_ms": 135,
+          "encoded_payload_bytes": 1548,
+          "end_to_end_ms": 138,
+          "file_bytes": 1048576,
+          "name": "sparse_cold",
+          "ok": true,
+          "output_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "raw_missing_bytes": 196608,
+          "source_sha256": "c73e42e3bc63523876c6da75eb7e789030f07729d4490f6edf6fea044c380b90",
+          "tcp_stream_bytes": 2153
+        }
+      ],
+      "classification": "CPU-only loopback FASTLINK file-sync benchmark; not inference",
+      "fixture_size_mib": 1,
+      "summary": {
+        "all_correct": true,
+        "case_count": 4,
+        "elapsed_ms_median": 137.0,
+        "payload_bytes_total": 1115660,
+        "tcp_stream_bytes_total": 1118184
+      }
+    }
+  ]
+}

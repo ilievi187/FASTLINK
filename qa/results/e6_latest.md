@@ -1,0 +1,133 @@
+# FL3-E6 fault scenario results
+- commit `4d9b086` 20261107T201210Z
+- CPU-only loopback, deterministic seed 0xe6e6
+
+## (a) digest corruption after successful transfer
+- verdict: **byte_exact_retransfer** | status=ok | silent_corruption=False
+```json
+{
+  "id": "a",
+  "name": "digest corruption after successful transfer",
+  "status": "ok",
+  "corrupted_chunk": "chunks/2e/2e30f5596c5236536b474080eebbd510d05528f9759602b669e8aede43990ed8",
+  "initial": {
+    "ok": true
+  },
+  "after_corruption": {
+    "ok": true,
+    "out_sha256": "eb3b28a2c5820b6dcbd3060cda6955d2f24986e85049367ad3a3e30d26c4c29b",
+    "src_sha256": "eb3b28a2c5820b6dcbd3060cda6955d2f24986e85049367ad3a3e30d26c4c29b",
+    "byte_exact": true
+  },
+  "cache_integrity_after": {
+    "ok": true,
+    "checked": 4,
+    "bad": []
+  },
+  "silent_corruption": false,
+  "verdict": "byte_exact_retransfer"
+}
+```
+
+## (b) server restart mid-session
+- verdict: **byte_exact_resume** | status=ok | silent_corruption=False
+```json
+{
+  "id": "b",
+  "name": "server restart mid-session",
+  "status": "ok",
+  "total_chunks": 6,
+  "thresh": 3,
+  "killed_at_poll": null,
+  "chunks_after_kill": 6,
+  "mid_kill": false,
+  "resume": {
+    "ok": true,
+    "byte_exact": true,
+    "src_sha256": "eed457445821abbf6d9f90dd51728ddb7359fdeab444fdf628d67f21674ae558",
+    "out_sha256": "eed457445821abbf6d9f90dd51728ddb7359fdeab444fdf628d67f21674ae558"
+  },
+  "silent_corruption": false,
+  "verdict": "byte_exact_resume"
+}
+```
+
+## (c) duplicate chunk indices in NEED list (raw protocol injection)
+- verdict: **clean_fail_order_enforced** | status=ok | silent_corruption=False
+```json
+{
+  "id": "c",
+  "name": "duplicate chunk indices in NEED list (raw protocol injection)",
+  "status": "ok",
+  "method": "raw client sends (need[0],payload),(need[0],payload) while server expects sequential need list; v0.1 server enforces index==expected_index",
+  "observed": {
+    "need_n": 4,
+    "need": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "server_response_err": "[Errno 104] Connection reset by peer"
+  },
+  "output_exists": false,
+  "no_partial_committed": true,
+  "cache_integrity": {
+    "ok": true,
+    "checked": 1,
+    "bad": []
+  },
+  "silent_corruption": false,
+  "verdict": "clean_fail_order_enforced",
+  "honest_note": "Server enforces strict NEED order (index!=expected -> chunk order mismatch). Duplicate index injection therefore produces clean-fail, not idempotent acceptance. No silent corruption observed."
+}
+```
+
+## (d) client disconnect during RESUME (mid-transfer)
+- verdict: **no_partial_then_byte_exact_resume** | status=ok | silent_corruption=False
+```json
+{
+  "id": "d",
+  "name": "client disconnect during RESUME (mid-transfer)",
+  "status": "ok",
+  "phase1": {
+    "chunks_sent": 2,
+    "need_n": 6,
+    "no_partial_output": true,
+    "cache_chunks_after_disconnect": 2,
+    "cache_integrity": {
+      "ok": true,
+      "checked": 2,
+      "bad": []
+    }
+  },
+  "phase2_resume": {
+    "ok": true,
+    "byte_exact": true,
+    "out_sha256": "7b1a28501323e1404c0132ab19dc19268f9b2aafc95b566003aafafb6a09c221",
+    "src_sha256": "7b1a28501323e1404c0132ab19dc19268f9b2aafc95b566003aafafb6a09c221",
+    "cache_integrity": {
+      "ok": true,
+      "checked": 6,
+      "bad": []
+    }
+  },
+  "silent_corruption": false,
+  "verdict": "no_partial_then_byte_exact_resume"
+}
+```
+
+## Summary
+```json
+{
+  "all_no_silent_corruption": true,
+  "all_ok_status": true,
+  "verdicts": {
+    "a": "byte_exact_retransfer",
+    "b": "byte_exact_resume",
+    "c": "clean_fail_order_enforced",
+    "d": "no_partial_then_byte_exact_resume"
+  },
+  "all_pass": true
+}
+```

@@ -9,3 +9,5 @@
 .env
 .env.*
 !examples/*.txt
+__pycache__/
+*.py[cod]

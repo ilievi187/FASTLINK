@@ -1,0 +1,1748 @@
+{
+  "harness": "FL3-E5",
+  "timestamp_utc": "20261107T193857Z",
+  "netsim_commit": "a50ecd8",
+  "netsim_bin": "/home/nightknight/Projects/FASTLINK/.worktrees/fastlink-v3-network-sim/target/release/fastlink",
+  "env": {
+    "cpu_only": true,
+    "loopback_only": true,
+    "gpu_used": false,
+    "ssh_used": false
+  },
+  "sustained": {
+    "status": "ok",
+    "params": {
+      "n_seq": 50,
+      "file_bytes": 1048576,
+      "seed": 58853,
+      "passes": "cold_then_warm (100 transfers)",
+      "rss_bound_kb": 32768
+    },
+    "passes": {
+      "cold": {
+        "n": 50,
+        "ok": 50,
+        "byte_exact": 50,
+        "all_ok": true,
+        "all_zero_transferred": null,
+        "latency_ms": {
+          "min": 84.79,
+          "max": 88.411,
+          "mean": 86.111,
+          "p50": 86.093
+        },
+        "per_transfer": [
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.914,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-000.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 0,
+            "phase": "cold",
+            "server_rss_kb": 2728
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.083,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-001.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 1,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.78,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-002.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 2,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.316,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-003.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 3,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.169,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-004.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 4,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 84.79,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-005.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 5,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.132,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-006.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 6,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.18,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-007.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 7,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.265,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-008.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 8,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.401,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-009.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 9,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.059,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-010.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 10,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 84.792,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-011.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 11,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.356,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-012.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 12,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.598,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-013.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 13,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.087,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-014.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 14,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 84.893,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-015.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 15,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.948,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-016.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 16,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.501,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-017.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 17,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.64,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-018.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 18,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.135,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-019.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 19,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.093,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-020.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 20,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.888,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-021.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 21,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.919,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-022.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 22,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.081,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-023.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 23,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.077,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-024.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 24,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.03,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-025.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 25,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.002,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-026.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 26,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.422,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-027.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 27,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.665,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-028.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 28,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.255,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-029.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 29,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.946,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-030.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 30,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 88.411,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-031.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 87\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 31,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.321,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-032.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 32,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.234,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-033.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 33,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.737,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-034.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 34,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.257,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-035.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 35,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.751,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-036.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 36,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.963,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-037.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 37,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.127,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-038.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 38,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.513,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-039.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 39,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.633,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-040.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 40,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.818,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-041.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 41,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.131,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-042.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 42,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.948,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-043.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 43,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.241,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-044.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 44,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.802,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-045.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 45,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 87.094,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-046.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 86\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 46,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 84.915,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-047.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 47,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 85.091,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-048.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 84\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 48,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 86.137,
+            "chunks_transferred": 16,
+            "output_tail": "FASTLINK sync complete: e5-049.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 0\n  chunks_transferred: 16\n  raw_missing_bytes: 1048576\n  encoded_payload_bytes: 1048576\n  payload_bytes_avoided_vs_full_file: 0\n  elapsed_ms: 85\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 49,
+            "phase": "cold",
+            "server_rss_kb": 2792
+          }
+        ]
+      },
+      "warm": {
+        "n": 50,
+        "ok": 50,
+        "byte_exact": 50,
+        "all_ok": true,
+        "all_zero_transferred": true,
+        "latency_ms": {
+          "min": 41.977,
+          "max": 44.223,
+          "mean": 43.014,
+          "p50": 43.052
+        },
+        "per_transfer": [
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.536,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-000.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 0,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.013,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-001.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 1,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.154,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-002.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 2,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.121,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-003.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 3,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.094,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-004.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 4,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 44.223,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-005.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 5,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.973,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-006.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 6,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.987,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-007.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 7,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.978,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-008.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 8,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.014,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-009.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 9,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 44.06,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-010.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 10,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.001,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-011.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 11,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.147,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-012.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 12,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 44.038,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-013.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 13,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.903,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-014.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 14,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.118,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-015.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 15,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.063,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-016.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 16,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.082,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-017.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 17,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.172,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-018.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 18,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 44.099,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-019.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 19,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.037,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-020.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 20,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.102,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-021.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 21,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.015,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-022.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 22,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.257,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-023.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 23,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 41.977,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-024.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 24,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.199,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-025.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 25,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.994,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-026.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 26,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.182,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-027.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 27,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.172,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-028.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 28,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.053,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-029.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 29,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.893,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-030.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 30,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.344,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-031.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 31,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.809,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-032.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 32,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.121,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-033.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 33,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.01,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-034.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 34,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.104,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-035.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 35,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.056,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-036.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 36,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 44.009,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-037.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 37,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.147,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-038.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 41\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 38,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.036,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-039.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 39,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.019,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-040.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 40,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.962,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-041.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 41,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.964,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-042.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 43\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 42,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 42.964,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-043.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 43,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.164,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-044.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 44,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.052,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-045.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 45,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.009,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-046.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 46,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.184,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-047.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 47,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.066,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-048.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 48,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          },
+          {
+            "ok": true,
+            "rc": 0,
+            "wall_ms": 43.006,
+            "chunks_transferred": 0,
+            "output_tail": "FASTLINK sync complete: e5-049.bin\n  file_bytes: 1048576\n  chunks_total: 16\n  chunks_reused: 16\n  chunks_transferred: 0\n  raw_missing_bytes: 0\n  encoded_payload_bytes: 0\n  payload_bytes_avoided_vs_full_file: 1048576\n  elapsed_ms: 42\n  note: payload counts exclude wire framing, hashes, and TCP overhead",
+            "byte_exact": true,
+            "idx": 49,
+            "phase": "warm",
+            "server_rss_kb": 2792
+          }
+        ]
+      }
+    },
+    "rss": {
+      "samples": [
+        {
+          "phase": "cold",
+          "i": 0,
+          "rss_kb": 2728
+        },
+        {
+          "phase": "cold",
+          "i": 1,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 2,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 3,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 4,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 5,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 6,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 7,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 8,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 9,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 10,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 11,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 12,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 13,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 14,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 15,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 16,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 17,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 18,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 19,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 20,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 21,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 22,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 23,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 24,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 25,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 26,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 27,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 28,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 29,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 30,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 31,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 32,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 33,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 34,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 35,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 36,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 37,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 38,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 39,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 40,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 41,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 42,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 43,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 44,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 45,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 46,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 47,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 48,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "cold",
+          "i": 49,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 0,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 1,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 2,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 3,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 4,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 5,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 6,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 7,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 8,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 9,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 10,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 11,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 12,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 13,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 14,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 15,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 16,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 17,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 18,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 19,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 20,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 21,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 22,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 23,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 24,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 25,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 26,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 27,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 28,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 29,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 30,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 31,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 32,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 33,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 34,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 35,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 36,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 37,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 38,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 39,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 40,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 41,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 42,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 43,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 44,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 45,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 46,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 47,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 48,
+          "rss_kb": 2792
+        },
+        {
+          "phase": "warm",
+          "i": 49,
+          "rss_kb": 2792
+        }
+      ],
+      "min_kb": 2792,
+      "max_kb": 2792,
+      "delta_kb": 0,
+      "bound_kb": 32768,
+      "bounded": true,
+      "note": "VmRSS of server process sampled after each transfer; first 2 samples excluded from bound calc"
+    },
+    "summary": {
+      "cold_all_byte_exact": true,
+      "warm_all_byte_exact": true,
+      "warm_all_zero_transferred": true,
+      "rss_bounded": true,
+      "all_pass": true
+    }
+  },
+  "concurrent_cpu_baseline": {
+    "status": "ok",
+    "info": {
+      "cpu_baseline_head": "deac1d0",
+      "recent_log": [
+        "deac1d0 feat(server): N=4 concurrent client session isolation and cache integrity verification (FL3-A4)",
+        "7158369 feat(server): bounded queues, backpressure, and resume-by-manifest after disconnect (FL3-A3)",
+        "bd69e51 feat(codec): add adaptive RAW/RLE/LZ4/ZSTD codec selection and cost benchmarks (FL3-A1)"
+      ],
+      "has_concurrent_infra_in_src": true,
+      "a4_commit_observed_in_head3": true
+    },
+    "n": 4,
+    "results": [
+      {
+        "idx": 0,
+        "ok": true,
+        "rc": 0,
+        "wall_ms": 132.543,
+        "chunks_transferred": 16,
+        "byte_exact": true,
+        "src_sha256": "5de830f26151eea57a446c24a398fdf3f5201a5eff55ece852364770c8fdde8f",
+        "out_sha256": "5de830f26151eea57a446c24a398fdf3f5201a5eff55ece852364770c8fdde8f"
+      },
+      {
+        "idx": 1,
+        "ok": true,
+        "rc": 0,
+        "wall_ms": 131.463,
+        "chunks_transferred": 16,
+        "byte_exact": true,
+        "src_sha256": "7e4b16169a7eb69db0af177c8aaaacbe44ae2b94cd459264bb4106d3405deb6f",
+        "out_sha256": "7e4b16169a7eb69db0af177c8aaaacbe44ae2b94cd459264bb4106d3405deb6f"
+      },
+      {
+        "idx": 2,
+        "ok": true,
+        "rc": 0,
+        "wall_ms": 135.274,
+        "chunks_transferred": 16,
+        "byte_exact": true,
+        "src_sha256": "aca10a1faba2974c7d3a59351117f63063f24a73766854f3bbdaede5d9206aea",
+        "out_sha256": "aca10a1faba2974c7d3a59351117f63063f24a73766854f3bbdaede5d9206aea"
+      },
+      {
+        "idx": 3,
+        "ok": true,
+        "rc": 0,
+        "wall_ms": 132.136,
+        "chunks_transferred": 16,
+        "byte_exact": true,
+        "src_sha256": "2ae511b87c10e6b059ee624672e2d7061c8e96d807795fc44b3de09f538785f2",
+        "out_sha256": "2ae511b87c10e6b059ee624672e2d7061c8e96d807795fc44b3de09f538785f2"
+      }
+    ],
+    "summary": {
+      "all_ok": true,
+      "all_byte_exact": true,
+      "all_pass": true
+    },
+    "honest_note": "Measured against cpu-baseline release binary at deac1d0 (FL3-A4 committed). Read-only build; 4 parallel sends, distinct 1 MiB files, loopback, same server, all byte-exact. CPU-only."
+  },
+  "summary": {
+    "sustained": {
+      "cold_all_byte_exact": true,
+      "warm_all_byte_exact": true,
+      "warm_all_zero_transferred": true,
+      "rss_bounded": true,
+      "all_pass": true
+    },
+    "concurrent": {
+      "all_ok": true,
+      "all_byte_exact": true,
+      "all_pass": true
+    }
+  },
+  "note_path_fix": "Initial e5 run had wrong CPU_BASELINE path (missing .worktrees); concurrent stress re-run correctly at 2026-11-07T21:45+02:00, result merged."
+}
