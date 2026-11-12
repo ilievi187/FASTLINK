@@ -7,6 +7,7 @@ pub mod node_runtime;
 pub mod pairing;
 pub mod pipeline;
 pub mod residency;
+pub mod scheduler;
 pub mod topology;
 
 use std::io::{self, Read, Write};
