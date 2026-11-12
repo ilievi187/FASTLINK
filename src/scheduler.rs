@@ -121,7 +121,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const LOW_BATTERY_PCT: u8 = 15;
 
 fn battery_ok(node: &NodeProfile) -> bool {
-    node.battery_pct.map_or(true, |pct| pct > LOW_BATTERY_PCT)
+    node.battery_pct.is_none_or(|pct| pct > LOW_BATTERY_PCT)
 }
 
 fn node_allows(node: &NodeProfile, role: DeviceRole) -> bool {
@@ -287,7 +287,7 @@ pub fn plan_heterogeneous_stages(
     let used: Vec<&str> = stages.iter().map(|s| s.node_id.as_str()).collect();
 
     for node in nodes {
-        if used.iter().any(|id| *id == node.id.as_str()) {
+        if used.contains(&node.id.as_str()) {
             continue;
         }
         let mut assign_aux = false;
