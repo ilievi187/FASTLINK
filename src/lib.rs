@@ -1,6 +1,7 @@
 //! FASTLINK: conservative, lossless content-addressed transfer primitives.
 //! This is an independent experimental protocol, not a GPU driver.
 
+pub mod scheduler;
 pub mod topology;
 
 use std::io::{self, Read, Write};
