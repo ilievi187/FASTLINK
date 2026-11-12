@@ -2,6 +2,7 @@
 //! This is an independent experimental protocol, not a GPU driver.
 
 pub mod manifest;
+pub mod node_runtime;
 pub mod pairing;
 pub mod pipeline;
 pub mod residency;
