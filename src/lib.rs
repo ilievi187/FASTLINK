@@ -1,6 +1,7 @@
 //! FASTLINK: conservative, lossless content-addressed transfer primitives.
 //! This is an independent experimental protocol, not a GPU driver.
 
+pub mod cli_plan;
 pub mod cluster_orchestrator;
 pub mod kv_delta;
 pub mod manifest;
