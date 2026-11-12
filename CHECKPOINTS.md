@@ -20,6 +20,20 @@ Note: Test execution (`cargo test`) is deferred pending explicit owner permissio
   - `src/kv_delta.rs`: `KvPageSnapshot`, `diff_kv_pages`, `build_kv_delta_packet`, `apply_kv_delta_packet` for BLAKE3-verified incremental KV/SSM state migration.
   - `tests/kv_delta_test.rs`: 1 test written (compilation + clippy verified; execution pending permission).
 
-## In-Flight
+## Checkpoint 2 — 2026-11-12 (Heterogeneous Scheduler, Plan CLI, Cluster Orchestrator, Stage Auth, KV Migration Runner)
 
-- **Wave 1 (OpenCode)** — `feat/heterogeneous-scheduler` in `.worktrees/team-opencode-scheduler`: Heterogeneous 2–16+ device contiguous layer-stage partitioner (`src/scheduler.rs`, `tests/scheduler_test.rs`).
+- **Wave 1 (OpenCode)** — `feat/heterogeneous-scheduler` (`6d2976f`, merged `e37f712`):
+  - `src/scheduler.rs`: Heterogeneous 2–16+ device contiguous layer-stage partitioner (`plan_heterogeneous_stages`, `PlanObjective`, `DeviceRole`, `ModelSpec`, `NodeProfile`, `sample_profiles_{1,2,3,4,7,16}`), hard-gating slow/thermal/low-battery nodes off decode critical path.
+  - `tests/scheduler_test.rs`: 70B memory-fit, mobile exclusion, no-degradation gating, and contiguous coverage tests (compilation + clippy verified; execution pending permission).
+- **Wave 2 (AGY)** — `feat/cluster-orchestrator` (`f5bd1f0`, merged):
+  - `src/cluster_orchestrator.rs`: `ClusterOrchestrator` bridging `scheduler::MultiStagePlan`, `pairing::NetworkTrust`, `manifest::ManifestCoordinator` epoch-bumped resharding, `LayerMigration` diffing, and `node_runtime::run_loopback_pipeline`.
+  - `tests/cluster_orchestrator_test.rs`: Untrusted rejection, plan/commit/evacuate/loopback pipeline, and fault reshard tests (compilation + clippy verified; execution pending permission).
+- **Wave 2 (OpenCode)** — `feat/plan-cli` (`57f5ef5`, merged `9f0a6e4`):
+  - `src/cli_plan.rs` + `src/main.rs`: Dry-run `fastlink plan [--nodes 1|2|3|4|7|16] [--objective largest|latency|throughput] [--model small|70b] [--json]` subcommand.
+  - `tests/cli_plan_test.rs`: Arg parsing, invalid flags, synthetic cluster sizes, and JSON/text output tests (compilation + clippy verified; execution pending permission).
+- **Wave 3 (AGY)** — `feat/authenticated-stage-handshake` (`bf0c252`, merged):
+  - `src/stage_auth.rs`: Epoch- and hop-scoped keyed-BLAKE3 authentication (`derive_hop_key`, `seal_stage_frame`, `open_stage_frame`) for `ActivationFrame` packets.
+  - `tests/stage_auth_test.rs`: Valid MAC verification, tampered frame, wrong key, stage mismatch, and short packet tests (compilation + clippy verified; execution pending permission).
+- **Wave 3 (OpenCode)** — `feat/kv-migration-runner` (`8873737`, merged):
+  - `src/migration_runner.rs`: `execute_layer_migration` and `execute_reshard_migrations` driving `kv_delta` packet transfer and BLAKE3 digest verification over `LayerMigration`s.
+  - `tests/migration_runner_test.rs`: Cold migration, warm incremental delta migration, and range mismatch rejection tests (compilation + clippy verified; execution pending permission).
