@@ -1,6 +1,7 @@
 //! FASTLINK: conservative, lossless content-addressed transfer primitives.
 //! This is an independent experimental protocol, not a GPU driver.
 
+pub mod kv_delta;
 pub mod manifest;
 pub mod node_runtime;
 pub mod pairing;
