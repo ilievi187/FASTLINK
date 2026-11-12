@@ -4,16 +4,18 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::kv_delta::KvPageSnapshot;
 use crate::manifest::{
     ManifestCoordinator, ManifestError, NodeLifecycle, PartitionManifest, StageSpec,
 };
+use crate::migration_runner::{execute_layer_migration, MigrationError, MigrationReport};
 use crate::node_runtime::{run_loopback_pipeline, RuntimeError};
 use crate::pairing::NetworkTrust;
 use crate::pipeline::PipelineSummary;
 use crate::scheduler::{
     plan_heterogeneous_stages, ModelSpec, MultiStagePlan, NodeProfile, PlanObjective,
 };
-use crate::Digest;
+use crate::{digest, Digest};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClusterNode {
@@ -46,6 +48,7 @@ pub enum OrchestratorError {
     NoActiveManifest,
     ContextLenOverflow(u64),
     Manifest(ManifestError),
+    Migration(MigrationError),
     Runtime(RuntimeError),
 }
 
@@ -60,6 +63,7 @@ impl fmt::Display for OrchestratorError {
             Self::NoActiveManifest => write!(f, "no active partition manifest committed"),
             Self::ContextLenOverflow(v) => write!(f, "context_len {v} exceeds u32::MAX"),
             Self::Manifest(e) => write!(f, "manifest error: {e}"),
+            Self::Migration(e) => write!(f, "migration error: {e}"),
             Self::Runtime(e) => write!(f, "runtime error: {e:?}"),
         }
     }
@@ -70,6 +74,12 @@ impl std::error::Error for OrchestratorError {}
 impl From<ManifestError> for OrchestratorError {
     fn from(e: ManifestError) -> Self {
         Self::Manifest(e)
+    }
+}
+
+impl From<MigrationError> for OrchestratorError {
+    fn from(e: MigrationError) -> Self {
+        Self::Migration(e)
     }
 }
 
@@ -128,6 +138,54 @@ fn compute_migrations(
         }
     }
     migrations
+}
+
+type KvStageKey = (String, u32, u32);
+type KvStageEntry = (KvPageSnapshot, Vec<Vec<u8>>);
+
+/// In-memory per-node KV/SSM page store keyed by `(node_id, layer_start, layer_end)`.
+#[derive(Clone, Debug, Default)]
+pub struct ClusterKvStore {
+    entries: HashMap<KvStageKey, KvStageEntry>,
+}
+
+impl ClusterKvStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn put_stage_pages(
+        &mut self,
+        node_id: impl Into<String>,
+        epoch: u64,
+        generation: u64,
+        layer_start: u32,
+        layer_end: u32,
+        pages: Vec<Vec<u8>>,
+    ) {
+        let node_id = node_id.into();
+        let page_digests = pages.iter().map(|p| digest(p)).collect();
+        let snapshot = KvPageSnapshot {
+            epoch,
+            generation,
+            layer_start,
+            layer_end,
+            page_digests,
+        };
+        self.entries
+            .insert((node_id, layer_start, layer_end), (snapshot, pages));
+    }
+
+    pub fn get_stage_pages(
+        &self,
+        node_id: &str,
+        layer_start: u32,
+        layer_end: u32,
+    ) -> Option<(&KvPageSnapshot, &[Vec<u8>])> {
+        self.entries
+            .get(&(node_id.to_string(), layer_start, layer_end))
+            .map(|(snap, pages)| (snap, pages.as_slice()))
+    }
 }
 
 /// Coordinates heterogeneous planning, manifest epoch commits, evacuation/fault
@@ -243,6 +301,62 @@ impl ClusterOrchestrator {
                 .current_manifest()
                 .ok_or(OrchestratorError::NoActiveManifest)?,
         ))
+    }
+
+    pub fn evacuate_with_kv_migration(
+        &mut self,
+        leaving_node_id: &str,
+        objective: PlanObjective,
+        local_id: Option<&str>,
+        kv_store: &mut ClusterKvStore,
+        generation: u64,
+    ) -> Result<(ReshardOutcome, Vec<MigrationReport>, &PartitionManifest), OrchestratorError> {
+        let (outcome, _) = self.evacuate_and_reshard(leaving_node_id, objective, local_id)?;
+        let mut reports = Vec::new();
+        for migration in &outcome.migrations {
+            let Some((src_snap, src_pages)) = kv_store.get_stage_pages(
+                &migration.from_node,
+                migration.layer_start,
+                migration.layer_end,
+            ) else {
+                continue;
+            };
+            let src_snap = src_snap.clone();
+            let src_pages = src_pages.to_vec();
+            let (prev_target_snap, mut target_pages) = kv_store
+                .entries
+                .get(&(
+                    migration.to_node.clone(),
+                    migration.layer_start,
+                    migration.layer_end,
+                ))
+                .map(|(s, p)| (Some(s.clone()), p.clone()))
+                .unwrap_or((None, Vec::new()));
+
+            let report = execute_layer_migration(
+                migration,
+                outcome.new_epoch,
+                generation,
+                &src_pages,
+                &src_snap,
+                &mut target_pages,
+                prev_target_snap.as_ref(),
+            )?;
+            kv_store.put_stage_pages(
+                migration.to_node.clone(),
+                outcome.new_epoch,
+                generation,
+                migration.layer_start,
+                migration.layer_end,
+                target_pages,
+            );
+            reports.push(report);
+        }
+        let manifest = self
+            .coordinator
+            .current_manifest()
+            .ok_or(OrchestratorError::NoActiveManifest)?;
+        Ok((outcome, reports, manifest))
     }
 
     pub fn fault_and_reshard(
