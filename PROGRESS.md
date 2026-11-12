@@ -13,3 +13,13 @@
 - SHA-256 of source and output matched; byte comparison passed.
 
 **Explicit limitation:** This does not yet accelerate GPU inference; no GPU benchmarks exist for FASTLINK's new Rust transport. This log is not a measure of real RPC performance.
+
+## 2026-11-12 — Team Checkpoint 1 (`integrate/fastlink-team`)
+
+- Added `src/pairing.rs` and `src/manifest.rs`: opt-in keyed-BLAKE3 pairing (`Loopback`/`Lan`/`Tailscale` only), versioned `PartitionManifest` with direct adjacent-stage `next_stage_addr` routing, and `ManifestCoordinator` join/evacuation/atomic-reshard state machine.
+- Added `src/residency.rs` and `src/pipeline.rs`: `ResidencyTable` (budgeted weights & KV/SSM state, epoch invalidation, BLAKE3 verification) and `ActivationFrame` (`FLAC` bounded P2P framing + `p50`/`p95` boundary telemetry).
+- Added `src/node_runtime.rs`: multi-stage loopback TCP P2P activation relay (`run_loopback_pipeline`).
+- Added `src/kv_delta.rs`: BLAKE3-verified incremental KV/SSM page delta checkpointing for stage migration.
+- Verified `cargo fmt --check`, `cargo check --all-targets`, and `cargo clippy --all-targets -- -D warnings` on `integrate/fastlink-team`.
+
+**Explicit limitation:** Unit/integration tests (`cargo test`) have not been executed yet pending owner permission, and no multi-device or GPU inference benchmarks have been run.
