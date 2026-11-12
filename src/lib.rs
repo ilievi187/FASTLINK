@@ -3,6 +3,8 @@
 
 pub mod manifest;
 pub mod pairing;
+pub mod pipeline;
+pub mod residency;
 pub mod topology;
 
 use std::io::{self, Read, Write};
