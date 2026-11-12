@@ -10,6 +10,7 @@ pub mod pairing;
 pub mod pipeline;
 pub mod residency;
 pub mod scheduler;
+pub mod stage_auth;
 pub mod topology;
 
 use std::io::{self, Read, Write};
