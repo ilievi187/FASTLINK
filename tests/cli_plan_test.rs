@@ -59,7 +59,7 @@ fn plan_renders_json_and_text_from_scheduler_plan() {
         json: false,
     });
     let json = render_plan_json(&plan);
-    assert!(json.contains("\"objective\":\"latency\""));
+    assert!(json.contains("\"objective\":\"LowestLatency\""));
     assert!(json.contains("\"fits_model\""));
     assert!(json.contains("\"stages\""));
     let text = render_plan_text(&plan);
