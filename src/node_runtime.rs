@@ -17,6 +17,7 @@ use crate::pipeline::{
     BoundarySample, PipelineSummary, TelemetrySource,
 };
 use crate::residency::{ResidencyTable, StageStateKind, StateHandleId};
+use crate::stage_auth::{self, StageAuthError};
 use crate::{digest, Digest};
 
 const MAX_FRAME_WIRE_BYTES: usize = 256 * 1024;
@@ -25,6 +26,7 @@ const MAX_FRAME_WIRE_BYTES: usize = 256 * 1024;
 pub enum RuntimeError {
     Io(io::Error),
     Activation(ActivationError),
+    StageAuth(StageAuthError),
     Residency(crate::residency::ResidencyError),
     FrameTooLarge(usize),
     InvalidManifest(String),
@@ -39,6 +41,12 @@ impl From<io::Error> for RuntimeError {
 impl From<ActivationError> for RuntimeError {
     fn from(e: ActivationError) -> Self {
         Self::Activation(e)
+    }
+}
+
+impl From<StageAuthError> for RuntimeError {
+    fn from(e: StageAuthError) -> Self {
+        Self::StageAuth(e)
     }
 }
 
@@ -68,6 +76,125 @@ fn read_framed_packet(stream: &mut TcpStream) -> Result<Vec<u8>, RuntimeError> {
     Ok(buf)
 }
 
+struct StageLoopContext<F>
+where
+    F: Fn(usize, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    listener: TcpListener,
+    stage: StageEndpoint,
+    epoch: u64,
+    model_digest: Digest,
+    token_count: usize,
+    shared_fn: Arc<F>,
+    samples: Arc<Mutex<Vec<BoundarySample>>>,
+    outputs: Arc<Mutex<Vec<Vec<u8>>>>,
+    cluster_secret: Option<[u8; 32]>,
+}
+
+impl<F> StageLoopContext<F>
+where
+    F: Fn(usize, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    fn run(&self) -> Result<(), RuntimeError> {
+        let mut residency = ResidencyTable::new(64 * 1024 * 1024, self.epoch);
+        let weights_handle = StateHandleId {
+            stage_index: self.stage.stage_index as u16,
+            kind: StageStateKind::Weights,
+            slot: 0,
+        };
+        let stage_weights_digest: Digest = digest(&self.model_digest);
+        residency.register(
+            weights_handle.clone(),
+            self.epoch,
+            1024,
+            stage_weights_digest,
+            true,
+        )?;
+
+        for step in 0..self.token_count {
+            let (mut stream, _) = self.listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let packet = read_framed_packet(&mut stream)?;
+
+            let compute_start = Instant::now();
+            residency.verify_resident(&weights_handle, &stage_weights_digest)?;
+            let (_frame, raw) = match self.cluster_secret {
+                Some(secret) => {
+                    let (src_stage, dst_stage) = receive_hop(self.stage.stage_index);
+                    let hop_key =
+                        stage_auth::derive_hop_key(&secret, self.epoch, src_stage, dst_stage);
+                    stage_auth::open_stage_frame(&hop_key, &packet, self.epoch, dst_stage)?
+                }
+                None => decode_activation_frame(&packet, self.epoch)?,
+            };
+            let shared: &F = self.shared_fn.as_ref();
+            let out = shared(self.stage.stage_index, &raw);
+            let compute_us = compute_start.elapsed().as_micros() as u64;
+
+            if let Some(next_addr) = &self.stage.next_stage_addr {
+                let next_frame = match self.cluster_secret {
+                    Some(secret) => {
+                        let hop_key = stage_auth::derive_hop_key(
+                            &secret,
+                            self.epoch,
+                            self.stage.stage_index as u16,
+                            (self.stage.stage_index + 1) as u16,
+                        );
+                        stage_auth::seal_stage_frame(
+                            &hop_key,
+                            self.epoch,
+                            step as u64,
+                            step as u32,
+                            self.stage.stage_index as u16,
+                            (self.stage.stage_index + 1) as u16,
+                            &out,
+                        )?
+                    }
+                    None => encode_activation_frame(
+                        self.epoch,
+                        step as u64,
+                        step as u32,
+                        self.stage.stage_index as u16,
+                        (self.stage.stage_index + 1) as u16,
+                        &out,
+                    )?,
+                };
+                let link_start = Instant::now();
+                let mut next_stream = TcpStream::connect(next_addr)?;
+                next_stream.set_nodelay(true)?;
+                write_framed_packet(&mut next_stream, &next_frame)?;
+                let rtt_us = link_start.elapsed().as_micros() as u64;
+
+                self.samples.lock().unwrap().push(BoundarySample {
+                    boundary_index: self.stage.stage_index as u16,
+                    raw_bytes: out.len() as u64,
+                    wire_bytes: next_frame.len() as u64,
+                    link_rtt_us: rtt_us,
+                    stage_compute_us: compute_us,
+                });
+            } else {
+                self.samples.lock().unwrap().push(BoundarySample {
+                    boundary_index: self.stage.stage_index as u16,
+                    raw_bytes: out.len() as u64,
+                    wire_bytes: 0,
+                    link_rtt_us: 0,
+                    stage_compute_us: compute_us,
+                });
+                self.outputs.lock().unwrap().push(out);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn receive_hop(stage_index: usize) -> (u16, u16) {
+    if stage_index == 0 {
+        (0, 1)
+    } else {
+        ((stage_index - 1) as u16, stage_index as u16)
+    }
+}
+
 /// Runs a multi-stage loopback pipeline for `tokens` sequential steps.
 ///
 /// Each stage runs in its own thread on `127.0.0.1`, verifies its resident
@@ -76,6 +203,34 @@ fn read_framed_packet(stream: &mut TcpStream) -> Result<Vec<u8>, RuntimeError> {
 /// `next_stage_addr` (or returns the final output to the caller).
 pub fn run_loopback_pipeline<F>(
     manifest: &PartitionManifest,
+    tokens: &[Vec<u8>],
+    stage_fn: F,
+) -> Result<(Vec<Vec<u8>>, PipelineSummary), RuntimeError>
+where
+    F: Fn(usize, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    run_pipeline_inner(manifest, None, tokens, stage_fn)
+}
+
+/// Runs an authenticated multi-stage loopback pipeline for `tokens` sequential
+/// steps. Activation frames are sealed with per-hop, epoch-scoped keys derived
+/// from `cluster_secret`; tampered or stale frames fail with
+/// `RuntimeError::StageAuth`.
+pub fn run_authenticated_loopback_pipeline<F>(
+    manifest: &PartitionManifest,
+    cluster_secret: &[u8; 32],
+    tokens: &[Vec<u8>],
+    stage_fn: F,
+) -> Result<(Vec<Vec<u8>>, PipelineSummary), RuntimeError>
+where
+    F: Fn(usize, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    run_pipeline_inner(manifest, Some(*cluster_secret), tokens, stage_fn)
+}
+
+fn run_pipeline_inner<F>(
+    manifest: &PartitionManifest,
+    cluster_secret: Option<[u8; 32]>,
     tokens: &[Vec<u8>],
     stage_fn: F,
 ) -> Result<(Vec<Vec<u8>>, PipelineSummary), RuntimeError>
@@ -116,66 +271,18 @@ where
         let outputs_ref = Arc::clone(&final_outputs);
 
         let handle = thread::spawn(move || -> Result<(), RuntimeError> {
-            let mut residency = ResidencyTable::new(64 * 1024 * 1024, epoch);
-            let weights_handle = StateHandleId {
-                stage_index: stage.stage_index as u16,
-                kind: StageStateKind::Weights,
-                slot: 0,
-            };
-            let stage_weights_digest: Digest = digest(&model_digest);
-            residency.register(
-                weights_handle.clone(),
+            StageLoopContext {
+                listener,
+                stage,
                 epoch,
-                1024,
-                stage_weights_digest,
-                true,
-            )?;
-
-            for step in 0..token_count {
-                let (mut stream, _) = listener.accept()?;
-                stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-                let packet = read_framed_packet(&mut stream)?;
-
-                let compute_start = Instant::now();
-                residency.verify_resident(&weights_handle, &stage_weights_digest)?;
-                let (_hdr, raw) = decode_activation_frame(&packet, epoch)?;
-                let out = (fn_ref)(stage.stage_index, &raw);
-                let compute_us = compute_start.elapsed().as_micros() as u64;
-
-                if let Some(next_addr) = &stage.next_stage_addr {
-                    let next_frame = encode_activation_frame(
-                        epoch,
-                        step as u64,
-                        step as u32,
-                        stage.stage_index as u16,
-                        (stage.stage_index + 1) as u16,
-                        &out,
-                    )?;
-                    let link_start = Instant::now();
-                    let mut next_stream = TcpStream::connect(next_addr)?;
-                    next_stream.set_nodelay(true)?;
-                    write_framed_packet(&mut next_stream, &next_frame)?;
-                    let rtt_us = link_start.elapsed().as_micros() as u64;
-
-                    samples_ref.lock().unwrap().push(BoundarySample {
-                        boundary_index: stage.stage_index as u16,
-                        raw_bytes: out.len() as u64,
-                        wire_bytes: next_frame.len() as u64,
-                        link_rtt_us: rtt_us,
-                        stage_compute_us: compute_us,
-                    });
-                } else {
-                    samples_ref.lock().unwrap().push(BoundarySample {
-                        boundary_index: stage.stage_index as u16,
-                        raw_bytes: out.len() as u64,
-                        wire_bytes: 0,
-                        link_rtt_us: 0,
-                        stage_compute_us: compute_us,
-                    });
-                    outputs_ref.lock().unwrap().push(out);
-                }
+                model_digest,
+                token_count,
+                shared_fn: fn_ref,
+                samples: samples_ref,
+                outputs: outputs_ref,
+                cluster_secret,
             }
-            Ok(())
+            .run()
         });
         handles.push(handle);
     }
@@ -183,8 +290,21 @@ where
     // Drive each token into stage 0.
     let entry_addr = bound_stages[0].addr.clone();
     for (step, token) in tokens.iter().enumerate() {
-        // Stage 0 expects src_stage=0, dst_stage=1 on wire entry from driver.
-        let frame = encode_activation_frame(epoch, step as u64, step as u32, 0, 1, token)?;
+        let frame = match cluster_secret {
+            Some(secret) => {
+                let hop_key = stage_auth::derive_hop_key(&secret, epoch, 0, 1);
+                stage_auth::seal_stage_frame(
+                    &hop_key,
+                    epoch,
+                    step as u64,
+                    step as u32,
+                    0,
+                    1,
+                    token,
+                )?
+            }
+            None => encode_activation_frame(epoch, step as u64, step as u32, 0, 1, token)?,
+        };
         let mut stream = TcpStream::connect(&entry_addr)?;
         stream.set_nodelay(true)?;
         write_framed_packet(&mut stream, &frame)?;
