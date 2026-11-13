@@ -24,12 +24,28 @@
 
 **Explicit limitation:** Unit/integration tests (`cargo test`) have not been executed yet pending owner permission, and no multi-device or GPU inference benchmarks have been run.
 
+## 2026-11-13 — Team Checkpoint 3 (`integrate/fastlink-team`)
+
+- Wired `migration_runner` into `ClusterOrchestrator::evacuate_with_kv_migration` with `ClusterKvStore` (`tests/orchestrator_kv_migration_test.rs`).
+- Wired `stage_auth` into `node_runtime::run_authenticated_loopback_pipeline` (`tests/auth_node_runtime_test.rs`) and `ClusterOrchestrator::run_authenticated_inference`.
+- Verified `cargo fmt --check`, `cargo check --all-targets`, and `cargo clippy --all-targets -- -D warnings` on `integrate/fastlink-team`.
+
+**Explicit limitation:** Unit/integration tests (`cargo test`) have not been executed yet pending owner permission, and no multi-device or GPU inference benchmarks have been run.
+
 ## 2026-11-12 — Team Checkpoint 2 (`integrate/fastlink-team`)
 
 - Merged `src/scheduler.rs` (`plan_heterogeneous_stages` for 2–16+ heterogeneous nodes) and `src/cli_plan.rs` (`fastlink plan` dry-run CLI subcommand).
 - Added `src/cluster_orchestrator.rs`: bridges `scheduler` plans, `pairing::NetworkTrust`, `manifest::ManifestCoordinator` evacuation/fault resharding, `LayerMigration` computation, and `node_runtime::run_loopback_pipeline`.
 - Added `src/stage_auth.rs`: epoch- and hop-scoped keyed-BLAKE3 MAC (`seal_stage_frame`, `open_stage_frame`) for P2P `ActivationFrame`s.
 - Added `src/migration_runner.rs`: `execute_layer_migration` and `execute_reshard_migrations` using `kv_delta` for verified incremental KV/SSM state migration.
+- Verified `cargo fmt --check`, `cargo check --all-targets`, and `cargo clippy --all-targets -- -D warnings` on `integrate/fastlink-team`.
+
+**Explicit limitation:** Unit/integration tests (`cargo test`) have not been executed yet pending owner permission, and no multi-device or GPU inference benchmarks have been run.
+
+## 2026-11-13 — Team Checkpoint 3 (`integrate/fastlink-team`)
+
+- Wired `migration_runner` into `ClusterOrchestrator::evacuate_with_kv_migration` with `ClusterKvStore` (`tests/orchestrator_kv_migration_test.rs`).
+- Wired `stage_auth` into `node_runtime::run_authenticated_loopback_pipeline` (`tests/auth_node_runtime_test.rs`) and `ClusterOrchestrator::run_authenticated_inference`.
 - Verified `cargo fmt --check`, `cargo check --all-targets`, and `cargo clippy --all-targets -- -D warnings` on `integrate/fastlink-team`.
 
 **Explicit limitation:** Unit/integration tests (`cargo test`) have not been executed yet pending owner permission, and no multi-device or GPU inference benchmarks have been run.

@@ -37,3 +37,14 @@ Note: Test execution (`cargo test`) is deferred pending explicit owner permissio
 - **Wave 3 (OpenCode)** — `feat/kv-migration-runner` (`8873737`, merged):
   - `src/migration_runner.rs`: `execute_layer_migration` and `execute_reshard_migrations` driving `kv_delta` packet transfer and BLAKE3 digest verification over `LayerMigration`s.
   - `tests/migration_runner_test.rs`: Cold migration, warm incremental delta migration, and range mismatch rejection tests (compilation + clippy verified; execution pending permission).
+
+## Checkpoint 3 — 2026-11-13 (Authenticated Loopback Runtime & End-to-End Orchestrator Wiring)
+
+- **Wave 4 (AGY)** — `feat/orchestrator-kv-migration` (`23ec050`, merged):
+  - `src/cluster_orchestrator.rs`: Added `ClusterKvStore` and `ClusterOrchestrator::evacuate_with_kv_migration` driving `migration_runner::execute_layer_migration` during evacuation resharding.
+  - `tests/orchestrator_kv_migration_test.rs`: End-to-end evacuation + incremental KV delta migration + digest verification test (compilation + clippy verified; execution pending permission).
+- **Wave 4 (OpenCode)** — `feat/auth-node-runtime` (`19e381c`, merged):
+  - `src/node_runtime.rs`: Refactored into shared `run_pipeline_inner` with `run_authenticated_loopback_pipeline` using `stage_auth::derive_hop_key`, `seal_stage_frame`, and `open_stage_frame`.
+  - `tests/auth_node_runtime_test.rs`: 3-stage and single-stage authenticated loopback pipeline tests (compilation + clippy verified; execution pending permission).
+- **Wave 5 (AGY)** — `integrate/fastlink-team`:
+  - `src/cluster_orchestrator.rs` + `tests/cluster_orchestrator_test.rs`: Added `ClusterOrchestrator::run_authenticated_inference` wiring `run_authenticated_loopback_pipeline` into the cluster orchestrator.

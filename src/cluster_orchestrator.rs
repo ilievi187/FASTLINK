@@ -9,7 +9,9 @@ use crate::manifest::{
     ManifestCoordinator, ManifestError, NodeLifecycle, PartitionManifest, StageSpec,
 };
 use crate::migration_runner::{execute_layer_migration, MigrationError, MigrationReport};
-use crate::node_runtime::{run_loopback_pipeline, RuntimeError};
+use crate::node_runtime::{
+    run_authenticated_loopback_pipeline, run_loopback_pipeline, RuntimeError,
+};
 use crate::pairing::NetworkTrust;
 use crate::pipeline::PipelineSummary;
 use crate::scheduler::{
@@ -396,5 +398,26 @@ impl ClusterOrchestrator {
             .current_manifest()
             .ok_or(OrchestratorError::NoActiveManifest)?;
         Ok(run_loopback_pipeline(manifest, tokens, stage_fn)?)
+    }
+
+    pub fn run_authenticated_inference<F>(
+        &self,
+        cluster_secret: &[u8; 32],
+        tokens: &[Vec<u8>],
+        stage_fn: F,
+    ) -> Result<(Vec<Vec<u8>>, PipelineSummary), OrchestratorError>
+    where
+        F: Fn(usize, &[u8]) -> Vec<u8> + Send + Sync + 'static,
+    {
+        let manifest = self
+            .coordinator
+            .current_manifest()
+            .ok_or(OrchestratorError::NoActiveManifest)?;
+        Ok(run_authenticated_loopback_pipeline(
+            manifest,
+            cluster_secret,
+            tokens,
+            stage_fn,
+        )?)
     }
 }

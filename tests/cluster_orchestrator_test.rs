@@ -83,6 +83,15 @@ fn plans_commits_evacuates_and_runs_loopback_pipeline() {
     assert_eq!(outputs.len(), 2);
     assert_eq!(summary.total_tokens, 2);
 
+    let secret = [0x42u8; 32];
+    let (auth_outputs, auth_summary) = orch
+        .run_authenticated_inference(&secret, &tokens, |_stage, data| {
+            data.iter().map(|b| b.wrapping_add(1)).collect()
+        })
+        .unwrap();
+    assert_eq!(auth_outputs, outputs);
+    assert_eq!(auth_summary.total_tokens, 2);
+
     let (reshard, manifest_e2) = orch
         .evacuate_and_reshard("node-b", PlanObjective::LargestModel, Some("node-a"))
         .unwrap();
