@@ -881,18 +881,23 @@ fn contains_dns_host_port(text: &str) -> bool {
             continue;
         }
 
-        // Parse bounded numeric port `1..=65535` right of `:` (allowing zero-padding).
-        const MAX_PORT_RAW_DIGITS: usize = 16;
+        // Normalize leading zeros in a streaming pass (`O(1)` auxiliary space;
+        // digit runs right of distinct `:` positions are disjoint, so `O(N)` total).
         let p_start = colon_idx + 1;
         let mut p_end = p_start;
-        while p_end < bytes.len()
-            && bytes[p_end].is_ascii_digit()
-            && p_end - p_start <= MAX_PORT_RAW_DIGITS
-        {
+        let mut nonzero_digits = 0usize;
+        let mut port: u32 = 0;
+        while p_end < bytes.len() && bytes[p_end].is_ascii_digit() {
+            let digit = bytes[p_end];
+            if nonzero_digits > 0 || digit != b'0' {
+                nonzero_digits += 1;
+                if nonzero_digits <= 5 {
+                    port = port * 10 + u32::from(digit - b'0');
+                }
+            }
             p_end += 1;
         }
-        let raw_port_len = p_end - p_start;
-        if !(1..=MAX_PORT_RAW_DIGITS).contains(&raw_port_len) {
+        if p_end == p_start {
             continue;
         }
         if let Some(next_ch) = text[p_end..].chars().next() {
@@ -903,14 +908,7 @@ fn contains_dns_host_port(text: &str) -> bool {
                 continue;
             }
         }
-        let trimmed_port = text[p_start..p_end].trim_start_matches('0');
-        if trimmed_port.is_empty() || trimmed_port.len() > 5 {
-            continue;
-        }
-        let Ok(port) = trimmed_port.parse::<u16>() else {
-            continue;
-        };
-        if port == 0 {
+        if nonzero_digits == 0 || nonzero_digits > 5 || !(1..=65535).contains(&port) {
             continue;
         }
 
@@ -1498,7 +1496,9 @@ mod tests {
         for dns_endpoint in [
             "gpu-box.tailnet-example.ts.net:41641",
             "gpu-box:18777",
+            "gpu-box:00000000000000000000000018777",
             "gpu-box:0443",
+            "host.example:0000000000000000000000000443",
             "node:0443",
             "endpoint=node:0443",
             "endpoint=gpu-box:0443",
@@ -1512,6 +1512,7 @@ mod tests {
             "büro:41641",
             "bu\u{0308}ro:41641",
             "कि:41641",
+            "\u{0915}\u{093F}:00000000000000000000000041641",
             "\u{0915}\u{093C}:41641",
             "\u{0915}\u{093F}:0443",
             "\u{0E01}\u{0E31}:41641",
@@ -1578,14 +1579,18 @@ mod tests {
             "v1.0.2:4",
             "gpu-box:0",
             "gpu-box:00",
+            "gpu-box:0000000000000000000000000",
             "gpu-box:65536",
             "gpu-box:0443abc",
+            "gpu-box:00000000000000000000000018777abc",
             "bad.host:0",
             "bad.host:00",
             "bad.host:000",
             "bad.host:65536",
             "bad.host:065536",
+            "bad.host:00000000000000000000000065536",
             "bad.host:999999",
+            "bad.host:000000000000000000000000999999",
             "bad.host:0443abc",
             "bad.host:0443.1",
             "bad.host:0443:1",

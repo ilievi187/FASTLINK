@@ -725,6 +725,7 @@ printf '%s\n' '{ts_payload}'
         let mdns_lines = "\
 =;eth0;IPv4;ws1.local:18777;_fastlink._tcp;local;ws1.local;192.168.55.10;18777;\"os=linux node1.lan:8080\" \"arch=x86_64 api.example.com:443\" \"gpu0_name=RX via ws1.local:18777\"\n\
 =;eth0;IPv4;gpu-box:18777;_fastlink._tcp;local;single.local;192.168.55.12;18779;\"os=linux gpu-box:0443\" \"arch=x86_64 ws-single:8080\" \"gpu0_name=RX via gpu-box:18777\"\n\
+=;eth0;IPv4;gpu-box:00000000000000000000000018777;_fastlink._tcp;local;padzero.local;192.168.55.13;18781;\"os=linux gpu-box:0000000000000000000000000443\" \"arch=x86_64 padzero.lan:0000000000000000000000008080\" \"gpu0_name=RX via node:0000000000000000000000000443\"\n\
 =;eth0;IPv4;Workstation One;_fastlink._tcp;local;ws2.local;192.168.55.11;18778;\"os=linux\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
         write_executable(
             &bin_dir,
@@ -771,6 +772,14 @@ printf '%s\\n' '{mdns_lines}'
       "Online": true,
       "TailscaleIPs": ["100.64.99.46"]
     },
+    "nodekey:longzeropad": {
+      "ID": "nLongZeroPad",
+      "HostName": "gpu-box:00000000000000000000000018777",
+      "DNSName": "gpu-box:0000000000000000000000000443.",
+      "OS": "linux via gpu-box:00000000000000000000000018777",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.47"]
+    },
     "nodekey:normallabel": {
       "ID": "nOrdinaryPeer",
       "HostName": "cuda:0",
@@ -813,7 +822,12 @@ printf '%s\n' '{ts_payload}'
         let forbidden_endpoints = [
             "gpu-box.tailnet-example.ts.net:41641",
             "gpu-box:18777",
+            "gpu-box:00000000000000000000000018777",
             "gpu-box:0443",
+            "gpu-box:0000000000000000000000000443",
+            "node:0000000000000000000000000443",
+            "padzero.lan:0000000000000000000000008080",
+            "padzero.lan",
             "node:0443",
             "ws-single:8080",
             "host.example:0443",
@@ -825,21 +839,25 @@ printf '%s\n' '{ts_payload}'
             "18777",
             "18778",
             "18779",
+            "18781",
             "8080",
             "443",
             "ws1.local",
             "ws2.local",
             "single.local",
+            "padzero.local",
             "gpu-box",
             "ws-single",
             "192.168.55.10",
             "192.168.55.11",
             "192.168.55.12",
+            "192.168.55.13",
             "100.64.99.42",
             "100.64.99.43",
             "100.64.99.44",
             "100.64.99.45",
             "100.64.99.46",
+            "100.64.99.47",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -863,7 +881,7 @@ printf '%s\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 8);
+        assert_eq!(nodes.len(), 10);
 
         let bad_lan_nodes: Vec<&Value> = nodes
             .iter()
@@ -874,7 +892,7 @@ printf '%s\n' '{ts_payload}'
             .collect();
         assert_eq!(
             bad_lan_nodes.len(),
-            2,
+            3,
             "smuggled LAN nodes should fall back to generic name"
         );
         for bad_lan in bad_lan_nodes {
@@ -892,7 +910,7 @@ printf '%s\n' '{ts_payload}'
             })
             .count();
         assert_eq!(
-            bad_ts_count, 4,
+            bad_ts_count, 5,
             "smuggled Tailscale nodes should fall back to generic name with null os"
         );
 
@@ -916,7 +934,7 @@ printf '%s\n' '{ts_payload}'
             &err_dir,
             "avahi-browse",
             "#!/bin/sh
-echo 'dial gpu-box:18777 gpu-box:0443 node:0443 ws1.local:18777' >&2
+echo 'dial gpu-box:18777 gpu-box:00000000000000000000000018777 gpu-box:0443 node:0443 ws1.local:18777' >&2
 exit 2
 ",
         );
@@ -924,7 +942,7 @@ exit 2
             &err_dir,
             "tailscale",
             "#!/bin/sh
-echo 'dial gpu-box:0443 node:0443 host.example:0443' >&2
+echo 'dial gpu-box:0443 node:0443 gpu-box:0000000000000000000000000443 host.example:0443' >&2
 exit 2
 ",
         );
@@ -946,7 +964,9 @@ exit 2
         let err_text_out = String::from_utf8(err_text.stdout).expect("utf8 err text");
         for leaked in [
             "gpu-box:18777",
+            "gpu-box:00000000000000000000000018777",
             "gpu-box:0443",
+            "gpu-box:0000000000000000000000000443",
             "node:0443",
             "ws1.local:18777",
             "host.example:0443",
