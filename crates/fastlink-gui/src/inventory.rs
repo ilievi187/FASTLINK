@@ -1,8 +1,11 @@
-//! Reader for the versioned `fastlink devices --json` inventory contract.
+//! Reader for the implemented `fastlink devices --json` contract.
 //!
-//! The GUI must not invent telemetry. Every device value comes from the
-//! inventory command; this module only parses, validates and transports it.
-//! Missing or `null` optional values stay [`None`] all the way to the UI.
+//! The GUI must not invent telemetry. Every node value comes from the inventory
+//! command; this module only parses, validates and transports it. The local
+//! device is identified by scope (`local_only` with exactly one node), never by
+//! a literal `"local"` id: the backend reports an opaque hashed `node_id`.
+//!
+//! Unknown or `null` optional values stay [`None`] all the way to the UI.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -12,10 +15,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_json::Value;
 
+/// Schema emitted by the integrated `fastlink devices --json` command.
+pub const SUPPORTED_SCHEMA: &str = "fastlink.devices.v1";
 /// Schema version understood by this build of the GUI.
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+/// The only inventory scope implemented in this milestone.
+pub const LOCAL_ONLY_SCOPE: &str = "local_only";
 /// Default executable name looked up on `PATH`.
 pub const DEFAULT_PROGRAM: &str = "fastlink";
 /// Environment variable that overrides the CLI path.
@@ -28,48 +34,119 @@ const MAX_DETAIL_LINES: usize = 12;
 
 /// Top-level inventory document.
 ///
-/// `deny_unknown_fields` is intentionally not used: the schema is versioned and
-/// future additive fields must not break older shells.
+/// Additive unknown fields are tolerated so a future schema minor change does
+/// not break this shell; structural fields and the schema/scope are validated.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct DeviceInventory {
+    pub schema: String,
     pub schema_version: u32,
-    pub devices: Vec<Device>,
+    pub scope: String,
     #[serde(default)]
-    pub status: Option<String>,
+    pub discovery_mode: Option<String>,
+    pub node_count: usize,
+    pub nodes: Vec<InventoryNode>,
 }
 
-/// One device reported by the inventory command.
+/// One node reported by the inventory command.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Device {
+pub struct InventoryNode {
+    /// Opaque hashed backend identifier. Never invented, normalized or guessed.
     #[serde(default)]
-    pub id: String,
+    pub node_id: Option<String>,
     #[serde(default)]
-    pub name: Option<String>,
+    pub node_id_source: Option<String>,
+    #[serde(default)]
+    pub hostname: Option<String>,
     #[serde(default)]
     pub os: Option<String>,
     #[serde(default)]
-    pub architecture: Option<String>,
+    pub os_release: Option<String>,
     #[serde(default)]
-    pub cpu_logical_cores: Option<u32>,
+    pub arch: Option<String>,
+    #[serde(default)]
+    pub logical_cpu_count: Option<u64>,
     #[serde(default)]
     pub ram_total_bytes: Option<u64>,
     #[serde(default)]
     pub ram_available_bytes: Option<u64>,
-    /// Array entries have no shape in schema v1; keep them as raw JSON so the
-    /// shell never guesses fields that the contract does not define.
     #[serde(default)]
-    pub gpu_devices: Option<Vec<Value>>,
+    pub ram_free_bytes: Option<u64>,
     #[serde(default)]
-    pub backend: Option<String>,
+    pub gpus: Vec<GpuDevice>,
+    pub capabilities: NodeCapabilities,
     #[serde(default)]
-    pub network_interfaces: Option<Vec<Value>>,
+    pub unknown_fields: Vec<String>,
 }
 
-impl Device {
-    /// The inventory contract names the local device `local`.
+/// GPU metadata reported from passive host evidence.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct GpuDevice {
+    #[serde(default)]
+    pub card: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub driver: Option<String>,
+    #[serde(default)]
+    pub vendor_id: Option<String>,
+    #[serde(default)]
+    pub pci_device_id: Option<String>,
+    #[serde(default)]
+    pub vram_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub vram_free_bytes: Option<u64>,
+}
+
+/// Capabilities exactly as reported. Values that are not measured remain
+/// [`None`]; the backend also uses the string `"unknown"` for connectivity.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct NodeCapabilities {
+    #[serde(default)]
+    pub capacity_bytes: Option<u64>,
+    #[serde(default)]
+    pub throughput_bps: Option<u64>,
+    #[serde(default)]
+    pub network_connectivity: Option<String>,
+    #[serde(default)]
+    pub remote_peers: Vec<String>,
+}
+
+impl DeviceInventory {
+    /// True when the backend explicitly scoped this snapshot to the local host.
     #[must_use]
-    pub fn is_local(&self) -> bool {
-        self.id == "local"
+    pub fn is_local_only(&self) -> bool {
+        self.scope == LOCAL_ONLY_SCOPE
+    }
+
+    /// The sole node in `scope:"local_only"` is the local device.
+    #[must_use]
+    pub fn local_node_index(&self) -> Option<usize> {
+        (self.is_local_only() && self.nodes.len() == 1).then_some(0)
+    }
+
+    #[must_use]
+    pub fn local_node(&self) -> Option<&InventoryNode> {
+        self.local_node_index().map(|index| &self.nodes[index])
+    }
+
+    /// Opaque id of the local node, if the backend could derive one.
+    #[must_use]
+    pub fn local_node_id(&self) -> Option<&str> {
+        self.local_node().and_then(|node| node.node_id.as_deref())
+    }
+
+    /// True only for the identified local node; there is no implicit `"local"`.
+    #[must_use]
+    pub fn is_local_node(&self, node_id: &str) -> bool {
+        self.local_node_id() == Some(node_id)
+    }
+}
+
+impl InventoryNode {
+    /// Preserve the backend id exactly; `None` means it was not derivable.
+    #[must_use]
+    pub fn opaque_id(&self) -> Option<&str> {
+        self.node_id.as_deref()
     }
 }
 
@@ -77,23 +154,44 @@ impl Device {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InventoryError {
     Json(String),
+    UnsupportedSchema { found: String },
     UnsupportedSchemaVersion { found: u32 },
-    EmptyDeviceId { index: usize },
-    DuplicateDeviceId { id: String },
+    UnsupportedScope { found: String },
+    NodeCountMismatch { declared: usize, actual: usize },
+    TooManyLocalNodes { count: usize },
+    EmptyNodeId { index: usize },
+    DuplicateNodeId { id: String },
 }
 
 impl fmt::Display for InventoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Json(message) => write!(f, "invalid inventory JSON: {message}"),
+            Self::UnsupportedSchema { found } => write!(
+                f,
+                "unsupported inventory schema {found:?}; this build supports {SUPPORTED_SCHEMA:?}"
+            ),
             Self::UnsupportedSchemaVersion { found } => write!(
                 f,
                 "unsupported inventory schema_version {found}; this build supports {SUPPORTED_SCHEMA_VERSION}"
             ),
-            Self::EmptyDeviceId { index } => {
-                write!(f, "device at index {index} has an empty id")
+            Self::UnsupportedScope { found } => write!(
+                f,
+                "unsupported inventory scope {found:?}; this build supports {LOCAL_ONLY_SCOPE:?}"
+            ),
+            Self::NodeCountMismatch { declared, actual } => {
+                write!(f, "node_count is {declared} but {} nodes were reported", actual)
             }
-            Self::DuplicateDeviceId { id } => write!(f, "device id {id:?} appears more than once"),
+            Self::TooManyLocalNodes { count } => write!(
+                f,
+                "scope {LOCAL_ONLY_SCOPE:?} must describe at most one local node, found {count}"
+            ),
+            Self::EmptyNodeId { index } => {
+                write!(f, "node at index {index} has an empty node_id")
+            }
+            Self::DuplicateNodeId { id } => {
+                write!(f, "node_id {id:?} appears more than once")
+            }
         }
     }
 }
@@ -109,20 +207,43 @@ pub fn parse_inventory_json(source: &str) -> Result<DeviceInventory, InventoryEr
 
 /// Validate already-deserialized inventory data.
 pub fn validate_inventory(inventory: DeviceInventory) -> Result<DeviceInventory, InventoryError> {
+    if inventory.schema != SUPPORTED_SCHEMA {
+        return Err(InventoryError::UnsupportedSchema {
+            found: inventory.schema,
+        });
+    }
     if inventory.schema_version != SUPPORTED_SCHEMA_VERSION {
         return Err(InventoryError::UnsupportedSchemaVersion {
             found: inventory.schema_version,
         });
     }
-    let mut seen = HashSet::with_capacity(inventory.devices.len());
-    for (index, device) in inventory.devices.iter().enumerate() {
-        let id = device.id.trim();
-        if id.is_empty() {
-            return Err(InventoryError::EmptyDeviceId { index });
+    if inventory.scope != LOCAL_ONLY_SCOPE {
+        return Err(InventoryError::UnsupportedScope {
+            found: inventory.scope,
+        });
+    }
+    if inventory.node_count != inventory.nodes.len() {
+        return Err(InventoryError::NodeCountMismatch {
+            declared: inventory.node_count,
+            actual: inventory.nodes.len(),
+        });
+    }
+
+    let mut seen = HashSet::with_capacity(inventory.nodes.len());
+    for (index, node) in inventory.nodes.iter().enumerate() {
+        if let Some(id) = &node.node_id {
+            if id.trim().is_empty() {
+                return Err(InventoryError::EmptyNodeId { index });
+            }
+            if !seen.insert(id.clone()) {
+                return Err(InventoryError::DuplicateNodeId { id: id.clone() });
+            }
         }
-        if !seen.insert(id.to_owned()) {
-            return Err(InventoryError::DuplicateDeviceId { id: id.to_owned() });
-        }
+    }
+    if inventory.nodes.len() > 1 {
+        return Err(InventoryError::TooManyLocalNodes {
+            count: inventory.nodes.len(),
+        });
     }
     Ok(inventory)
 }
@@ -275,7 +396,7 @@ impl InventoryCommand {
 
         parse_inventory_json(&stdout).map_err(|err| {
             LoadError::new(format!(
-                "`{}` did not return a schema v{SUPPORTED_SCHEMA_VERSION} inventory",
+                "`{}` did not return a {SUPPORTED_SCHEMA} inventory",
                 self.command_line()
             ))
             .with_detail(err.to_string())
@@ -310,7 +431,7 @@ impl InventoryCommand {
             || (lower.contains("usage") && lower.contains("devices"));
         if missing_subcommand {
             error = error.with_hint(
-                "This FASTLINK binary may not implement `devices --json` yet. Point --fastlink-bin at a build that includes the device-inventory work.",
+                "This FASTLINK binary may not implement `devices --json` yet. Point --fastlink-bin at an updated build.",
             );
         } else {
             error = error.with_hint(
@@ -380,81 +501,129 @@ fn compact_detail(raw: &str) -> String {
 mod tests {
     use super::*;
 
-    const CONTRACT: &str = r#"{
-        "schema_version": 1,
-        "devices": [{
-            "id": "local",
-            "name": "test-host",
-            "os": "linux",
-            "architecture": "x86_64",
-            "cpu_logical_cores": 8,
-            "ram_total_bytes": 17179869184,
-            "ram_available_bytes": 8589934592,
-            "gpu_devices": [],
-            "backend": "cpu",
-            "network_interfaces": []
-        }],
-        "status": "local_only"
-    }"#;
+    const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
 
     #[test]
-    fn parses_the_documented_contract() {
-        let inventory = parse_inventory_json(CONTRACT).expect("contract must parse");
-        assert_eq!(inventory.schema_version, 1);
-        assert_eq!(inventory.status.as_deref(), Some("local_only"));
-        assert_eq!(inventory.devices.len(), 1);
+    fn parses_the_backend_fixture_exactly() {
+        let inventory = parse_inventory_json(FIXTURE).expect("backend fixture must parse");
+        assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+        assert_eq!(inventory.schema_version, SUPPORTED_SCHEMA_VERSION);
+        assert_eq!(inventory.scope, LOCAL_ONLY_SCOPE);
+        assert_eq!(
+            inventory.discovery_mode.as_deref(),
+            Some("passive_host_evidence")
+        );
+        assert_eq!(inventory.node_count, 1);
+        assert_eq!(inventory.nodes.len(), 1);
+        assert_eq!(inventory.local_node_index(), Some(0));
 
-        let device = &inventory.devices[0];
-        assert_eq!(device.id, "local");
-        assert!(device.is_local());
-        assert_eq!(device.name.as_deref(), Some("test-host"));
-        assert_eq!(device.os.as_deref(), Some("linux"));
-        assert_eq!(device.architecture.as_deref(), Some("x86_64"));
-        assert_eq!(device.cpu_logical_cores, Some(8));
-        assert_eq!(device.ram_total_bytes, Some(17_179_869_184));
-        assert_eq!(device.ram_available_bytes, Some(8_589_934_592));
-        assert_eq!(device.backend.as_deref(), Some("cpu"));
-        assert_eq!(device.gpu_devices.as_deref(), Some(&[][..]));
-        assert_eq!(device.network_interfaces.as_deref(), Some(&[][..]));
+        let node = inventory.local_node().expect("sole node is local");
+        assert_eq!(node.opaque_id(), Some("0123456789abcdef0123456789abcdef"));
+        assert_ne!(node.node_id.as_deref(), Some("local"));
+        assert_eq!(node.node_id_source.as_deref(), Some("machine-id"));
+        assert_eq!(node.hostname.as_deref(), Some("fixture-host"));
+        assert_eq!(node.os.as_deref(), Some("linux"));
+        assert_eq!(node.os_release.as_deref(), Some("6.12.0-fixture"));
+        assert_eq!(node.arch.as_deref(), Some("x86_64"));
+        assert_eq!(node.logical_cpu_count, Some(16));
+        assert_eq!(node.ram_total_bytes, Some(34_359_738_368));
+        assert_eq!(node.ram_available_bytes, Some(8_589_934_592));
+        assert_eq!(node.ram_free_bytes, Some(4_294_967_296));
+
+        assert_eq!(node.gpus.len(), 2);
+        assert_eq!(node.gpus[0].card, "card0");
+        assert_eq!(node.gpus[0].name.as_deref(), Some("Example integrated GPU"));
+        assert_eq!(node.gpus[0].driver.as_deref(), Some("example-driver"));
+        assert_eq!(node.gpus[0].vendor_id.as_deref(), Some("0x0000"));
+        assert_eq!(node.gpus[0].pci_device_id.as_deref(), Some("0x0001"));
+        assert_eq!(node.gpus[0].vram_total_bytes, Some(536_870_912));
+        assert_eq!(node.gpus[0].vram_free_bytes, Some(520_122_368));
+
+        assert_eq!(node.capabilities.capacity_bytes, None);
+        assert_eq!(node.capabilities.throughput_bps, None);
+        assert_eq!(
+            node.capabilities.network_connectivity.as_deref(),
+            Some("unknown")
+        );
+        assert!(node.capabilities.remote_peers.is_empty());
+        assert_eq!(
+            node.unknown_fields,
+            [
+                "capabilities.capacity_bytes",
+                "capabilities.throughput_bps",
+                "capabilities.network_connectivity"
+            ]
+        );
     }
 
     #[test]
-    fn keeps_null_and_missing_optional_values_unknown() {
+    fn keeps_null_optional_values_unknown() {
         let json = r#"{
+            "schema": "fastlink.devices.v1",
             "schema_version": 1,
-            "devices": [{
-                "id": "local",
-                "name": null,
-                "cpu_logical_cores": null,
+            "scope": "local_only",
+            "discovery_mode": null,
+            "node_count": 1,
+            "nodes": [{
+                "node_id": null,
+                "node_id_source": null,
+                "hostname": null,
+                "os": null,
+                "os_release": null,
+                "arch": null,
+                "logical_cpu_count": null,
                 "ram_total_bytes": null,
                 "ram_available_bytes": null,
-                "gpu_devices": null,
-                "backend": null,
-                "network_interfaces": null
-            }],
-            "status": null
+                "ram_free_bytes": null,
+                "gpus": [],
+                "capabilities": {
+                    "capacity_bytes": null,
+                    "throughput_bps": null,
+                    "network_connectivity": null,
+                    "remote_peers": []
+                },
+                "unknown_fields": ["node_id", "hostname"]
+            }]
         }"#;
         let inventory = parse_inventory_json(json).expect("null optionals are allowed");
-        let device = &inventory.devices[0];
-        assert_eq!(device.name, None);
-        assert_eq!(device.os, None);
-        assert_eq!(device.architecture, None);
-        assert_eq!(device.cpu_logical_cores, None);
-        assert_eq!(device.ram_total_bytes, None);
-        assert_eq!(device.ram_available_bytes, None);
-        assert_eq!(device.gpu_devices, None);
-        assert_eq!(device.backend, None);
-        assert_eq!(device.network_interfaces, None);
-        assert_eq!(inventory.status, None);
+        let node = inventory.local_node().expect("sole node is local");
+        assert_eq!(inventory.discovery_mode, None);
+        assert_eq!(node.node_id, None);
+        assert_eq!(node.hostname, None);
+        assert_eq!(node.os, None);
+        assert_eq!(node.arch, None);
+        assert_eq!(node.logical_cpu_count, None);
+        assert_eq!(node.ram_total_bytes, None);
+        assert_eq!(node.ram_available_bytes, None);
+        assert_eq!(node.ram_free_bytes, None);
+        assert_eq!(node.capabilities.capacity_bytes, None);
+        assert_eq!(node.capabilities.throughput_bps, None);
+        assert_eq!(node.capabilities.network_connectivity, None);
+        assert_eq!(inventory.local_node_id(), None);
     }
 
     #[test]
     fn accepts_future_additive_fields() {
         let json = r#"{
+            "schema": "fastlink.devices.v1",
             "schema_version": 1,
-            "devices": [{"id": "local", "future_field": {"x": 1}}],
-            "status": "local_only",
-            "future_top_level": true
+            "scope": "local_only",
+            "discovery_mode": "passive_host_evidence",
+            "node_count": 1,
+            "future_top_level": true,
+            "nodes": [{
+                "node_id": "abc",
+                "hostname": "future-host",
+                "gpus": [{"card": "card0", "future_gpu_field": 7}],
+                "capabilities": {
+                    "capacity_bytes": 1,
+                    "throughput_bps": 2,
+                    "network_connectivity": "unknown",
+                    "remote_peers": []
+                },
+                "unknown_fields": [],
+                "future_node_field": {"x": 1}
+            }]
         }"#;
         assert!(parse_inventory_json(json).is_ok());
     }
@@ -466,50 +635,135 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_schema_version() {
-        let json = r#"{"schema_version": 2, "devices": [], "status": "local_only"}"#;
-        let err = parse_inventory_json(json).expect_err("must reject");
-        assert_eq!(err, InventoryError::UnsupportedSchemaVersion { found: 2 });
-        assert!(err.to_string().contains("schema_version 2"));
+    fn rejects_wrong_schema_version_scope_and_count() {
+        let wrong_schema = FIXTURE.replace(SUPPORTED_SCHEMA, "fastlink.devices.v0");
+        assert_eq!(
+            parse_inventory_json(&wrong_schema).expect_err("must reject"),
+            InventoryError::UnsupportedSchema {
+                found: "fastlink.devices.v0".to_owned()
+            }
+        );
+
+        let wrong_version = FIXTURE.replace("\"schema_version\":1", "\"schema_version\":2");
+        assert_eq!(
+            parse_inventory_json(&wrong_version).expect_err("must reject"),
+            InventoryError::UnsupportedSchemaVersion { found: 2 }
+        );
+        assert!(parse_inventory_json(&wrong_version)
+            .unwrap_err()
+            .to_string()
+            .contains("schema_version 2"));
+
+        let wrong_scope = FIXTURE.replace("\"local_only\"", "\"lan\"");
+        assert_eq!(
+            parse_inventory_json(&wrong_scope).expect_err("must reject"),
+            InventoryError::UnsupportedScope {
+                found: "lan".to_owned()
+            }
+        );
+
+        let wrong_count = FIXTURE.replace("\"node_count\":1", "\"node_count\":2");
+        assert_eq!(
+            parse_inventory_json(&wrong_count).expect_err("must reject"),
+            InventoryError::NodeCountMismatch {
+                declared: 2,
+                actual: 1
+            }
+        );
     }
 
     #[test]
-    fn rejects_missing_schema_version() {
-        let json = r#"{"devices": [], "status": "local_only"}"#;
-        assert!(matches!(
-            parse_inventory_json(json),
-            Err(InventoryError::Json(_))
-        ));
+    fn rejects_multiple_nodes_in_local_only_scope() {
+        let json = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "discovery_mode": "passive_host_evidence",
+            "node_count": 2,
+            "nodes": [
+                {"node_id": "a", "capabilities": {"remote_peers": []}},
+                {"node_id": "b", "capabilities": {"remote_peers": []}}
+            ]
+        }"#;
+        assert_eq!(
+            parse_inventory_json(json).expect_err("must reject"),
+            InventoryError::TooManyLocalNodes { count: 2 }
+        );
     }
 
     #[test]
-    fn rejects_missing_devices() {
-        let json = r#"{"schema_version": 1, "status": "local_only"}"#;
-        assert!(matches!(
-            parse_inventory_json(json),
-            Err(InventoryError::Json(_))
-        ));
-    }
-
-    #[test]
-    fn rejects_empty_and_duplicate_device_ids() {
-        let empty = r#"{"schema_version": 1, "devices": [{"id": "  "}], "status": "local_only"}"#;
+    fn rejects_empty_and_duplicate_node_ids() {
+        let empty = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "node_count": 1,
+            "nodes": [{"node_id": "  ", "capabilities": {}}]
+        }"#;
         assert_eq!(
             parse_inventory_json(empty).expect_err("must reject"),
-            InventoryError::EmptyDeviceId { index: 0 }
+            InventoryError::EmptyNodeId { index: 0 }
         );
 
         let duplicate = r#"{
+            "schema": "fastlink.devices.v1",
             "schema_version": 1,
-            "devices": [{"id": "local"}, {"id": "local"}],
-            "status": "local_only"
+            "scope": "local_only",
+            "node_count": 2,
+            "nodes": [
+                {"node_id": "same", "capabilities": {}},
+                {"node_id": "same", "capabilities": {}}
+            ]
         }"#;
         assert_eq!(
             parse_inventory_json(duplicate).expect_err("must reject"),
-            InventoryError::DuplicateDeviceId {
-                id: "local".to_owned()
+            InventoryError::DuplicateNodeId {
+                id: "same".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn empty_nodes_are_a_valid_empty_local_inventory() {
+        let json = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "discovery_mode": "passive_host_evidence",
+            "node_count": 0,
+            "nodes": []
+        }"#;
+        let inventory = parse_inventory_json(json).expect("empty inventory is valid");
+        assert_eq!(inventory.node_count, 0);
+        assert!(inventory.nodes.is_empty());
+        assert!(inventory.local_node().is_none());
+        assert!(inventory.local_node_id().is_none());
+    }
+
+    #[test]
+    fn rejects_missing_structural_fields() {
+        let missing_capabilities = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "node_count": 1,
+            "nodes": [{"node_id": "a"}]
+        }"#;
+        assert!(matches!(
+            parse_inventory_json(missing_capabilities),
+            Err(InventoryError::Json(_))
+        ));
+
+        let missing_node_count = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "nodes": []
+        }"#;
+        assert!(matches!(
+            parse_inventory_json(missing_node_count),
+            Err(InventoryError::Json(_))
+        ));
     }
 
     #[test]

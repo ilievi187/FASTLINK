@@ -1,21 +1,65 @@
 //! Presentation helpers.
 //!
-//! These functions are deliberately pure and dependency-free (besides
-//! `serde_json`) so headless tests can prove that unknown inventory values are
-//! rendered as unknown, never as invented numbers.
+//! These functions are pure and headless-testable. They prove that unknown
+//! backend values are rendered as unknown, that capabilities are only shown
+//! from reported fields, and that network speed/connectivity is never guessed.
 
 use std::time::Duration;
 
-use serde_json::Value;
+use crate::inventory::{GpuDevice, InventoryNode, NodeCapabilities};
 
 /// Text used whenever the inventory did not report a value.
 pub const UNKNOWN: &str = "Unknown";
-/// Text used when an array field was reported but contains no entries.
+/// Text used when a reported array contains no entries.
 pub const NONE_REPORTED: &str = "None reported";
 
 pub const OPT_IN_LABEL: &str = "Allow this device to participate in FASTLINK compute";
 pub const OPT_IN_DETAIL: &str =
     "Session-only opt-in. It creates no pairing, opens no socket and sends no data in this milestone.";
+
+/// One label/value row rendered by the node, GPU and capability tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldRow {
+    pub label: &'static str,
+    pub value: String,
+    pub known: bool,
+}
+
+impl FieldRow {
+    #[must_use]
+    pub fn reported(label: &'static str, value: impl Into<String>) -> Self {
+        Self {
+            label,
+            value: value.into(),
+            known: true,
+        }
+    }
+
+    #[must_use]
+    pub fn unknown(label: &'static str) -> Self {
+        Self {
+            label,
+            value: UNKNOWN.to_owned(),
+            known: false,
+        }
+    }
+
+    #[must_use]
+    pub fn optional_text(label: &'static str, value: Option<&str>) -> Self {
+        match value.map(str::trim).filter(|text| !text.is_empty()) {
+            Some(value) => Self::reported(label, value),
+            None => Self::unknown(label),
+        }
+    }
+
+    #[must_use]
+    pub fn optional_bytes(label: &'static str, value: Option<u64>) -> Self {
+        match value {
+            Some(value) => Self::reported(label, bytes_label(value)),
+            None => Self::unknown(label),
+        }
+    }
+}
 
 /// Render an optional string, treating blank values as unknown.
 #[must_use]
@@ -26,23 +70,30 @@ pub fn optional_text(value: Option<&str>) -> String {
         .map_or_else(|| UNKNOWN.to_owned(), ToOwned::to_owned)
 }
 
-/// A device name is never invented; an absent name is labelled as such.
+/// Node title from the reported hostname; nothing is synthesized.
 #[must_use]
-pub fn device_title(name: Option<&str>) -> String {
-    match name.map(str::trim).filter(|text| !text.is_empty()) {
-        Some(name) => name.to_owned(),
-        None => "Unnamed device".to_owned(),
+pub fn node_title(hostname: Option<&str>) -> String {
+    match hostname.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(hostname) => hostname.to_owned(),
+        None => "Unnamed node".to_owned(),
     }
 }
 
-/// Role in the current schema, which describes the local machine only.
+/// Role in the current local-only milestone.
 #[must_use]
-pub fn device_role(is_local: bool) -> &'static str {
+pub fn node_role(is_local: bool) -> &'static str {
     if is_local {
         "Local device"
     } else {
-        "Non-local device"
+        "Reported node"
     }
+}
+
+/// Preserve the opaque backend `node_id` byte-for-byte; never special-case
+/// `"local"` and never rewrite the hash.
+#[must_use]
+pub fn opaque_id_label(node_id: Option<&str>) -> String {
+    node_id.map_or_else(|| UNKNOWN.to_owned(), ToOwned::to_owned)
 }
 
 /// Format a byte count using binary units.
@@ -71,21 +122,21 @@ pub fn optional_bytes(bytes: Option<u64>) -> String {
     bytes.map_or_else(|| UNKNOWN.to_owned(), bytes_label)
 }
 
-/// Format logical CPU cores exactly as reported.
+/// Format logical CPU count exactly as reported.
 #[must_use]
-pub fn cpu_label(cores: Option<u32>) -> String {
+pub fn cpu_label(cores: Option<u64>) -> String {
     cores.map_or_else(
         || UNKNOWN.to_owned(),
         |cores| format!("{cores} logical cores"),
     )
 }
 
-/// Derived RAM presentation. The note is shown verbatim by the UI when the
-/// reported values cannot produce a meaningful percentage.
+/// Derived RAM presentation. `note` explains why no percentage is shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RamSummary {
     pub total: String,
     pub available: String,
+    pub free: String,
     pub used_percent: Option<u8>,
     pub note: Option<&'static str>,
 }
@@ -93,9 +144,10 @@ pub struct RamSummary {
 /// Summarize reported RAM. Percentages are only computed from two reported
 /// values and are never used to fill in an unknown total.
 #[must_use]
-pub fn ram_summary(total: Option<u64>, available: Option<u64>) -> RamSummary {
+pub fn ram_summary(total: Option<u64>, available: Option<u64>, free: Option<u64>) -> RamSummary {
     let total_label = optional_bytes(total);
     let available_label = optional_bytes(available);
+    let free_label = optional_bytes(free);
     let mut note = None;
     let mut used_percent = None;
 
@@ -110,60 +162,162 @@ pub fn ram_summary(total: Option<u64>, available: Option<u64>) -> RamSummary {
         }
         (Some(total), Some(available)) => {
             let used = total - available;
-            // Rounded integer percentage; both inputs came from the CLI.
             let percent = (u128::from(used) * 100 + u128::from(total) / 2) / u128::from(total);
             used_percent = u8::try_from(percent).ok();
         }
         _ => {}
     }
 
+    if note.is_none() && matches!((total, free), (Some(total), Some(free)) if free > total) {
+        note = Some("Reported free RAM is larger than total RAM; values are shown as reported.");
+    }
+
     RamSummary {
         total: total_label,
         available: available_label,
+        free: free_label,
         used_percent,
         note,
     }
 }
 
-/// Label for an optional array field, distinguishing "unknown" from "empty".
+/// Row helpers for node facts. RAM is rendered separately because it also has
+/// a derived usage percentage.
 #[must_use]
-pub fn items_summary(items: Option<&[Value]>) -> String {
-    match items {
-        None => UNKNOWN.to_owned(),
-        Some([]) => NONE_REPORTED.to_owned(),
-        Some(items) => format!("{} reported", items.len()),
+pub fn node_rows(node: &InventoryNode) -> Vec<FieldRow> {
+    vec![
+        FieldRow::optional_text("Operating system", node.os.as_deref()),
+        FieldRow::optional_text("OS release", node.os_release.as_deref()),
+        FieldRow::optional_text("Architecture", node.arch.as_deref()),
+        match node.logical_cpu_count {
+            Some(cores) => FieldRow::reported("Logical CPU count", cpu_label(Some(cores))),
+            None => FieldRow::unknown("Logical CPU count"),
+        },
+        FieldRow::optional_text("Node ID source", node.node_id_source.as_deref()),
+    ]
+}
+
+/// Count-only label for reported arrays.
+#[must_use]
+pub fn reported_count(count: usize) -> String {
+    match count {
+        0 => NONE_REPORTED.to_owned(),
+        1 => "1 reported".to_owned(),
+        count => format!("{count} reported"),
     }
 }
 
-/// Render each reported array entry. Schema v1 does not define entry fields,
-/// so objects are shown as compact JSON rather than being guessed at.
 #[must_use]
-pub fn item_entries(items: Option<&[Value]>) -> Vec<String> {
-    items
-        .unwrap_or_default()
-        .iter()
-        .map(|item| match item {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })
-        .collect()
+pub fn gpu_count_label(gpus: &[GpuDevice]) -> String {
+    reported_count(gpus.len())
 }
 
-/// Status headline. Only the documented `local_only` value is translated;
-/// anything else is shown exactly as reported.
+/// Index label for a GPU entry; a missing name is not invented.
 #[must_use]
-pub fn status_headline(status: Option<&str>) -> String {
-    match status.map(str::trim).filter(|text| !text.is_empty()) {
+pub fn gpu_title(index: usize, gpu: &GpuDevice) -> String {
+    match gpu
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => name.to_owned(),
+        None => format!("GPU {}", index + 1),
+    }
+}
+
+/// Every GPU value the backend reported, with unknown fields still unknown.
+#[must_use]
+pub fn gpu_rows(gpu: &GpuDevice) -> Vec<FieldRow> {
+    let card = gpu.card.trim();
+    let card_row = if card.is_empty() {
+        FieldRow::unknown("Card")
+    } else {
+        FieldRow::reported("Card", gpu.card.clone())
+    };
+    vec![
+        card_row,
+        FieldRow::optional_text("Name", gpu.name.as_deref()),
+        FieldRow::optional_text("Driver", gpu.driver.as_deref()),
+        FieldRow::optional_text("Vendor ID", gpu.vendor_id.as_deref()),
+        FieldRow::optional_text("PCI device ID", gpu.pci_device_id.as_deref()),
+        FieldRow::optional_bytes("VRAM total", gpu.vram_total_bytes),
+        FieldRow::optional_bytes("VRAM free", gpu.vram_free_bytes),
+    ]
+}
+
+/// Normalize only the backend's documented `"unknown"` sentinel; anything else
+/// is shown exactly as reported, including a reported zero.
+#[must_use]
+pub fn connectivity_label(value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) if !text.eq_ignore_ascii_case("unknown") => text.to_owned(),
+        _ => UNKNOWN.to_owned(),
+    }
+}
+
+#[must_use]
+pub fn connectivity_known(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).filter(|text| !text.is_empty()),
+        Some(text) if !text.eq_ignore_ascii_case("unknown")
+    )
+}
+
+/// Capabilities are rendered only from reported fields. Null capacity or
+/// throughput means unknown, not zero.
+#[must_use]
+pub fn capability_rows(capabilities: &NodeCapabilities) -> Vec<FieldRow> {
+    let throughput = match capabilities.throughput_bps {
+        Some(value) => FieldRow::reported("Network throughput", format!("{value} bps")),
+        None => FieldRow::unknown("Network throughput"),
+    };
+    vec![
+        FieldRow::optional_bytes("Storage capacity", capabilities.capacity_bytes),
+        throughput,
+        FieldRow {
+            label: "Network connectivity",
+            value: connectivity_label(capabilities.network_connectivity.as_deref()),
+            known: connectivity_known(capabilities.network_connectivity.as_deref()),
+        },
+        FieldRow::reported(
+            "Remote peers",
+            reported_count(capabilities.remote_peers.len()),
+        ),
+    ]
+}
+
+/// Count label for the backend's explicit unknown-field list.
+#[must_use]
+pub fn unknown_fields_count(fields: &[String]) -> String {
+    reported_count(fields.len())
+}
+
+#[must_use]
+pub fn unknown_field_entries(fields: &[String]) -> Vec<String> {
+    fields.to_vec()
+}
+
+/// Schema headline, exactly as reported.
+#[must_use]
+pub fn schema_headline(schema: &str, version: u32) -> String {
+    format!("{schema} · schema v{version}")
+}
+
+/// Scope headline. Only the implemented `local_only` value is translated.
+#[must_use]
+pub fn scope_headline(scope: Option<&str>) -> String {
+    match scope.map(str::trim).filter(|text| !text.is_empty()) {
         Some("local_only") => "Local-only".to_owned(),
         Some(other) => other.to_owned(),
-        None => "Status unknown".to_owned(),
+        None => "Scope unknown".to_owned(),
     }
 }
 
-/// Backend value exactly as reported.
+/// Discovery mode exactly as reported.
 #[must_use]
-pub fn backend_label(backend: Option<&str>) -> String {
-    optional_text(backend)
+pub fn discovery_label(mode: Option<&str>) -> String {
+    optional_text(mode)
 }
 
 /// Short relative timestamp for the footer.
@@ -184,7 +338,17 @@ pub fn format_age(age: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::inventory::parse_inventory_json;
+
+    const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
+
+    fn fixture_node() -> InventoryNode {
+        parse_inventory_json(FIXTURE)
+            .expect("fixture must parse")
+            .local_node()
+            .expect("fixture has a local node")
+            .clone()
+    }
 
     #[test]
     fn unknown_values_are_never_invented() {
@@ -193,46 +357,159 @@ mod tests {
         assert_eq!(optional_text(Some("linux")), "linux");
         assert_eq!(optional_bytes(None), UNKNOWN);
         assert_eq!(cpu_label(None), UNKNOWN);
-        assert_eq!(backend_label(None), UNKNOWN);
-        assert_eq!(status_headline(None), "Status unknown");
-        assert_eq!(device_title(None), "Unnamed device");
+        assert_eq!(node_title(None), "Unnamed node");
+        assert_eq!(scope_headline(None), "Scope unknown");
+        assert_eq!(discovery_label(None), UNKNOWN);
     }
 
     #[test]
-    fn null_ram_has_no_percentage() {
-        let summary = ram_summary(None, None);
-        assert_eq!(summary.total, UNKNOWN);
-        assert_eq!(summary.available, UNKNOWN);
-        assert_eq!(summary.used_percent, None);
-        assert_eq!(summary.note, None);
+    fn opaque_node_id_is_preserved_exactly() {
+        assert_eq!(opaque_id_label(None), UNKNOWN);
+        assert_eq!(
+            opaque_id_label(Some("0123456789abcdef0123456789abcdef")),
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(opaque_id_label(Some("AbC_123")), "AbC_123");
+        assert_ne!(
+            opaque_id_label(Some("0123456789abcdef0123456789abcdef")),
+            "local"
+        );
+    }
 
-        let partial = ram_summary(Some(16 * 1024 * 1024 * 1024), None);
-        assert_eq!(partial.available, UNKNOWN);
-        assert_eq!(partial.used_percent, None);
+    #[test]
+    fn fixture_rows_use_reported_backend_fields() {
+        let node = fixture_node();
+        let rows = node_rows(&node);
+        let value = |label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        assert_eq!(value("Operating system").value, "linux");
+        assert_eq!(value("OS release").value, "6.12.0-fixture");
+        assert_eq!(value("Architecture").value, "x86_64");
+        assert_eq!(value("Logical CPU count").value, "16 logical cores");
+        assert_eq!(value("Node ID source").value, "machine-id");
+
+        let ram = ram_summary(
+            node.ram_total_bytes,
+            node.ram_available_bytes,
+            node.ram_free_bytes,
+        );
+        assert_eq!(ram.total, "32.0 GiB");
+        assert_eq!(ram.available, "8.0 GiB");
+        assert_eq!(ram.free, "4.0 GiB");
+        assert_eq!(ram.used_percent, Some(75));
+        assert_eq!(ram.note, None);
+    }
+
+    #[test]
+    fn capabilities_use_only_reported_values() {
+        let capabilities = NodeCapabilities {
+            capacity_bytes: None,
+            throughput_bps: None,
+            network_connectivity: Some("unknown".to_owned()),
+            remote_peers: Vec::new(),
+        };
+        let rows = capability_rows(&capabilities);
+        assert_eq!(rows[0].value, UNKNOWN);
+        assert!(!rows[0].known);
+        assert_eq!(rows[1].value, UNKNOWN);
+        assert!(!rows[1].known);
+        assert_eq!(rows[2].value, UNKNOWN);
+        assert!(!rows[2].known);
+        assert_eq!(rows[3].value, NONE_REPORTED);
+        assert!(rows[3].known);
+
+        let reported = NodeCapabilities {
+            capacity_bytes: Some(1024),
+            throughput_bps: Some(0),
+            network_connectivity: Some("loopback_only".to_owned()),
+            remote_peers: vec!["peer-a".to_owned(), "peer-b".to_owned()],
+        };
+        let rows = capability_rows(&reported);
+        assert_eq!(rows[0].value, "1.0 KiB");
+        assert_eq!(rows[1].value, "0 bps");
+        assert!(rows[1].known);
+        assert_eq!(rows[2].value, "loopback_only");
+        assert!(rows[2].known);
+        assert_eq!(rows[3].value, "2 reported");
+    }
+
+    #[test]
+    fn unknown_connectivity_stays_unknown() {
+        for value in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("unknown"),
+            Some("UNKNOWN"),
+        ] {
+            assert_eq!(connectivity_label(value), UNKNOWN, "{value:?}");
+            assert!(!connectivity_known(value), "{value:?}");
+        }
+        assert_eq!(connectivity_label(Some("loopback")), "loopback");
+        assert!(connectivity_known(Some("loopback")));
+    }
+
+    #[test]
+    fn gpu_rows_expose_only_reported_fields() {
+        let gpu = GpuDevice {
+            card: "card1".to_owned(),
+            name: None,
+            driver: None,
+            vendor_id: None,
+            pci_device_id: None,
+            vram_total_bytes: None,
+            vram_free_bytes: Some(0),
+        };
+        assert_eq!(gpu_title(0, &gpu), "GPU 1");
+        let rows = gpu_rows(&gpu);
+        assert_eq!(rows[0].value, "card1");
+        assert_eq!(rows[1].value, UNKNOWN);
+        assert_eq!(rows[1].label, "Name");
+        assert!(!rows[1].known);
+        assert_eq!(rows[5].value, UNKNOWN);
+        assert!(!rows[5].known);
+        assert_eq!(rows[6].value, "0 B");
+        assert!(rows[6].known);
+        assert_eq!(gpu_count_label(&[]), NONE_REPORTED);
+        assert_eq!(gpu_count_label(std::slice::from_ref(&gpu)), "1 reported");
     }
 
     #[test]
     fn ram_percentage_uses_reported_values_only() {
-        let summary = ram_summary(Some(8_000), Some(2_000));
+        let summary = ram_summary(Some(8_000), Some(2_000), None);
         assert_eq!(summary.total, "7.8 KiB");
         assert_eq!(summary.available, "2.0 KiB");
+        assert_eq!(summary.free, UNKNOWN);
         assert_eq!(summary.used_percent, Some(75));
         assert_eq!(summary.note, None);
+
+        let partial = ram_summary(Some(16 * 1024 * 1024 * 1024), None, None);
+        assert_eq!(partial.available, UNKNOWN);
+        assert_eq!(partial.free, UNKNOWN);
+        assert_eq!(partial.used_percent, None);
     }
 
     #[test]
     fn inconsistent_ram_is_flagged_not_clamped() {
-        let summary = ram_summary(Some(1_000), Some(2_000));
+        let summary = ram_summary(Some(1_000), Some(2_000), Some(3_000));
         assert_eq!(summary.used_percent, None);
         assert!(summary.note.unwrap().contains("larger than total"));
         assert_eq!(summary.available, "2.0 KiB");
-    }
+        assert_eq!(summary.free, "2.9 KiB");
 
-    #[test]
-    fn zero_total_ram_is_flagged() {
-        let summary = ram_summary(Some(0), Some(0));
-        assert_eq!(summary.used_percent, None);
-        assert!(summary.note.unwrap().contains("zero"));
+        let free_inconsistent = ram_summary(Some(1_000), Some(500), Some(3_000));
+        assert!(free_inconsistent
+            .note
+            .unwrap()
+            .contains("free RAM is larger"));
+        assert_eq!(free_inconsistent.used_percent, Some(50));
+
+        let zero_total = ram_summary(Some(0), Some(0), Some(0));
+        assert_eq!(zero_total.used_percent, None);
+        assert!(zero_total.note.unwrap().contains("zero"));
     }
 
     #[test]
@@ -246,21 +523,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_unknown_arrays_are_distinct() {
-        assert_eq!(items_summary(None), UNKNOWN);
-        assert_eq!(items_summary(Some(&[])), "None reported");
-        let entries = [json!("gpu0"), json!({"name": "gpu1"})];
-        assert_eq!(items_summary(Some(&entries)), "2 reported");
+    fn schema_scope_and_unknown_fields_are_explicit() {
         assert_eq!(
-            item_entries(Some(&entries)),
-            ["gpu0", "{\"name\":\"gpu1\"}"]
+            schema_headline("fastlink.devices.v1", 1),
+            "fastlink.devices.v1 · schema v1"
         );
-    }
-
-    #[test]
-    fn documented_status_is_translated_but_unknown_status_is_raw() {
-        assert_eq!(status_headline(Some("local_only")), "Local-only");
-        assert_eq!(status_headline(Some("future_status")), "future_status");
+        assert_eq!(scope_headline(Some("local_only")), "Local-only");
+        assert_eq!(scope_headline(Some("future_scope")), "future_scope");
+        assert_eq!(unknown_fields_count(&[]), NONE_REPORTED);
+        assert_eq!(
+            unknown_field_entries(&["capabilities.capacity_bytes".to_owned()]),
+            ["capabilities.capacity_bytes"]
+        );
     }
 
     #[test]

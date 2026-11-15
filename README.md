@@ -50,9 +50,13 @@ No unauthorized network access, automatic device discovery, or credential setup 
 ## Desktop shell (Linux, pre-alpha)
 
 `fastlink-gui` is a native Linux desktop shell for the first local-device
-milestone. It invokes `fastlink devices --json` and renders the returned device
-cards, with explicit session-only opt-in and honest empty states for peers,
-models and chat. It performs no discovery, downloads, inference or GPU compute.
+milestone. It invokes `fastlink devices --json` (schema
+`fastlink.devices.v1`, scope `local_only`), treats the sole local-only node as
+the local device, and preserves the backend's opaque hashed `node_id`. It renders
+only reported host, GPU and capability fields; unknown or null values remain
+`Unknown`, and network speed/connectivity is never inferred. Opt-in is
+session-only and local-node-only, with honest empty states for peers, models and
+chat. It performs no discovery, downloads, inference or GPU compute.
 
 ```bash
 cargo build -p fastlink-gui
@@ -62,11 +66,13 @@ cargo run -p fastlink-gui -- --fastlink-bin /path/to/fastlink
 
 The built binary is `target/debug/fastlink-gui` (`target/release/fastlink-gui`
 with `--release`). The inventory JSON contract, build requirements, headless
-tests and limitations are documented in [Desktop shell](docs/GUI.md).
+tests, actual-`FASTLINK_BIN` contract check and limitations are documented in
+[Desktop shell](docs/GUI.md).
 
-**Limitation:** the `devices` subcommand is delivered by the separate
-`feat/linux-device-inventory` work. Until that build is used, the GUI shows the
-CLI error and a configuration hint rather than inventing device telemetry.
+**Verification:** the GUI parser is tested against the integrated
+`fastlink devices --json` output by invoking the real binary from
+`FASTLINK_BIN`; the default suite uses a sanitized fixture with the exact
+backend field set. No GUI window is launched by those tests.
 
 ## Example baseline (synthetic and highly repetitive)
 

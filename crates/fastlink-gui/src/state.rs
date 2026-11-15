@@ -1,6 +1,9 @@
 //! Application state and the background inventory loader.
 //!
 //! The loader runs the CLI on a worker thread so the window stays responsive.
+//! The local device is the sole node in `scope:"local_only"`; its opaque hashed
+//! `node_id` is the only identity used for selection and opt-in.
+//!
 //! Opt-in state is intentionally session-only: this milestone creates no
 //! pairing, listener or persisted consent.
 
@@ -9,7 +12,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::inventory::{Device, DeviceInventory, InventoryCommand, LoadError};
+use crate::inventory::{DeviceInventory, InventoryCommand, InventoryNode, LoadError};
 
 /// What the central panel should show right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,13 +159,30 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn selected_device(&self) -> Option<&Device> {
+    pub fn selected_node(&self) -> Option<&InventoryNode> {
         let inventory = self.inventory.as_ref()?;
         let selected = self.selected_id.as_deref()?;
         inventory
-            .devices
+            .nodes
             .iter()
-            .find(|device| device.id == selected)
+            .find(|node| node.node_id.as_deref() == Some(selected))
+    }
+
+    /// Sole node in `scope:"local_only"`, when present.
+    #[must_use]
+    pub fn local_node(&self) -> Option<&InventoryNode> {
+        self.inventory.as_ref()?.local_node()
+    }
+
+    /// Opaque id of the local node, if the backend could derive one.
+    #[must_use]
+    pub fn local_node_id(&self) -> Option<&str> {
+        self.inventory.as_ref()?.local_node_id()
+    }
+
+    #[must_use]
+    pub fn is_local_node(&self, id: &str) -> bool {
+        self.local_node_id() == Some(id)
     }
 
     #[must_use]
@@ -222,25 +242,26 @@ impl AppState {
     }
 
     fn apply_inventory(&mut self, inventory: DeviceInventory) {
-        let ids: HashSet<&str> = inventory
-            .devices
-            .iter()
-            .map(|device| device.id.as_str())
-            .collect();
-        self.opted_in.retain(|id| ids.contains(id.as_str()));
+        let local_id = inventory.local_node_id().map(str::to_owned);
 
+        // Consent is local-device-only. A changed local node id invalidates the
+        // previous session opt-in rather than silently transferring consent.
+        self.opted_in
+            .retain(|id| local_id.as_deref() == Some(id.as_str()));
+
+        let known_ids: HashSet<&str> = inventory
+            .nodes
+            .iter()
+            .filter_map(|node| node.node_id.as_deref())
+            .collect();
         let selection_is_current = self
             .selected_id
             .as_deref()
-            .is_some_and(|id| ids.contains(id));
+            .is_some_and(|id| known_ids.contains(id));
         if !selection_is_current {
-            let next = inventory
-                .devices
-                .iter()
-                .find(|device| device.is_local())
-                .or_else(|| inventory.devices.first())
-                .map(|device| device.id.clone());
-            self.selected_id = next;
+            self.selected_id = local_id
+                .filter(|id| known_ids.contains(id.as_str()))
+                .or_else(|| inventory.nodes.iter().find_map(|node| node.node_id.clone()));
         }
 
         self.inventory = Some(inventory);
@@ -248,31 +269,30 @@ impl AppState {
         self.loaded_at = Some(Instant::now());
     }
 
-    /// Select a device that exists in the current snapshot.
+    /// Select a node that exists in the current snapshot.
     pub fn select(&mut self, id: &str) -> bool {
-        let known = self
-            .inventory
-            .as_ref()
-            .is_some_and(|inventory| inventory.devices.iter().any(|device| device.id == id));
+        let known = self.inventory.as_ref().is_some_and(|inventory| {
+            inventory
+                .nodes
+                .iter()
+                .any(|node| node.node_id.as_deref() == Some(id))
+        });
         if known {
             self.selected_id = Some(id.to_owned());
         }
         known
     }
 
-    /// Toggle explicit, session-only opt-in for a known device.
+    /// Toggle explicit, session-only opt-in for the local node.
     pub fn toggle_opt_in(&mut self, id: &str) -> bool {
         let next = !self.is_opted_in(id);
         self.set_opt_in(id, next)
     }
 
-    /// Set opt-in for a known device. Unknown ids are ignored.
+    /// Set opt-in for the local node only. Unknown and non-local ids are
+    /// rejected: there are no remote controls in this milestone.
     pub fn set_opt_in(&mut self, id: &str, opted_in: bool) -> bool {
-        let known = self
-            .inventory
-            .as_ref()
-            .is_some_and(|inventory| inventory.devices.iter().any(|device| device.id == id));
-        if !known {
+        if !self.is_local_node(id) {
             return false;
         }
         if opted_in {
@@ -290,21 +310,20 @@ mod tests {
     use crate::inventory::parse_inventory_json;
     use std::sync::mpsc;
 
-    fn inventory(devices: &str) -> DeviceInventory {
-        parse_inventory_json(&format!(
-            r#"{{"schema_version":1,"devices":[{devices}],"status":"local_only"}}"#
-        ))
-        .expect("test inventory must parse")
+    const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
+    const FIXTURE_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    fn fixture() -> DeviceInventory {
+        parse_inventory_json(FIXTURE).expect("fixture must parse")
     }
 
-    fn local_only() -> DeviceInventory {
-        inventory(r#"{"id":"local","name":"test-host","gpu_devices":[],"network_interfaces":[]}"#)
+    fn inventory_with_id(id: &str) -> DeviceInventory {
+        parse_inventory_json(&FIXTURE.replace(FIXTURE_ID, id)).expect("test inventory must parse")
     }
 
-    fn two_devices() -> DeviceInventory {
-        inventory(
-            r#"{"id":"peer-a","name":"peer-a"},{"id":"local","name":"test-host"},{"id":"peer-b"}"#,
-        )
+    fn inventory_without_id() -> DeviceInventory {
+        let json = FIXTURE.replace(&format!("\"node_id\":\"{FIXTURE_ID}\""), "\"node_id\":null");
+        parse_inventory_json(&json).expect("null-id inventory must parse")
     }
 
     fn error() -> LoadError {
@@ -321,15 +340,17 @@ mod tests {
     }
 
     #[test]
-    fn successful_load_selects_local_device_without_opting_in() {
+    fn successful_load_selects_the_opaque_local_node_without_opting_in() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(local_only()));
+        state.apply_result(Ok(fixture()));
 
         assert_eq!(state.screen(), Screen::Devices);
-        assert_eq!(state.selected_id(), Some("local"));
+        assert_eq!(state.selected_id(), Some(FIXTURE_ID));
+        assert_eq!(state.local_node_id(), Some(FIXTURE_ID));
+        assert_ne!(state.local_node_id(), Some("local"));
         assert_eq!(
-            state.selected_device().unwrap().name.as_deref(),
-            Some("test-host")
+            state.selected_node().unwrap().hostname.as_deref(),
+            Some("fixture-host")
         );
         assert_eq!(state.opted_in_count(), 0);
         assert!(state.loaded_age().is_some());
@@ -337,22 +358,34 @@ mod tests {
     }
 
     #[test]
-    fn local_device_wins_default_selection() {
+    fn empty_inventory_has_no_selection_and_no_fake_nodes() {
+        let json = r#"{
+            "schema": "fastlink.devices.v1",
+            "schema_version": 1,
+            "scope": "local_only",
+            "discovery_mode": "passive_host_evidence",
+            "node_count": 0,
+            "nodes": []
+        }"#;
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(two_devices()));
-        assert_eq!(state.selected_id(), Some("local"));
+        state.apply_result(Ok(parse_inventory_json(json).unwrap()));
+        assert_eq!(state.screen(), Screen::Devices);
+        assert!(state.inventory().unwrap().nodes.is_empty());
+        assert!(state.selected_id().is_none());
+        assert!(state.local_node().is_none());
     }
 
     #[test]
-    fn empty_inventory_has_no_selection_and_no_fake_devices() {
+    fn node_without_an_id_cannot_be_selected_or_opted_in() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(parse_inventory_json(
-            r#"{"schema_version":1,"devices":[],"status":"local_only"}"#,
-        )
-        .unwrap()));
+        state.apply_result(Ok(inventory_without_id()));
         assert_eq!(state.screen(), Screen::Devices);
-        assert!(state.inventory().unwrap().devices.is_empty());
+        assert!(state.local_node().is_some());
+        assert_eq!(state.local_node_id(), None);
         assert!(state.selected_id().is_none());
+        assert!(!state.set_opt_in("local", true));
+        assert!(!state.toggle_opt_in("local"));
+        assert_eq!(state.opted_in_count(), 0);
     }
 
     #[test]
@@ -366,65 +399,72 @@ mod tests {
     #[test]
     fn failed_refresh_keeps_last_snapshot() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(local_only()));
+        state.apply_result(Ok(fixture()));
         let selected = state.selected_id().map(str::to_owned);
         state.apply_result(Err(error()));
 
         assert_eq!(state.screen(), Screen::Devices);
         assert_eq!(state.last_error().unwrap().summary, "inventory failed");
         assert_eq!(state.selected_id().map(str::to_owned), selected);
-        assert_eq!(state.inventory().unwrap().devices.len(), 1);
+        assert_eq!(state.inventory().unwrap().nodes.len(), 1);
     }
 
     #[test]
-    fn refresh_prunes_stale_selection_and_opt_ins() {
+    fn refresh_prunes_opt_in_when_local_node_id_changes() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(two_devices()));
-        assert!(state.select("peer-a"));
-        assert!(state.set_opt_in("peer-a", true));
-        assert!(state.set_opt_in("local", true));
-        assert_eq!(state.opted_in_count(), 2);
-
-        state.apply_result(Ok(local_only()));
-        assert_eq!(state.selected_id(), Some("local"));
+        state.apply_result(Ok(fixture()));
+        assert!(state.set_opt_in(FIXTURE_ID, true));
         assert_eq!(state.opted_in_count(), 1);
-        assert!(state.is_opted_in("local"));
-        assert!(!state.is_opted_in("peer-a"));
+
+        let new_id = "fedcba9876543210fedcba9876543210";
+        state.apply_result(Ok(inventory_with_id(new_id)));
+        assert_eq!(state.selected_id(), Some(new_id));
+        assert_eq!(state.opted_in_count(), 0);
+        assert!(!state.is_opted_in(FIXTURE_ID));
+        assert!(!state.is_opted_in(new_id));
     }
 
     #[test]
-    fn refresh_keeps_valid_selection() {
+    fn refresh_keeps_valid_selection_and_opt_in() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        state.apply_result(Ok(two_devices()));
-        assert!(state.select("peer-b"));
-        state.apply_result(Ok(two_devices()));
-        assert_eq!(state.selected_id(), Some("peer-b"));
+        state.apply_result(Ok(fixture()));
+        assert!(state.set_opt_in(FIXTURE_ID, true));
+        state.apply_result(Ok(fixture()));
+        assert_eq!(state.selected_id(), Some(FIXTURE_ID));
+        assert!(state.is_opted_in(FIXTURE_ID));
+        assert_eq!(state.opted_in_count(), 1);
     }
 
     #[test]
-    fn opt_in_requires_a_known_device_and_is_reversible() {
+    fn opt_in_is_local_node_only_and_reversible() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        assert!(!state.set_opt_in("local", true));
-        assert!(!state.toggle_opt_in("local"));
+        assert!(!state.set_opt_in(FIXTURE_ID, true));
+        assert!(!state.toggle_opt_in(FIXTURE_ID));
         assert_eq!(state.opted_in_count(), 0);
 
-        state.apply_result(Ok(local_only()));
-        assert!(state.toggle_opt_in("local"));
-        assert!(state.is_opted_in("local"));
+        state.apply_result(Ok(fixture()));
+        assert!(!state.set_opt_in("some-other-node", true));
+        assert!(!state.set_opt_in("local", true));
+        assert_eq!(state.opted_in_count(), 0);
+
+        assert!(state.toggle_opt_in(FIXTURE_ID));
+        assert!(state.is_opted_in(FIXTURE_ID));
+        assert!(state.is_local_node(FIXTURE_ID));
         assert_eq!(state.opted_in_count(), 1);
-        assert!(state.toggle_opt_in("local"));
-        assert!(!state.is_opted_in("local"));
+        assert!(state.toggle_opt_in(FIXTURE_ID));
+        assert!(!state.is_opted_in(FIXTURE_ID));
         assert_eq!(state.opted_in_count(), 0);
         assert!(!state.toggle_opt_in("missing"));
     }
 
     #[test]
-    fn selection_requires_a_known_device() {
+    fn selection_requires_a_known_node_id() {
         let mut state = AppState::new(InventoryCommand::new("fastlink"));
-        assert!(!state.select("local"));
-        state.apply_result(Ok(local_only()));
+        assert!(!state.select(FIXTURE_ID));
+        state.apply_result(Ok(fixture()));
         assert!(!state.select("missing"));
-        assert!(state.select("local"));
+        assert!(!state.select("local"));
+        assert!(state.select(FIXTURE_ID));
     }
 
     #[test]
@@ -435,7 +475,7 @@ mod tests {
             .loader_mut()
             .start_with(move || {
                 let _ = gate.recv();
-                Ok(local_only())
+                Ok(fixture())
             })
             .expect("worker must start");
 
@@ -452,6 +492,7 @@ mod tests {
         }
         assert!(!state.loader().is_busy());
         assert_eq!(state.screen(), Screen::Devices);
+        assert_eq!(state.selected_id(), Some(FIXTURE_ID));
     }
 
     #[test]
@@ -465,7 +506,7 @@ mod tests {
             })
             .unwrap());
         assert!(!loader
-            .start_with(|| Ok(local_only()))
+            .start_with(|| Ok(fixture()))
             .expect("busy is not an error"));
         release.send(()).unwrap();
 
