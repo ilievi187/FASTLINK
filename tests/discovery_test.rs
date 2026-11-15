@@ -2,11 +2,24 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use fastlink::discovery::{discover_with_config, render_discovery_json, DiscoveryConfig};
 
 static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Fake executables are written and spawned inside one shared test process.
+/// Acquire this lock in every process-spawning or script-writing test so a
+/// concurrent `Command::spawn` `clone()` cannot inherit an open writable fd
+/// and cause `ETXTBSY` before reaching `execve`.
+static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SCRIPT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn temp_dir(label: &str) -> PathBuf {
     let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -21,6 +34,7 @@ fn temp_dir(label: &str) -> PathBuf {
 
 #[test]
 fn cli_rejects_unknown_or_duplicate_discover_flags() {
+    let _guard = serial();
     let bin = env!("CARGO_BIN_EXE_fastlink");
 
     let bad = Command::new(bin)
@@ -40,6 +54,7 @@ fn cli_rejects_unknown_or_duplicate_discover_flags() {
 
 #[test]
 fn cli_discover_json_with_missing_providers_reports_unavailable_truthfully() {
+    let _guard = serial();
     let bin = env!("CARGO_BIN_EXE_fastlink");
     let empty_bin_dir = temp_dir("empty-path");
 
@@ -81,6 +96,7 @@ fn cli_discover_json_with_missing_providers_reports_unavailable_truthfully() {
 
 #[test]
 fn library_discover_handles_missing_binaries_and_precancelled_flag_cross_platform() {
+    let _guard = serial();
     let dir = temp_dir("cross-platform-missing");
     let config = DiscoveryConfig {
         lan_mdns_program: dir.join("missing-avahi-browse"),
@@ -150,7 +166,7 @@ mod linux_tests {
     use fastlink::discovery::{discover_with_config, render_discovery_json, DiscoveryConfig};
     use serde_json::Value;
 
-    use super::temp_dir;
+    use super::{serial, temp_dir};
 
     fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
         let path = dir.join(name);
@@ -163,6 +179,7 @@ mod linux_tests {
 
     #[test]
     fn tailscale_generic_peers_are_unverified_with_opaque_ids_and_redacted_addresses() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("ts-valid");
         let payload = r#"{
@@ -285,6 +302,7 @@ printf '%s\\n' '{payload}'
 
     #[test]
     fn tailscale_stopped_backend_state_reports_unavailable_without_raw_ips() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("ts-stopped");
         write_executable(
@@ -317,6 +335,7 @@ printf '%s\n' '{\"BackendState\":\"Stopped\",\"Self\":{\"TailscaleIPs\":[\"100.6
 
     #[test]
     fn tailscale_unknown_online_state_and_offline_peers_are_omitted() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("ts-online-strict");
         let payload = r#"{
@@ -386,6 +405,7 @@ printf '%s\n' '{payload}'
 
     #[test]
     fn lan_mdns_parses_resolved_services_deduplicates_and_strips_raw_addresses() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("mdns-valid");
         let mdns_lines = "\
@@ -535,6 +555,7 @@ printf '%s\\n' '{mdns_lines}'
 
     #[test]
     fn failing_providers_never_leak_raw_stdout_or_stderr_addresses_or_keys() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("provider-failure-redaction");
 
@@ -601,6 +622,7 @@ exit 3
 
     #[test]
     fn adversarial_smuggled_ips_macs_and_endpoints_are_stripped_from_peer_fields() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("smuggled-addresses");
 
@@ -696,6 +718,7 @@ printf '%s\n' '{ts_payload}'
 
     #[test]
     fn adversarial_dns_host_port_endpoints_are_stripped_from_json_and_human_output() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("smuggled-dns-endpoints");
 
@@ -855,6 +878,7 @@ printf '%s\n' '{ts_payload}'
 
     #[test]
     fn malformed_provider_output_reports_error_safely_without_crashing_valid_peer() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("malformed-output");
 
@@ -916,6 +940,7 @@ printf '%s\n' '{not-json 198.51.100.44'
 
     #[test]
     fn oversized_provider_output_is_rejected_and_bounded() {
+        let _guard = serial();
         let dir = temp_dir("oversized-output");
         let mdns = write_executable(
             &dir,
@@ -964,6 +989,7 @@ done
 
     #[test]
     fn provider_timeout_kills_child_and_reports_error() {
+        let _guard = serial();
         let dir = temp_dir("provider-timeout");
         let pid_file = dir.join("child.pid");
         let mdns = write_executable(
@@ -1019,6 +1045,7 @@ exec /bin/sh -c 'sleep 5'
 
     #[test]
     fn cancellation_stops_running_provider_and_skips_subsequent_provider() {
+        let _guard = serial();
         let dir = temp_dir("provider-cancel");
         let ts_marker = dir.join("tailscale-invoked");
         let mdns = write_executable(
@@ -1076,6 +1103,7 @@ exit 0
 
     #[test]
     fn inherited_stdout_descendant_does_not_hang_discovery() {
+        let _guard = serial();
         let dir = temp_dir("inherited-stdout");
         let holder_pid_file = dir.join("holder.pid");
         let mdns = write_executable(
@@ -1123,6 +1151,7 @@ exit 0
 
     #[test]
     fn provider_timeout_kills_child_process_group_including_descendants() {
+        let _guard = serial();
         let dir = temp_dir("timeout-pg");
         let desc_pid_file = dir.join("desc.pid");
         let lock_file = dir.join("desc.lock");
@@ -1182,6 +1211,7 @@ wait
 
     #[test]
     fn cli_discover_without_json_prints_human_summary_without_raw_addresses() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("human-summary");
 
@@ -1234,6 +1264,7 @@ printf '%s\n' '{\"BackendState\":\"Running\",\"Peer\":{\"k\":{\"ID\":\"nOne\",\"
 
     #[test]
     fn non_discover_cli_commands_never_invoke_discovery_providers() {
+        let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("opt-in-only");
         let marker = bin_dir.join("discovery-ran");
