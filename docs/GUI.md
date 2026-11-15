@@ -5,19 +5,27 @@ milestone scope is deliberately narrow: **local device overview and explicit
 local-device opt-in**. It is a native desktop binary (`fastlink-gui`) built with
 Rust, [egui](https://github.com/emilk/egui) and eframe.
 
-**Status: pre-alpha.**
+**Status: pre-alpha.** The shell is aligned with the implemented
+`fastlink devices --json` backend (`fastlink.devices.v1`).
 
 ## What it does
 
 - Invokes exactly one command: `<FASTLINK CLI> devices --json`.
-- Parses the versioned inventory contract below and shows device cards.
-- Shows OS, architecture, logical CPU cores, total/available RAM, compute
-  backend, GPU entries and network-interface entries **only when reported**.
+- Parses the implemented `fastlink.devices.v1` local-only inventory.
+- Treats the sole node in `scope:"local_only"` as the local device.
+- Preserves the backend's opaque hashed `node_id`; it never expects a literal
+  `"local"` id and never rewrites the hash.
+- Shows hostname, OS, OS release, architecture, logical CPU count, total /
+  available / free RAM, GPU metadata, capabilities and the CLI's explicit
+  `unknown_fields` list.
 - Labels missing or `null` values as `Unknown`. It never estimates, probes the
-  OS itself, or fills gaps with plausible-looking numbers. (An absent device
-  name is labelled `Unnamed device`.)
-- Provides manual **Refresh**, device **selection**, and a session-only
-  **opt-in** toggle.
+  OS itself, or fills gaps with plausible-looking numbers.
+- Renders capabilities only from reported fields. `capacity_bytes`,
+  `throughput_bps` and `network_connectivity` stay `Unknown` when the backend
+  reports `null` or the documented `"unknown"` sentinel. Network speed and
+  connectivity are never inferred.
+- Provides manual **Refresh**, local-node **selection**, and a session-only
+  **opt-in** toggle for the local node only.
 - Shows honest empty states for peers, models and chat because those features
   do not exist in this milestone.
 
@@ -25,8 +33,9 @@ Rust, [egui](https://github.com/emilk/egui) and eframe.
 
 - No network scanning, discovery, listening sockets or pairing.
 - No model catalog, model download, inference or chat.
-- No remote-device controls.
-- No CUDA/ROCm compute or GPU benchmark work.
+- No remote-device controls. Opt-in exists only for the local node.
+- No CUDA/ROCm compute or GPU benchmark work. The integration tests are
+  CPU/software headless tests and do not launch a GUI window.
 - No persistence: selection and opt-in are discarded when the window closes.
 
 Window rendering uses the normal OpenGL driver through eframe's glow backend;
@@ -34,45 +43,78 @@ that is UI rendering, not FASTLINK compute.
 
 ## Inventory contract (schema v1)
 
-The desktop shell consumes this JSON document on stdout:
+The desktop shell consumes this JSON document on stdout. The shape below is the
+implemented `fastlink devices --json` output; values are illustrative and
+sanitized.
 
 ```json
 {
+  "schema": "fastlink.devices.v1",
   "schema_version": 1,
-  "devices": [
+  "scope": "local_only",
+  "discovery_mode": "passive_host_evidence",
+  "node_count": 1,
+  "nodes": [
     {
-      "id": "local",
-      "name": "<hostname>",
+      "node_id": "<opaque hashed id>",
+      "node_id_source": "machine-id",
+      "hostname": "<hostname>",
       "os": "linux",
-      "architecture": "x86_64",
-      "cpu_logical_cores": 8,
+      "os_release": "<kernel release>",
+      "arch": "x86_64",
+      "logical_cpu_count": 8,
       "ram_total_bytes": 17179869184,
       "ram_available_bytes": 8589934592,
-      "gpu_devices": [],
-      "backend": "cpu",
-      "network_interfaces": []
+      "ram_free_bytes": 4294967296,
+      "gpus": [
+        {
+          "card": "card0",
+          "name": "<GPU name or null>",
+          "driver": "<driver or null>",
+          "vendor_id": "0x0000",
+          "pci_device_id": "0x0000",
+          "vram_total_bytes": 8589934592,
+          "vram_free_bytes": 6442450944
+        }
+      ],
+      "capabilities": {
+        "capacity_bytes": null,
+        "throughput_bps": null,
+        "network_connectivity": "unknown",
+        "remote_peers": []
+      },
+      "unknown_fields": [
+        "capabilities.capacity_bytes",
+        "capabilities.throughput_bps",
+        "capabilities.network_connectivity"
+      ]
     }
-  ],
-  "status": "local_only"
+  ]
 }
 ```
 
 Rules applied by the shell:
 
-- `schema_version` must be `1`; other versions fail with a visible error.
-- Optional/unknown values may be omitted or `null`; they render as `Unknown`.
-- `gpu_devices` and `network_interfaces` have no entry shape in v1. Entries are
-  displayed as reported (strings verbatim, objects as compact JSON) rather than
-  being interpreted or guessed.
-- Duplicate or empty device ids are rejected.
+- `schema` must be `fastlink.devices.v1`; `schema_version` must be `1`.
+- `scope` must be `local_only`; `node_count` must match `nodes.len()`.
+- `local_only` describes at most one node. When exactly one node is present it
+  is the local device.
+- `node_id` is an opaque backend identifier. A missing id shows `Unknown` and
+  disables selection/opt-in for that node rather than inventing an id.
+- Empty or duplicate non-null `node_id` values are rejected.
+- Optional/unknown values may be `null`; they render as `Unknown`.
+- GPU entries and capability fields have the backend-defined structure above;
+  unknown GPU fields stay unknown.
+- `unknown_fields` is displayed verbatim as the CLI's explicit list of values it
+  could not determine.
 - Unknown additive JSON fields are ignored for forward compatibility.
-- An empty `devices` array is shown as an honest empty state, not replaced with
-  a synthetic device.
+- An empty `nodes` array is shown as an honest empty state, not replaced with a
+  synthetic device.
 
-Device inventory is implemented by the separate
-`feat/linux-device-inventory` work. On branches without it, the GUI shows the
-CLI failure (including the CLI's stderr) and a hint instead of pretending the
-device is unavailable or fabricating telemetry.
+A sanitized fixture with the exact backend field set and JSON layout lives at
+`crates/fastlink-gui/testdata/devices-v1.json`. Real hostnames, machine IDs,
+node hashes and GPU identifiers are never committed; the fixture uses synthetic
+values with the same types.
 
 ## Requirements
 
@@ -126,7 +168,8 @@ cargo run -p fastlink-gui -- --help
 
 All parser, state and UI tests run headlessly; no display server, GPU or window
 is required. UI tests execute the real `ui::draw` function through
-`egui::Context::run_ui` and tessellate the result.
+`egui::Context::run_ui` and tessellate the result on the CPU. No GUI window is
+launched during integration verification.
 
 ```bash
 cargo fmt --check
@@ -140,6 +183,24 @@ above cover both the core crate and the shell. Unix-only command-runner tests
 use temporary fake CLI scripts to verify argument passing, error reporting and
 the invocation timeout.
 
+### Actual-binary contract check
+
+`tests/command_runner.rs` also contains an environment-gated test that invokes
+the real integrated CLI from `FASTLINK_BIN` and parses its live output with the
+GUI parser. It skips with a printed reason when `FASTLINK_BIN` is unset so the
+default suite works in GUI-only environments:
+
+```bash
+cargo build -p fastlink
+FASTLINK_BIN="$PWD/target/debug/fastlink" \
+  cargo test -p fastlink-gui --test command_runner \
+  actual_fastlink_binary_from_environment_satisfies_parser -- --nocapture
+```
+
+The check asserts the real output's schema, version, local-only scope, node
+count, sole local node and opaque hashed node id. It does not print or commit
+the hostname, machine id or hash.
+
 ## Behavior notes and limitations
 
 - **Pre-alpha.** Linux is the only verified target; Windows/macOS builds are not
@@ -152,14 +213,16 @@ the invocation timeout.
 - **Stale snapshots are labelled.** If a refresh fails, the last successful
   snapshot stays visible with a warning banner instead of being replaced by
   fabricated or cleared data.
-- **Session-only consent.** Opt-in is local UI state. It does not pair, does not
-  configure the CLI, is not persisted, and sends nothing.
+- **Session-only consent.** Opt-in is local-node-only UI state. It does not
+  pair, does not configure the CLI, is not persisted, and sends nothing.
 - **Trust boundary.** The GUI runs the executable you configure. It does not
   restrict what that executable does; use a FASTLINK binary you trust. The GUI
   itself opens no sockets and performs no discovery.
-- **RAM percentage** is derived only when both total and available values are
+- **RAM percentage** is derived only when total and available values are
   reported and consistent. Zero or inconsistent values are explained in the UI
   instead of being clamped or hidden.
+- **Network capabilities remain unknown** unless the backend reports them. A
+  reported zero is shown as zero; a missing value is not treated as zero.
 - **Flat theme.** The shell uses egui's default dark/light styling with a small
   custom card layout; no branding or custom font assets are bundled.
 
@@ -168,7 +231,8 @@ the invocation timeout.
 | Symptom | Meaning |
 | --- | --- |
 | `could not start ... No such file or directory` | The CLI path is wrong. Pass `--fastlink-bin` or set `FASTLINK_BIN`. |
-| `failed (exit status: 2)` with usage text | The selected FASTLINK build has no `devices` subcommand yet. Use a build from the inventory work. |
-| `did not return a schema v1 inventory` | The CLI emitted JSON that does not match the contract above. |
+| `failed (exit status: 1)` with a CLI error | The selected FASTLINK build failed. Run `fastlink devices --json` in a terminal. |
+| `did not return a fastlink.devices.v1 inventory` | The CLI emitted JSON that does not match the implemented contract above. |
+| `unsupported inventory scope` | This milestone only supports `local_only`; use a matching CLI/GUI pair. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |

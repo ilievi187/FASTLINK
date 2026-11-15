@@ -78,8 +78,9 @@ impl Options {
              \x20 -h, --help           Print this help\n\
              \x20 -V, --version        Print the GUI version\n\
              \n\
-             The GUI only reads the versioned inventory contract. It performs no network\n\
-             scans, listening sockets, model downloads, inference, or GPU compute."
+             The GUI reads the local-only fastlink.devices.v1 inventory and shows the\n\
+             opaque hashed node_id reported by the CLI. It performs no network scans,\n\
+             listening sockets, model downloads, inference, or GPU compute."
         )
     }
 }

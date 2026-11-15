@@ -1,7 +1,9 @@
-//! End-to-end tests for `InventoryCommand::run` using fake executables.
+//! End-to-end command tests.
 //!
-//! These are Unix-only because they rely on executable shell scripts. The
-//! parser, state and UI tests run on every platform.
+//! Fake executables verify argument passing, error reporting and the invocation
+//! timeout. When `FASTLINK_BIN` is set, a dedicated test invokes the actual
+//! integrated `fastlink devices --json` binary and proves the GUI parser
+//! accepts its real output. No GUI window is launched.
 
 #![cfg(unix)]
 
@@ -11,11 +13,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use fastlink_gui::inventory::{InventoryCommand, PROGRAM_ENV};
+use fastlink_gui::inventory::{
+    InventoryCommand, LOCAL_ONLY_SCOPE, PROGRAM_ENV, SUPPORTED_SCHEMA, SUPPORTED_SCHEMA_VERSION,
+};
+
+const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
 
 /// Fake executables are written and spawned by a shared test process. Some
 /// filesystems briefly report `ETXTBSY` when a script is executed while another
-/// thread is creating a script, so these tests run one at a time.
+/// thread is creating a script, so script tests run one at a time.
 static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -60,53 +66,60 @@ fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-const VALID_OUTPUT: &str = r#"#!/bin/sh
-[ "$1" = "devices" ] && [ "$2" = "--json" ] || {
-    echo "unexpected arguments: $*" >&2
+fn valid_script() -> String {
+    format!(
+        "#!/bin/sh
+[ \"$1\" = \"devices\" ] && [ \"$2\" = \"--json\" ] || {{
+    echo \"unexpected arguments: $*\" >&2
     exit 9
-}
+}}
 cat <<'JSON'
-{
-  "schema_version": 1,
-  "devices": [{
-    "id": "local",
-    "name": "script-host",
-    "os": "linux",
-    "architecture": "x86_64",
-    "cpu_logical_cores": 12,
-    "ram_total_bytes": 34359738368,
-    "ram_available_bytes": 17179869184,
-    "gpu_devices": [],
-    "backend": "cpu",
-    "network_interfaces": []
-  }],
-  "status": "local_only"
+{FIXTURE}JSON
+"
+    )
 }
-JSON
-"#;
 
 #[test]
-fn runs_the_contract_command_and_parses_output() {
+fn runs_the_contract_command_and_parses_backend_shape() {
     let _guard = serial();
     let dir = TempDir::new("valid");
-    let script = write_script(dir.path(), "fastlink", VALID_OUTPUT);
+    let script = write_script(dir.path(), "fastlink", &valid_script());
 
     let inventory = InventoryCommand::new(&script)
         .with_timeout(Duration::from_secs(10))
         .run()
         .expect("fake CLI must succeed");
 
-    assert_eq!(inventory.schema_version, 1);
-    assert_eq!(inventory.status.as_deref(), Some("local_only"));
-    assert_eq!(inventory.devices.len(), 1);
-    let device = &inventory.devices[0];
-    assert_eq!(device.id, "local");
-    assert_eq!(device.name.as_deref(), Some("script-host"));
-    assert_eq!(device.cpu_logical_cores, Some(12));
-    assert_eq!(device.ram_total_bytes, Some(34_359_738_368));
-    assert_eq!(device.ram_available_bytes, Some(17_179_869_184));
-    assert_eq!(device.backend.as_deref(), Some("cpu"));
-    assert_eq!(device.gpu_devices.as_deref(), Some(&[][..]));
+    assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+    assert_eq!(inventory.schema_version, SUPPORTED_SCHEMA_VERSION);
+    assert_eq!(inventory.scope, LOCAL_ONLY_SCOPE);
+    assert_eq!(inventory.node_count, 1);
+    assert_eq!(inventory.nodes.len(), 1);
+    let node = inventory.local_node().expect("sole node is local");
+    assert_eq!(
+        node.node_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert_ne!(node.node_id.as_deref(), Some("local"));
+    assert_eq!(node.hostname.as_deref(), Some("fixture-host"));
+    assert_eq!(node.os.as_deref(), Some("linux"));
+    assert_eq!(node.os_release.as_deref(), Some("6.12.0-fixture"));
+    assert_eq!(node.arch.as_deref(), Some("x86_64"));
+    assert_eq!(node.logical_cpu_count, Some(16));
+    assert_eq!(node.ram_total_bytes, Some(34_359_738_368));
+    assert_eq!(node.ram_available_bytes, Some(8_589_934_592));
+    assert_eq!(node.ram_free_bytes, Some(4_294_967_296));
+    assert_eq!(node.gpus.len(), 2);
+    assert_eq!(node.gpus[0].card, "card0");
+    assert_eq!(node.gpus[0].vram_total_bytes, Some(536_870_912));
+    assert_eq!(node.capabilities.capacity_bytes, None);
+    assert_eq!(node.capabilities.throughput_bps, None);
+    assert_eq!(
+        node.capabilities.network_connectivity.as_deref(),
+        Some("unknown")
+    );
+    assert!(node.capabilities.remote_peers.is_empty());
+    assert_eq!(node.unknown_fields.len(), 3);
 }
 
 #[test]
@@ -152,11 +165,11 @@ fn wrong_schema_version_is_reported_with_detail() {
     let script = write_script(
         dir.path(),
         "fastlink",
-        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":2,\"devices\":[],\"status\":\"local_only\"}'\n",
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema\":\"fastlink.devices.v1\",\"schema_version\":2,\"scope\":\"local_only\",\"node_count\":0,\"nodes\":[]}'\n",
     );
 
     let error = InventoryCommand::new(&script).run().expect_err("must fail");
-    assert!(error.summary.contains("schema v1"), "{error:?}");
+    assert!(error.summary.contains(SUPPORTED_SCHEMA), "{error:?}");
     assert!(
         error
             .detail
@@ -197,4 +210,55 @@ fn hanging_inventory_is_bounded_by_the_timeout() {
 
     assert!(error.summary.contains("did not finish"), "{error:?}");
     assert!(elapsed < Duration::from_secs(4), "took {elapsed:?}");
+}
+
+/// This test is intentionally environment-gated: `cargo test` must pass in
+/// environments that only build the GUI package, while a full integration run
+/// can set `FASTLINK_BIN` to the actual integrated binary and prove the parser
+/// accepts its live output. It never launches a GUI window.
+#[test]
+fn actual_fastlink_binary_from_environment_satisfies_parser() {
+    let Some(program) = std::env::var_os(PROGRAM_ENV) else {
+        eprintln!("{PROGRAM_ENV} is not set; skipping actual-binary contract check");
+        return;
+    };
+    let program = PathBuf::from(program);
+    assert!(
+        !program.as_os_str().is_empty(),
+        "{PROGRAM_ENV} must not be empty"
+    );
+
+    eprintln!(
+        "invoking actual FASTLINK binary from {PROGRAM_ENV}: {}",
+        program.display()
+    );
+    let inventory = InventoryCommand::new(&program)
+        .with_timeout(Duration::from_secs(30))
+        .run()
+        .expect("actual `fastlink devices --json` must satisfy the GUI parser");
+
+    assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+    assert_eq!(inventory.schema_version, SUPPORTED_SCHEMA_VERSION);
+    assert_eq!(inventory.scope, LOCAL_ONLY_SCOPE);
+    assert_eq!(inventory.node_count, inventory.nodes.len());
+    assert_eq!(inventory.nodes.len(), 1);
+    let local = inventory.local_node().expect("sole node is local");
+    assert_ne!(local.node_id.as_deref(), Some("local"));
+    if let Some(id) = local.node_id.as_deref() {
+        assert_eq!(id.len(), 32, "hashed node_id must be preserved");
+        assert!(
+            id.bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "node_id must remain a lowercase hex hash"
+        );
+    }
+    // Capabilities are reported fields; unknown stays unknown downstream.
+    eprintln!(
+        "accepted actual inventory: schema={} scope={} nodes={} node_id_present={} unknown_fields={}",
+        inventory.schema,
+        inventory.scope,
+        inventory.nodes.len(),
+        local.node_id.is_some(),
+        local.unknown_fields.len()
+    );
 }

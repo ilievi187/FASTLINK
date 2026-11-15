@@ -2,16 +2,16 @@
 
 ## 2026-11-15 — Linux local-device desktop shell (`feat/linux-local-device-ui`)
 
-- Added the `fastlink-gui` workspace crate: native eframe/egui desktop shell for the first local-device milestone.
-- Reads the versioned inventory contract by invoking `<FASTLINK_BIN> devices --json` (configurable with `--fastlink-bin` or `FASTLINK_BIN`); the source command is shown in the window.
-- Added device cards (hostname/id, OS, architecture, logical CPU cores, reported total/available RAM, backend, GPU and network entries), manual refresh, device selection and explicit session-only opt-in.
-- Unknown or `null` inventory values render as `Unknown`; empty peer/model/chat areas are labelled as not implemented instead of being populated with synthetic data.
-- Added a bounded worker invocation (20 s timeout), stale-snapshot warning on refresh failure, and honest CLI/JSON/schema error views.
-- Added headless tests: JSON/contract parser, state/opt-in/selection transitions, fake-CLI command execution, and UI rendering of idle/loading/error/stale/empty/long-value screens via `egui::Context::run_ui`.
-- Verified on Linux: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` (45 existing core tests plus 52 GUI tests) and `cargo build -p fastlink-gui`.
-- Added build/run/test documentation in `docs/GUI.md` and a README section.
+- Added the `fastlink-gui` workspace crate: native eframe/egui desktop shell for the first local-device milestone, with the GUI kept out of the core crate's dependency set.
+- Merged the latest `integrate/fastlink-team` (`558ab65`, merge `e0340be`) and aligned the parser with the implemented `fastlink devices --json` contract: `schema`, `schema_version`, `scope`, `discovery_mode`, `node_count`, and `nodes[]`.
+- The sole node in `scope:"local_only"` is treated as the local device. Its opaque hashed `node_id` is preserved exactly; no literal `local` id is expected, and a missing id disables selection/opt-in rather than inventing one.
+- Rendered node facts (hostname, OS/release, architecture, logical CPU count, total/available/free RAM), GPU objects, capability fields, and the CLI's explicit `unknown_fields` list. Null values and the backend `"unknown"` connectivity sentinel remain `Unknown`; network speed/connectivity is never inferred.
+- Added manual refresh with a bounded 20 s worker invocation, local-node selection, session-only local-node opt-in, stale-snapshot warnings, honest peer/model/chat empty states, and visible CLI/JSON/schema errors.
+- Added a sanitized fixture with the exact backend field set (`crates/fastlink-gui/testdata/devices-v1.json`) and headless parser/state/UI tests. Added an environment-gated command-runner test that invokes the actual integrated binary from `FASTLINK_BIN` and proves the GUI parser accepts its live output.
+- Verified on Linux without launching a GUI window: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` with `FASTLINK_BIN` pointing at the built CLI (50 core tests plus 57 GUI tests passing), and `cargo build -p fastlink-gui`.
+- Documented build/run, the actual contract, fixture handling, headless verification and limitations in `docs/GUI.md` and the README.
 
-**Explicit limitations:** Window rendering uses OpenGL (no CUDA/ROCm compute). Linux is the only verified target. No pairing, models, chat, inference or remote controls exist yet. Inventory calls fail honestly until a FASTLINK build with `devices --json` is selected. Opt-in is session-only and never persisted.
+**Explicit limitations:** Linux is the only verified target. Window rendering uses OpenGL (no CUDA/ROCm compute), and this work launched no GUI window; tests are CPU/software headless. No pairing, models, chat, inference or remote controls exist yet. Capabilities that the CLI does not measure remain unknown. Opt-in is session-only, local-node-only and never persisted.
 
 ## 2026-11-05 — M0
 

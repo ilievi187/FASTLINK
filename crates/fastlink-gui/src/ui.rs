@@ -5,9 +5,9 @@
 
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui};
 
-use crate::inventory::Device;
+use crate::inventory::GpuDevice;
 use crate::state::{AppState, Screen};
-use crate::view;
+use crate::view::{self, FieldRow};
 
 const ACCENT: Color32 = Color32::from_rgb(96, 186, 255);
 const OK: Color32 = Color32::from_rgb(94, 214, 143);
@@ -51,15 +51,11 @@ fn top_bar(ui: &mut Ui, state: &mut AppState) {
             let warn = ui.visuals().warn_fg_color;
             let muted = ui.visuals().weak_text_color();
             if let Some(inventory) = state.inventory() {
-                let count = inventory.devices.len();
-                let noun = if count == 1 { "device" } else { "devices" };
+                let count = inventory.nodes.len();
+                let noun = if count == 1 { "node" } else { "nodes" };
                 ui.label(RichText::new(format!("{count} {noun}")).small().weak());
-                let color = status_color(ui, inventory.status.as_deref());
-                badge(
-                    ui,
-                    &view::status_headline(inventory.status.as_deref()),
-                    color,
-                );
+                let color = status_color(ui, Some(inventory.scope.as_str()));
+                badge(ui, &view::scope_headline(Some(&inventory.scope)), color);
             } else if busy {
                 badge(ui, "Loading", accent);
             } else if state.last_error().is_some() {
@@ -88,8 +84,8 @@ fn ok_color(ui: &Ui) -> Color32 {
     }
 }
 
-fn status_color(ui: &Ui, status: Option<&str>) -> Color32 {
-    match status.map(str::trim) {
+fn status_color(ui: &Ui, scope: Option<&str>) -> Color32 {
+    match scope.map(str::trim) {
         Some("local_only") => ok_color(ui),
         Some("") | None => ui.visuals().weak_text_color(),
         Some(_) => accent_color(ui),
@@ -107,10 +103,12 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     ui.add_space(6.0);
 
     let non_local = state.inventory().map(|inventory| {
+        let local_index = inventory.local_node_index();
         inventory
-            .devices
+            .nodes
             .iter()
-            .filter(|device| !device.is_local())
+            .enumerate()
+            .filter(|(index, _)| local_index != Some(*index))
             .count()
     });
     let (peer_status, peer_body) = match non_local {
@@ -124,10 +122,10 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
         ),
         Some(count) => (
             format!(
-                "{count} non-local device{} reported",
+                "{count} non-local node{} reported",
                 if count == 1 { "" } else { "s" }
             ),
-            "Pairing status is unknown. This build reports inventory but does not pair devices.",
+            "Pairing status is unknown. This build reports local inventory only and does not pair nodes.",
         ),
     };
     empty_block(ui, "Paired peers", &peer_status, peer_body);
@@ -142,7 +140,7 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
         ui,
         "Chat",
         "Not available",
-        "Inference and chat are not implemented. This shell only shows device inventory.",
+        "Inference and chat are not implemented. This shell only shows local device inventory.",
     );
 
     ui.add_space(8.0);
@@ -161,8 +159,8 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     ui.add_space(6.0);
     ui.label(
         RichText::new(
-            "Opt-in is session-only and explicit. Closing the window discards it; no pairing \
-             or consent is persisted.",
+            "Opt-in is session-only, applies to the local node, and is never persisted. \
+             Closing the window discards it; no pairing or consent is stored.",
         )
         .small()
         .color(ui.visuals().weak_text_color()),
@@ -327,41 +325,57 @@ fn devices_view(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(8.0);
     }
 
-    // Clone the small device list so the cards can mutate selection/opt-in
-    // while the rest of the snapshot is read-only.
-    let (devices, status, schema_version) = {
+    // Clone the small node list so cards can mutate selection/opt-in while the
+    // rest of the snapshot is read-only.
+    let (nodes, schema, schema_version, scope, discovery_mode, local_index) = {
         let inventory = state
             .inventory()
             .expect("Screen::Devices always has an inventory snapshot");
         (
-            inventory.devices.clone(),
-            inventory.status.clone(),
+            inventory.nodes.clone(),
+            inventory.schema.clone(),
             inventory.schema_version,
+            inventory.scope.clone(),
+            inventory.discovery_mode.clone(),
+            inventory.local_node_index(),
         )
     };
 
     ui.label(
         RichText::new(format!(
-            "schema v{schema_version} · {} · {} reported by {}",
-            view::status_headline(status.as_deref()),
-            count_label(devices.len()),
+            "{} · {} · {} {} · discovery: {} · {}",
+            view::schema_headline(&schema, schema_version),
+            view::scope_headline(Some(&scope)),
+            nodes.len(),
+            if nodes.len() == 1 { "node" } else { "nodes" },
+            view::discovery_label(discovery_mode.as_deref()),
             state.command().command_line()
         ))
         .small()
         .color(ui.visuals().weak_text_color()),
     );
+    ui.add_space(6.0);
+    if scope == crate::inventory::LOCAL_ONLY_SCOPE && nodes.len() == 1 {
+        ui.label(
+            RichText::new(
+                "The sole node in scope local_only is treated as the local device. Its node_id is an opaque backend identifier.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+    }
     ui.add_space(10.0);
 
-    if devices.is_empty() {
+    if nodes.is_empty() {
         Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .corner_radius(10)
             .inner_margin(18)
             .show(ui, |ui| {
-                ui.label(RichText::new("No devices reported").size(18.0).strong());
+                ui.label(RichText::new("No nodes reported").size(18.0).strong());
                 ui.label(
                     RichText::new(
-                        "The inventory command returned schema v1 with an empty devices array. \
+                        "The inventory command returned a local_only snapshot with an empty nodes array. \
                          This window does not fabricate a device.",
                     )
                     .color(ui.visuals().weak_text_color()),
@@ -374,14 +388,9 @@ fn devices_view(ui: &mut Ui, state: &mut AppState) {
         return;
     }
 
-    for device in &devices {
-        device_card(ui, state, device);
+    for (index, node) in nodes.iter().enumerate() {
+        node_card(ui, state, node, local_index == Some(index));
     }
-}
-
-fn count_label(count: usize) -> String {
-    let noun = if count == 1 { "device" } else { "devices" };
-    format!("{count} {noun}")
 }
 
 fn stale_banner(ui: &mut Ui, error: &crate::inventory::LoadError) {
@@ -408,8 +417,16 @@ fn stale_banner(ui: &mut Ui, error: &crate::inventory::LoadError) {
         });
 }
 
-fn device_card(ui: &mut Ui, state: &mut AppState, device: &Device) {
-    let selected = state.selected_id() == Some(device.id.as_str());
+fn node_card(
+    ui: &mut Ui,
+    state: &mut AppState,
+    node: &crate::inventory::InventoryNode,
+    is_local: bool,
+) {
+    let selected = node
+        .node_id
+        .as_deref()
+        .is_some_and(|id| state.selected_id() == Some(id));
     let accent = accent_color(ui);
     let border = if selected {
         Stroke::new(1.5, accent)
@@ -425,96 +442,100 @@ fn device_card(ui: &mut Ui, state: &mut AppState, device: &Device) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    let title = RichText::new(view::device_title(device.name.as_deref()))
+                    let title = RichText::new(view::node_title(node.hostname.as_deref()))
                         .size(20.0)
                         .strong();
-                    let response = ui
-                        .add(egui::Label::new(title).sense(egui::Sense::click()))
-                        .on_hover_text("Select this device");
-                    if response.clicked() {
-                        state.select(&device.id);
+                    let can_select = node.node_id.is_some();
+                    let title = ui.add(
+                        egui::Label::new(title)
+                            .sense(if can_select {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            }),
+                    );
+                    if can_select {
+                        let title = title.on_hover_text("Select this node");
+                        if title.clicked() {
+                            if let Some(id) = node.node_id.as_deref() {
+                                state.select(id);
+                            }
+                        }
                     }
-                    ui.label(
-                        RichText::new(format!("id: {}", device.id))
+                    let id_row = if node.node_id.is_some() {
+                        RichText::new(format!(
+                            "node_id: {}",
+                            view::opaque_id_label(node.node_id.as_deref())
+                        ))
+                        .monospace()
+                        .small()
+                        .weak()
+                    } else {
+                        RichText::new("node_id: Unknown")
                             .monospace()
                             .small()
-                            .weak(),
-                    );
+                            .italics()
+                            .weak()
+                    };
+                    ui.label(id_row);
                 });
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     if selected {
                         badge(ui, "Selected", accent);
-                    } else if ui.small_button("Select").clicked() {
-                        state.select(&device.id);
+                    } else if node.node_id.is_some() && ui.small_button("Select").clicked() {
+                        if let Some(id) = node.node_id.as_deref() {
+                            state.select(id);
+                        }
                     }
                     ui.label(
-                        RichText::new(view::device_role(device.is_local()))
+                        RichText::new(view::node_role(is_local))
                             .small()
                             .color(ui.visuals().weak_text_color()),
                     );
                 });
             });
 
+            if node.node_id.is_none() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "The CLI did not derive a node_id. Selection and opt-in stay unavailable; no identifier is invented.",
+                    )
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+                );
+            }
+
             ui.add_space(8.0);
-            let ram = view::ram_summary(device.ram_total_bytes, device.ram_available_bytes);
-            egui::Grid::new(format!("fastlink_device_{}", device.id))
-                .num_columns(2)
-                .spacing([18.0, 6.0])
-                .show(ui, |ui| {
-                    field(
-                        ui,
-                        "Operating system",
-                        &view::optional_text(device.os.as_deref()),
-                        device.os.is_some(),
-                    );
-                    field(
-                        ui,
-                        "Architecture",
-                        &view::optional_text(device.architecture.as_deref()),
-                        device.architecture.is_some(),
-                    );
-                    field(
-                        ui,
-                        "CPU",
-                        &view::cpu_label(device.cpu_logical_cores),
-                        device.cpu_logical_cores.is_some(),
-                    );
-                    field(
-                        ui,
-                        "RAM total",
-                        &ram.total,
-                        device.ram_total_bytes.is_some(),
-                    );
-                    field(
-                        ui,
-                        "RAM available",
-                        &ram.available,
-                        device.ram_available_bytes.is_some(),
-                    );
-                    let used = ram.used_percent.map_or_else(
-                        || view::UNKNOWN.to_owned(),
-                        |percent| format!("{percent}% used"),
-                    );
-                    field(ui, "RAM in use", &used, ram.used_percent.is_some());
-                    field(
-                        ui,
-                        "Compute backend",
-                        &view::backend_label(device.backend.as_deref()),
-                        device.backend.is_some(),
-                    );
-                    field(
-                        ui,
-                        "GPU devices",
-                        &view::items_summary(device.gpu_devices.as_deref()),
-                        device.gpu_devices.is_some(),
-                    );
-                    field(
-                        ui,
-                        "Network interfaces",
-                        &view::items_summary(device.network_interfaces.as_deref()),
-                        device.network_interfaces.is_some(),
-                    );
-                });
+            let ram = view::ram_summary(
+                node.ram_total_bytes,
+                node.ram_available_bytes,
+                node.ram_free_bytes,
+            );
+            egui::Grid::new(format!(
+                "fastlink_node_{}",
+                node.node_id.as_deref().unwrap_or("unknown")
+            ))
+            .num_columns(2)
+            .spacing([18.0, 6.0])
+            .show(ui, |ui| {
+                for row in view::node_rows(node) {
+                    field_row(ui, &row);
+                }
+                field(ui, "RAM total", &ram.total, node.ram_total_bytes.is_some());
+                field(
+                    ui,
+                    "RAM available",
+                    &ram.available,
+                    node.ram_available_bytes.is_some(),
+                );
+                field(ui, "RAM free", &ram.free, node.ram_free_bytes.is_some());
+                let used = ram.used_percent.map_or_else(
+                    || view::UNKNOWN.to_owned(),
+                    |percent| format!("{percent}% used"),
+                );
+                field(ui, "RAM in use", &used, ram.used_percent.is_some());
+            });
 
             if let Some(note) = ram.note {
                 ui.add_space(4.0);
@@ -525,35 +546,170 @@ fn device_card(ui: &mut Ui, state: &mut AppState, device: &Device) {
                 );
             }
 
-            entries_block(ui, "GPU entries reported", device.gpu_devices.as_deref());
-            entries_block(
-                ui,
-                "Network entries reported",
-                device.network_interfaces.as_deref(),
-            );
+            gpu_section(ui, node);
+            capabilities_section(ui, node);
+            unknown_fields_section(ui, node);
 
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let mut opted_in = state.is_opted_in(&device.id);
+            if is_local {
+                let local_id = node.node_id.as_deref();
+                let mut opted_in = local_id.is_some_and(|id| state.is_opted_in(id));
+                let enabled = local_id.is_some();
                 if ui
-                    .checkbox(&mut opted_in, RichText::new(view::OPT_IN_LABEL).strong())
+                    .add_enabled(
+                        enabled,
+                        egui::Checkbox::new(
+                            &mut opted_in,
+                            RichText::new(view::OPT_IN_LABEL).strong(),
+                        ),
+                    )
                     .changed()
                 {
-                    state.set_opt_in(&device.id, opted_in);
+                    if let Some(id) = local_id {
+                        state.set_opt_in(id, opted_in);
+                    }
                 }
                 if opted_in {
                     badge(ui, "Session opt-in", ok_color(ui));
                 }
-            });
+                ui.label(
+                    RichText::new(view::OPT_IN_DETAIL)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            } else {
+                ui.label(
+                    RichText::new("Opt-in is available only for the local node.")
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+        });
+    ui.add_space(10.0);
+}
+
+fn gpu_section(ui: &mut Ui, node: &crate::inventory::InventoryNode) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("GPUs").strong());
+        ui.label(
+            RichText::new(view::gpu_count_label(&node.gpus))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+    if node.gpus.is_empty() {
+        ui.label(
+            RichText::new("No GPU metadata was reported by the CLI.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        return;
+    }
+    for (index, gpu) in node.gpus.iter().enumerate() {
+        gpu_entry(ui, index, gpu);
+    }
+}
+
+fn gpu_entry(ui: &mut Ui, index: usize, gpu: &GpuDevice) {
+    ui.add_space(4.0);
+    Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(6)
+        .inner_margin(8)
+        .show(ui, |ui| {
+            ui.label(RichText::new(view::gpu_title(index, gpu)).strong());
+            egui::Grid::new(format!("fastlink_gpu_{index}"))
+                .num_columns(2)
+                .spacing([14.0, 4.0])
+                .show(ui, |ui| {
+                    for row in view::gpu_rows(gpu) {
+                        field_row(ui, &row);
+                    }
+                });
+        });
+}
+
+fn capabilities_section(ui: &mut Ui, node: &crate::inventory::InventoryNode) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Capabilities").strong());
+        ui.label(
+            RichText::new("reported values only")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+    egui::Grid::new(format!(
+        "fastlink_capabilities_{}",
+        node.node_id.as_deref().unwrap_or("unknown")
+    ))
+    .num_columns(2)
+    .spacing([14.0, 4.0])
+    .show(ui, |ui| {
+        for row in view::capability_rows(&node.capabilities) {
+            field_row(ui, &row);
+        }
+        for peer in &node.capabilities.remote_peers {
             ui.label(
-                RichText::new(view::OPT_IN_DETAIL)
+                RichText::new("Reported peer")
                     .small()
                     .color(ui.visuals().weak_text_color()),
             );
-        });
-    ui.add_space(10.0);
+            ui.label(RichText::new(peer).monospace().small());
+            ui.end_row();
+        }
+    });
+    if !view::connectivity_known(node.capabilities.network_connectivity.as_deref()) {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Network speed and connectivity were not measured; they remain Unknown and are not inferred.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+    }
+}
+
+fn unknown_fields_section(ui: &mut Ui, node: &crate::inventory::InventoryNode) {
+    if node.unknown_fields.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Unknown fields reported by the CLI").strong());
+        ui.label(
+            RichText::new(view::unknown_fields_count(&node.unknown_fields))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+    for field in view::unknown_field_entries(&node.unknown_fields) {
+        ui.label(RichText::new(field).monospace().small());
+    }
+}
+
+fn field_row(ui: &mut Ui, row: &FieldRow) {
+    ui.label(
+        RichText::new(row.label)
+            .small()
+            .color(ui.visuals().weak_text_color()),
+    );
+    if row.known {
+        ui.label(&row.value);
+    } else {
+        ui.label(RichText::new(&row.value).italics().weak());
+    }
+    ui.end_row();
 }
 
 fn field(ui: &mut Ui, label: &str, value: &str, known: bool) {
@@ -568,18 +724,6 @@ fn field(ui: &mut Ui, label: &str, value: &str, known: bool) {
         ui.label(RichText::new(value).italics().weak());
     }
     ui.end_row();
-}
-
-fn entries_block(ui: &mut Ui, title: &str, items: Option<&[serde_json::Value]>) {
-    let entries = view::item_entries(items);
-    if entries.is_empty() {
-        return;
-    }
-    ui.add_space(6.0);
-    ui.label(RichText::new(title).small().strong());
-    for entry in entries {
-        ui.label(RichText::new(entry).monospace().small());
-    }
 }
 
 fn badge(ui: &mut Ui, text: &str, color: Color32) {
@@ -608,22 +752,14 @@ fn footer(ui: &mut Ui, state: &AppState) {
                 ui.label(RichText::new("Not loaded").small().weak());
             }
         }
-        ui.label(
-            RichText::new("·")
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
+        ui.label(RichText::new("·").small().weak());
         ui.label(
             RichText::new(format!("Source: {}", state.command().command_line()))
                 .monospace()
                 .small()
                 .weak(),
         );
-        ui.label(
-            RichText::new("·")
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
+        ui.label(RichText::new("·").small().weak());
         ui.label(
             RichText::new(format!("Opted in this session: {}", state.opted_in_count()))
                 .small()
