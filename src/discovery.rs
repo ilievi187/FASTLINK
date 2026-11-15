@@ -776,10 +776,7 @@ fn sanitize_metadata_label(raw: &str) -> Option<String> {
 }
 
 fn contains_network_address_or_mac(text: &str) -> bool {
-    if contains_ipv4(text) || contains_ipv6(text) || contains_mac(text) {
-        return true;
-    }
-    false
+    contains_ipv4(text) || contains_ipv6(text) || contains_mac(text)
 }
 
 fn contains_ipv4(text: &str) -> bool {
