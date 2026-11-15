@@ -253,10 +253,7 @@ impl AppState {
         let Some(token) = self.discovery_cancel.as_ref() else {
             return false;
         };
-        if token.swap(true, Ordering::SeqCst) {
-            return false;
-        }
-        true
+        !token.swap(true, Ordering::SeqCst)
     }
 
     #[must_use]
