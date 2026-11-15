@@ -103,3 +103,13 @@
 - Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets`.
 
 **Explicit limitation:** Local-only passive Linux sysfs/procfs inventory; non-amdgpu GPUs without sysfs VRAM counters report `vram_total_bytes: null` / `vram_free_bytes: null`, and capacity/throughput/network connectivity remain explicitly `unknown` until measured.
+
+## 2026-11-15 — M2 Opt-In Discovery Feature Branches (not integrated)
+
+- The opt-in/privacy contract is committed on `integrate/fastlink-team` (`73d0661`): discovery only on explicit user action, LAN/Tailscale scope, no scanning/probing outside that action, no raw private addresses/endpoints in public output, and candidates remain untrusted/unpaired.
+- GUI Discover flow: `feat/fastlink-m2-gui` remote HEAD `ab7c5301eb54e8c0dd18402f72d6b9b8b6bfa442`; GitHub Actions run `43767443495` passed Ubuntu and Windows. Commander verified format, workspace Clippy, builds, 147 workspace tests, Windows GNU cross-check, and diff check. Independent final review at `23e0772` reported no findings. The GUI branch is not yet merged into integration.
+- Backend discovery: remote `feat/fastlink-m2-discovery` HEAD `c674ab1cc5352e89f86e8e6a804fcaa1d6be4272`; CI `43767547207` passed Ubuntu and Windows. A Linux `ETXTBSY` flake in parallel fake-provider tests was traced to a sibling `Command::spawn` child inheriting an open writable FD; test-only serialization fixed it. AGY reports 100/100 contention runs and 139 full workspace tests passed.
+- A local, unpushed backend follow-up (`69abd8d`) redacts composed/decomposed Unicode IDN host:port strings; commander then identified remaining single-label ASCII endpoint and uncommon combining-mark cases. AGY is addressing those cases test-first. Do not treat the backend branch as accepted until that follow-up is complete, independently reviewed, pushed, and CI is green.
+- No real LAN/Tailscale discovery action, model load, inference, or GPU work has been started. The GUI and backend feature branches remain separate from `main`; neither is integrated yet. Pairing/removal and encrypted Linux worker lifecycle remain pending.
+
+**Next:** finish backend endpoint redaction, independently review and verify both feature branches, then merge into `integrate/fastlink-team`, run combined CPU/loopback/full gates, and update the checkpoint. Keep `main` untouched; keep real model/GPU work blocked pending explicit safe approval.
