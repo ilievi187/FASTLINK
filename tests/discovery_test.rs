@@ -208,6 +208,44 @@ mod linux_tests {
         path
     }
 
+    fn is_lock_free(lock_file: &Path) -> bool {
+        Command::new("/usr/bin/flock")
+            .arg("-n")
+            .arg(lock_file)
+            .arg("true")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn wait_for_lock_release(lock_file: &Path, max_wait: Duration) -> bool {
+        let deadline = Instant::now() + max_wait;
+        loop {
+            if is_lock_free(lock_file) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn kill_process_group_from_file(pgid_file: &Path) {
+        if let Ok(pgid) = fs::read_to_string(pgid_file) {
+            let trimmed = pgid.trim();
+            if !trimmed.is_empty() {
+                let group_arg = format!("-{trimmed}");
+                let _ = Command::new("/bin/kill")
+                    .args(["-9", "--"])
+                    .arg(group_arg)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+
     #[test]
     fn tailscale_generic_peers_are_unverified_with_opaque_ids_and_redacted_addresses() {
         let _guard = serial();
@@ -1536,6 +1574,175 @@ exit 0
         assert_eq!(report.providers[0].status, "available");
         assert_eq!(report.nodes.len(), 1);
         assert_eq!(report.nodes[0].display_name, "FastNode");
+    }
+
+    #[test]
+    fn inherited_stdout_descendant_is_killed_after_provider_exit() {
+        let _guard = serial();
+        let dir = temp_dir("inherited-stdout-cleanup");
+        let pgid_file = dir.join("provider.pgid");
+        let lock_file = dir.join("desc.lock");
+        let lock_ready = dir.join("desc.ready");
+        let mdns = write_executable(
+            &dir,
+            "mdns-with-locking-descendant",
+            r#"#!/bin/sh
+cd "$(dirname "$0")" || exit 7
+printf '%s\n' '=;eth0;IPv4;FastNode;_fastlink._tcp;local;fast.local;192.168.44.10;18777;"os=linux"'
+printf '%s\n' "$$" > provider.pgid
+/usr/bin/flock desc.lock /bin/sh -c 'printf ok > desc.ready; sleep 5' &
+attempt=0
+while [ ! -f desc.ready ]; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 100 ] || exit 7
+  sleep 0.01
+done
+exit 0
+"#,
+        );
+        let missing_ts = dir.join("missing-tailscale");
+
+        let config = DiscoveryConfig {
+            lan_mdns_program: mdns,
+            tailscale_program: missing_ts,
+            timeout: Duration::from_secs(5),
+            max_output_bytes: 64 * 1024,
+        };
+
+        let started = Instant::now();
+        let report = discover_with_config(&config, None);
+        let elapsed = started.elapsed();
+        let descendant_started = lock_ready.exists();
+        let lock_released = wait_for_lock_release(&lock_file, Duration::from_millis(100));
+
+        if !lock_released {
+            kill_process_group_from_file(&pgid_file);
+        }
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(descendant_started, "descendant did not acquire its lock");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "discovery blocked waiting on inherited stdout pipe: {elapsed:?}"
+        );
+        assert!(
+            lock_released,
+            "provider descendant continued running after discovery returned"
+        );
+        assert_eq!(report.providers[0].status, "available");
+        assert_eq!(report.nodes.len(), 1);
+        assert_eq!(report.nodes[0].display_name, "FastNode");
+    }
+
+    #[test]
+    fn cancellation_during_post_exit_drain_kills_descendant() {
+        let _guard = serial();
+        let dir = temp_dir("post-exit-drain-cancel");
+        let pgid_file = dir.join("provider.pgid");
+        let lock_file = dir.join("desc.lock");
+        let lock_ready = dir.join("desc.ready");
+        let go_file = dir.join("desc.go");
+        let mdns = write_executable(
+            &dir,
+            "mdns-drain-cancel",
+            r#"#!/bin/sh
+cd "$(dirname "$0")" || exit 7
+printf '%s\n' "$$" > provider.pgid.tmp
+mv provider.pgid.tmp provider.pgid
+/usr/bin/flock desc.lock /bin/sh -c 'printf ok > desc.ready; while [ ! -f desc.go ]; do sleep 0.002; done; printf ok > desc.streaming; (cat /dev/zero 2>/dev/null & cat /dev/zero 2>/dev/null & cat /dev/zero 2>/dev/null & cat /dev/zero 2>/dev/null & wait); sleep 5' &
+attempt=0
+while [ ! -f desc.streaming ]; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 400 ] || exit 7
+  sleep 0.002
+done
+sleep 0.012
+exit 0
+"#,
+        );
+        let missing_ts = dir.join("missing-tailscale");
+
+        let timeout = Duration::from_millis(180);
+        let config = DiscoveryConfig {
+            lan_mdns_program: mdns,
+            tailscale_program: missing_ts,
+            timeout,
+            max_output_bytes: 1024 * 1024 * 1024,
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let cancel_bg = Arc::clone(&cancel);
+        let done_bg = Arc::clone(&done);
+        let pgid_bg = pgid_file.clone();
+        let ready_bg = lock_ready.clone();
+        let go_bg = go_file.clone();
+        let started = Instant::now();
+        let handle = thread::spawn(move || {
+            let mut t_pgid = None;
+            while !done_bg.load(Ordering::Acquire) {
+                if t_pgid.is_none() && pgid_bg.exists() {
+                    t_pgid = Some(started.elapsed());
+                }
+                if t_pgid.is_some() && ready_bg.exists() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            if done_bg.load(Ordering::Acquire) {
+                return false;
+            }
+            let anchor = t_pgid
+                .unwrap_or(Duration::ZERO)
+                .min(Duration::from_millis(12));
+            let go_at = Duration::from_millis(145);
+            while !done_bg.load(Ordering::Acquire) && started.elapsed() < go_at {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if done_bg.load(Ordering::Acquire) {
+                return false;
+            }
+            let _ = fs::write(&go_bg, "go");
+
+            let cancel_at = anchor + timeout + Duration::from_millis(8);
+            while !done_bg.load(Ordering::Acquire) && started.elapsed() < cancel_at {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if !done_bg.load(Ordering::Acquire) {
+                cancel_bg.store(true, Ordering::Release);
+                return true;
+            }
+            false
+        });
+
+        let report = discover_with_config(&config, Some(&cancel));
+        done.store(true, Ordering::Release);
+        let triggered_during_drain = handle.join().expect("join drain cancel thread");
+        let descendant_started = lock_ready.exists();
+        let lock_released = wait_for_lock_release(&lock_file, Duration::from_millis(150));
+
+        if !lock_released {
+            kill_process_group_from_file(&pgid_file);
+        }
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(descendant_started, "descendant did not acquire its lock");
+        assert!(
+            triggered_during_drain,
+            "failed to trigger cancellation during post-exit drain (report={report:?})"
+        );
+        assert_eq!(report.providers[0].provider, "lan_mdns");
+        assert_eq!(
+            report.providers[0].status, "cancelled",
+            "unexpected report: {report:?}"
+        );
+        assert_eq!(report.providers[1].provider, "tailscale");
+        assert_eq!(report.providers[1].status, "cancelled");
+        assert!(report.nodes.is_empty());
+        assert!(
+            lock_released,
+            "provider descendant continued running after post-exit drain cancellation"
+        );
     }
 
     #[test]

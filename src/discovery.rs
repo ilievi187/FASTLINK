@@ -1005,17 +1005,68 @@ fn run_bounded_provider(
 }
 
 #[cfg(target_os = "linux")]
-fn stop_child(child: &mut Child) {
-    let pgid = child.id();
-    if pgid > 0 {
-        // SAFETY: `process_group(0)` placed `child` and its descendants in group `pgid`,
-        // so signaling `-pgid` kills the entire tree without affecting the caller.
-        unsafe {
-            libc::kill(-(pgid as libc::pid_t), libc::SIGKILL);
+fn kill_process_group(pgid: u32) {
+    if let Ok(pgid) = libc::pid_t::try_from(pgid) {
+        if pgid > 1 {
+            // SAFETY: `process_group(0)` placed `child` and its descendants in group `pgid`,
+            // and `pgid > 1` ensures `-pgid < -1` so we only signal the owned group.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_child(child: &mut Child) {
+    kill_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(target_os = "linux")]
+fn child_has_exited(child: &Child) -> io::Result<bool> {
+    let pid = libc::id_t::from(child.id());
+    loop {
+        // SAFETY: Zeroing `siginfo_t` satisfies `waitid` requirements, and `WNOWAIT` inspects
+        // exit state without reaping `child` so `pgid` stays pinned until after group cleanup.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            // SAFETY: `waitid` populated `info` when `rc == 0`; `si_pid != 0` iff `child` exited.
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pump_bounded(
+    stdout: &mut PipeReader,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), CaptureError> {
+    if stdout.pump(deadline, cancel).is_err() {
+        return Err(CaptureError::IoFailed);
+    }
+    if stdout.cancelled {
+        return Err(CaptureError::Cancelled);
+    }
+    if stdout.is_over() {
+        return Err(CaptureError::OutputLimitExceeded);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1040,27 +1091,19 @@ fn capture_child(
 
     let started = Instant::now();
     let overall_deadline = started + timeout;
-    let status = loop {
+    loop {
         if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             stop_child(&mut child);
             return Err(CaptureError::Cancelled);
         }
-        if stdout.pump(overall_deadline, cancel).is_err() {
+        if let Err(err) = pump_bounded(&mut stdout, overall_deadline, cancel) {
             stop_child(&mut child);
-            return Err(CaptureError::IoFailed);
-        }
-        if stdout.cancelled {
-            stop_child(&mut child);
-            return Err(CaptureError::Cancelled);
-        }
-        if stdout.is_over() {
-            stop_child(&mut child);
-            return Err(CaptureError::OutputLimitExceeded);
+            return Err(err);
         }
 
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
+        match child_has_exited(&child) {
+            Ok(true) => break,
+            Ok(false) => {
                 if started.elapsed() >= timeout {
                     stop_child(&mut child);
                     return Err(CaptureError::Timeout);
@@ -1072,18 +1115,18 @@ fn capture_child(
                 return Err(CaptureError::IoFailed);
             }
         }
-    };
+    }
 
     let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
-    if stdout.pump(drain_deadline, cancel).is_err() {
+    if let Err(err) = pump_bounded(&mut stdout, drain_deadline, cancel) {
+        stop_child(&mut child);
+        return Err(err);
+    }
+
+    kill_process_group(child.id());
+    let Ok(status) = child.wait() else {
         return Err(CaptureError::IoFailed);
-    }
-    if stdout.cancelled {
-        return Err(CaptureError::Cancelled);
-    }
-    if stdout.is_over() {
-        return Err(CaptureError::OutputLimitExceeded);
-    }
+    };
 
     Ok(ProviderOutput {
         status,
@@ -1653,5 +1696,105 @@ mod tests {
             assert_eq!(err, "unknown discover argument");
             assert!(!err.contains(bad));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_capture_on_exited_locking_child(
+        label: &str,
+        body: &str,
+        max_output_bytes: usize,
+    ) -> (Result<ProviderOutput, CaptureError>, bool) {
+        let dir = std::env::temp_dir().join(format!(
+            "fastlink_capture_drain_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let lock_file = dir.join("desc.lock");
+
+        let script = format!(
+            "/usr/bin/flock desc.lock /bin/sh -c 'printf ok > desc.ready; sleep 5' &\n\
+             attempt=0\n\
+             while [ ! -f desc.ready ]; do\n\
+               attempt=$((attempt + 1))\n\
+               [ \"$attempt\" -lt 100 ] || exit 7\n\
+               sleep 0.01\n\
+             done\n\
+             {body}\n"
+        );
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn exited test child");
+
+        let exit_deadline = Instant::now() + Duration::from_secs(2);
+        while !child_has_exited(&child).expect("poll child exit") {
+            assert!(
+                Instant::now() < exit_deadline,
+                "timed out waiting for test child exit"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let pgid = child.id();
+        let result = capture_child(child, Duration::ZERO, max_output_bytes, None);
+
+        let lock_deadline = Instant::now() + Duration::from_millis(150);
+        let lock_released = loop {
+            if Command::new("/usr/bin/flock")
+                .arg("-n")
+                .arg(&lock_file)
+                .arg("true")
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                break true;
+            }
+            if Instant::now() >= lock_deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        if !lock_released {
+            kill_process_group(pgid);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        (result, lock_released)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_kills_descendant_on_output_limit() {
+        let (result, lock_released) =
+            run_capture_on_exited_locking_child("cap", "printf '0123456789abcdef0'\nexit 0", 16);
+        assert!(matches!(result, Err(CaptureError::OutputLimitExceeded)));
+        assert!(
+            lock_released,
+            "descendant still held flock after post-exit drain output limit"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_preserves_exit_code_and_output_while_killing_descendant() {
+        let (result, lock_released) = run_capture_on_exited_locking_child(
+            "code",
+            "printf 'buffered-payload\\n'\nexit 42",
+            1024,
+        );
+        let output = result.expect("drain exited child output");
+        assert_eq!(output.status.code(), Some(42));
+        assert_eq!(output.stdout, b"buffered-payload\n");
+        assert!(
+            lock_released,
+            "descendant still held flock after normal post-exit drain"
+        );
     }
 }
