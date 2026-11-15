@@ -724,6 +724,7 @@ printf '%s\n' '{ts_payload}'
 
         let mdns_lines = "\
 =;eth0;IPv4;ws1.local:18777;_fastlink._tcp;local;ws1.local;192.168.55.10;18777;\"os=linux node1.lan:8080\" \"arch=x86_64 api.example.com:443\" \"gpu0_name=RX via ws1.local:18777\"\n\
+=;eth0;IPv4;gpu-box:18777;_fastlink._tcp;local;single.local;192.168.55.12;18779;\"os=linux gpu-box:0443\" \"arch=x86_64 ws-single:8080\" \"gpu0_name=RX via gpu-box:18777\"\n\
 =;eth0;IPv4;Workstation One;_fastlink._tcp;local;ws2.local;192.168.55.11;18778;\"os=linux\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
         write_executable(
             &bin_dir,
@@ -753,6 +754,14 @@ printf '%s\\n' '{mdns_lines}'
       "OS": "linux via host.example:0443",
       "Online": true,
       "TailscaleIPs": ["100.64.99.44"]
+    },
+    "nodekey:singlelabelbad": {
+      "ID": "nSingleLabelBad",
+      "HostName": "gpu-box:18777",
+      "DNSName": "gpu-box:0443.",
+      "OS": "linux via gpu-box:0443",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.45"]
     },
     "nodekey:normallabel": {
       "ID": "nOrdinaryPeer",
@@ -795,6 +804,9 @@ printf '%s\n' '{ts_payload}'
 
         let forbidden_endpoints = [
             "gpu-box.tailnet-example.ts.net:41641",
+            "gpu-box:18777",
+            "gpu-box:0443",
+            "ws-single:8080",
             "host.example:0443",
             "ws1.local:18777",
             "node1.lan:8080",
@@ -803,15 +815,21 @@ printf '%s\n' '{ts_payload}'
             "0443",
             "18777",
             "18778",
+            "18779",
             "8080",
             "443",
             "ws1.local",
             "ws2.local",
+            "single.local",
+            "gpu-box",
+            "ws-single",
             "192.168.55.10",
             "192.168.55.11",
+            "192.168.55.12",
             "100.64.99.42",
             "100.64.99.43",
             "100.64.99.44",
+            "100.64.99.45",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -835,18 +853,25 @@ printf '%s\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 5);
+        assert_eq!(nodes.len(), 7);
 
-        let bad_lan = nodes
+        let bad_lan_nodes: Vec<&Value> = nodes
             .iter()
-            .find(|n| {
+            .filter(|n| {
                 n["transports"] == serde_json::json!(["lan"])
                     && n["display_name"] == "Unverified LAN peer"
             })
-            .expect("smuggled LAN node should fall back to generic name");
-        assert!(bad_lan["os"].is_null());
-        assert!(bad_lan["arch"].is_null());
-        assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+            .collect();
+        assert_eq!(
+            bad_lan_nodes.len(),
+            2,
+            "smuggled LAN nodes should fall back to generic name"
+        );
+        for bad_lan in bad_lan_nodes {
+            assert!(bad_lan["os"].is_null());
+            assert!(bad_lan["arch"].is_null());
+            assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+        }
 
         let bad_ts_count = nodes
             .iter()
@@ -857,7 +882,7 @@ printf '%s\n' '{ts_payload}'
             })
             .count();
         assert_eq!(
-            bad_ts_count, 2,
+            bad_ts_count, 3,
             "smuggled Tailscale nodes should fall back to generic name with null os"
         );
 
@@ -874,6 +899,50 @@ printf '%s\n' '{ts_payload}'
             .find(|n| n["display_name"] == "cuda:0")
             .expect("ordinary non-DNS label should not be over-redacted");
         assert_eq!(good_ts["os"], "linux v2.1:8b");
+
+        // Failing provider stderr containing single-label endpoints must never leak.
+        let err_dir = temp_dir("smuggled-dns-endpoints-err");
+        write_executable(
+            &err_dir,
+            "avahi-browse",
+            "#!/bin/sh
+echo 'dial gpu-box:18777 gpu-box:0443 ws1.local:18777' >&2
+exit 2
+",
+        );
+        write_executable(
+            &err_dir,
+            "tailscale",
+            "#!/bin/sh
+echo 'dial gpu-box:0443 host.example:0443' >&2
+exit 2
+",
+        );
+        let err_json = Command::new(bin)
+            .args(["discover", "--json"])
+            .env("PATH", &err_dir)
+            .output()
+            .expect("run fastlink discover --json on failing provider");
+        let err_text = Command::new(bin)
+            .arg("discover")
+            .env("PATH", &err_dir)
+            .output()
+            .expect("run fastlink discover on failing provider");
+        let _ = fs::remove_dir_all(&err_dir);
+
+        assert!(err_json.status.success());
+        assert!(err_text.status.success());
+        let err_json_out = String::from_utf8(err_json.stdout).expect("utf8 err json");
+        let err_text_out = String::from_utf8(err_text.stdout).expect("utf8 err text");
+        for leaked in [
+            "gpu-box:18777",
+            "gpu-box:0443",
+            "ws1.local:18777",
+            "host.example:0443",
+        ] {
+            assert!(!err_json_out.contains(leaked));
+            assert!(!err_text_out.contains(leaked));
+        }
     }
 
     #[test]
@@ -884,6 +953,7 @@ printf '%s\n' '{ts_payload}'
 
         let mdns_lines = "\
 =;eth0;IPv4;büro:41641;_fastlink._tcp;local;buero.local;192.168.55.20;18777;\"os=linux büro.local:41641\" \"arch=x86_64 пример.рф:8080\" \"gpu0_name=RX via bu\u{0308}ro:41641\"\n\
+=;eth0;IPv4;\u{0915}\u{093F}:41641;_fastlink._tcp;local;devanagari.local;192.168.55.22;18779;\"os=linux \u{0915}\u{093F}:0443\" \"arch=x86_64 ①:80\" \"gpu0_name=RX via \u{0915}\u{093F}:41641\"\n\
 =;eth0;IPv4;Büro Workstation;_fastlink._tcp;local;buero2.local;192.168.55.21;18778;\"os=linux service:port\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
         write_executable(
             &bin_dir,
@@ -906,7 +976,17 @@ printf '%s\\n' '{mdns_lines}'
             "\u{0301}",
             r#":0443","Online":true,"TailscaleIPs":["100.64.99.52"]},"#,
             r#""nodekey:idn":{"ID":"nUniIdn","HostName":"пример.рф:8080","DNSName":"пример.рф:8080.","OS":"linux пример.рф:8080","Online":true,"TailscaleIPs":["100.64.99.53"]},"#,
-            r#""nodekey:safeunicode":{"ID":"nSafeUni","HostName":"München Node","DNSName":"muenchen.tailnet-example.ts.net.","OS":"linux Qwen2.5:72b","Online":true,"TailscaleIPs":["100.64.99.54"]}"#,
+            r#""nodekey:devanagari":{"ID":"nUniDeva","HostName":""#,
+            "\u{0915}\u{093F}:41641",
+            r#"","DNSName":""#,
+            "\u{0915}\u{093F}.local:0443.",
+            r#"","OS":"linux "#,
+            "\u{0915}\u{093F}:41641",
+            r#"","Online":true,"TailscaleIPs":["100.64.99.55"]},"#,
+            r#""nodekey:safeunicode":{"ID":"nSafeUni","HostName":"München Node","DNSName":"muenchen.tailnet-example.ts.net.","OS":"linux Qwen2.5:72b","Online":true,"TailscaleIPs":["100.64.99.54"]},"#,
+            r#""nodekey:safedevanagari":{"ID":"nSafeDeva","HostName":""#,
+            "\u{0915}\u{093F} Node",
+            r#"","DNSName":"deva.tailnet-example.ts.net.","OS":"linux cuda:0","Online":true,"TailscaleIPs":["100.64.99.56"]}"#,
             r#"}}"#
         );
         write_executable(
@@ -940,6 +1020,10 @@ printf '%s\\n' '{ts_payload}'
         let forbidden_endpoints = [
             "büro:41641",
             "bu\u{0308}ro:41641",
+            "\u{0915}\u{093F}:41641",
+            "\u{0915}\u{093F}:0443",
+            "\u{0915}\u{093F}.local:0443",
+            "①:80",
             "büro.local:41641",
             "gpu.bu\u{0308}ro.ts.net:18777",
             "cafe\u{0301}:0443",
@@ -947,16 +1031,21 @@ printf '%s\\n' '{ts_payload}'
             "41641",
             "18777",
             "18778",
+            "18779",
             "0443",
             "8080",
             "buero.local",
             "buero2.local",
+            "devanagari.local",
             "192.168.55.20",
             "192.168.55.21",
+            "192.168.55.22",
             "100.64.99.51",
             "100.64.99.52",
             "100.64.99.53",
             "100.64.99.54",
+            "100.64.99.55",
+            "100.64.99.56",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -980,18 +1069,25 @@ printf '%s\\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 6);
+        assert_eq!(nodes.len(), 9);
 
-        let bad_lan = nodes
+        let bad_lan_nodes: Vec<&Value> = nodes
             .iter()
-            .find(|n| {
+            .filter(|n| {
                 n["transports"] == serde_json::json!(["lan"])
                     && n["display_name"] == "Unverified LAN peer"
             })
-            .expect("smuggled Unicode LAN node should fall back to generic name");
-        assert!(bad_lan["os"].is_null());
-        assert!(bad_lan["arch"].is_null());
-        assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+            .collect();
+        assert_eq!(
+            bad_lan_nodes.len(),
+            2,
+            "smuggled Unicode LAN nodes should fall back to generic name"
+        );
+        for bad_lan in bad_lan_nodes {
+            assert!(bad_lan["os"].is_null());
+            assert!(bad_lan["arch"].is_null());
+            assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+        }
 
         let bad_ts_count = nodes
             .iter()
@@ -1002,7 +1098,7 @@ printf '%s\\n' '{ts_payload}'
             })
             .count();
         assert_eq!(
-            bad_ts_count, 3,
+            bad_ts_count, 4,
             "smuggled Unicode/IDN Tailscale nodes should fall back to generic name with null os"
         );
 
@@ -1022,12 +1118,27 @@ printf '%s\\n' '{ts_payload}'
         assert_eq!(good_ts["os"], "linux Qwen2.5:72b");
         assert!(text_stdout.contains("München Node"));
 
+        let good_deva = nodes
+            .iter()
+            .find(|n| n["display_name"] == "\u{0915}\u{093F} Node")
+            .expect("ordinary Devanagari node without port should not be over-redacted");
+        assert_eq!(good_deva["os"], "linux cuda:0");
+        assert!(text_stdout.contains("\u{0915}\u{093F} Node"));
+
         // Failing provider stderr containing raw Unicode/IDN endpoints must also never leak.
         write_executable(
             &bin_dir,
             "avahi-browse",
             "#!/bin/sh
-echo 'dial büro:41641 bu\u{0308}ro.local:18777 пример.рф:8080' >&2
+echo 'dial büro:41641 bu\u{0308}ro.local:18777 пример.рф:8080 \u{0915}\u{093F}:41641 ①:80' >&2
+exit 2
+",
+        );
+        write_executable(
+            &bin_dir,
+            "tailscale",
+            "#!/bin/sh
+echo 'dial \u{0915}\u{093F}:0443 gpu-box:18777' >&2
 exit 2
 ",
         );
@@ -1047,7 +1158,15 @@ exit 2
         assert!(err_text.status.success());
         let err_json_out = String::from_utf8(err_json.stdout).expect("utf8 err json");
         let err_text_out = String::from_utf8(err_text.stdout).expect("utf8 err text");
-        for leaked in ["büro:41641", "bu\u{0308}ro.local:18777", "пример.рф:8080"] {
+        for leaked in [
+            "büro:41641",
+            "bu\u{0308}ro.local:18777",
+            "пример.рф:8080",
+            "\u{0915}\u{093F}:41641",
+            "\u{0915}\u{093F}:0443",
+            "gpu-box:18777",
+            "①:80",
+        ] {
             assert!(!err_json_out.contains(leaked));
             assert!(!err_text_out.contains(leaked));
         }

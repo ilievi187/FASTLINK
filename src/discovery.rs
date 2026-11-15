@@ -867,11 +867,13 @@ fn contains_mac(text: &str) -> bool {
     false
 }
 
-/// Bounded O(N) detector for DNS and single-label IDN/Unicode `host:port`
-/// endpoints (valid hostname/IDN labels and normalized port `1..=65535`).
+/// Bounded O(N) detector for `host:port` endpoints with valid nonzero ports
+/// (`1..=65535`, including zero-padded ports) and either a valid ASCII
+/// hostname (single- or multi-label) or a bounded non-ASCII non-whitespace /
+/// non-control token.
 fn contains_dns_host_port(text: &str) -> bool {
-    const MAX_DNS_HOST_CHARS: usize = 253;
-    const MAX_DNS_HOST_BYTES: usize = 512;
+    const MAX_HOST_SCAN_CHARS: usize = 253;
+    const MAX_HOST_SCAN_BYTES: usize = 512;
     let bytes = text.as_bytes();
 
     for (colon_idx, &b) in bytes.iter().enumerate() {
@@ -894,10 +896,7 @@ fn contains_dns_host_port(text: &str) -> bool {
             continue;
         }
         if let Some(next_ch) = text[p_end..].chars().next() {
-            if next_ch.is_alphanumeric()
-                || is_combining_mark(next_ch)
-                || matches!(next_ch, '_' | '-' | ':')
-            {
+            if next_ch.is_alphanumeric() || matches!(next_ch, '_' | '-' | ':') {
                 continue;
             }
             if next_ch == '.' && bytes.get(p_end + 1).is_some_and(u8::is_ascii_digit) {
@@ -915,96 +914,66 @@ fn contains_dns_host_port(text: &str) -> bool {
             continue;
         }
 
-        // Scan bounded UTF-8 hostname slice left of `:`.
+        // Scan bounded host token slice left of `:`.
         let mut h_start = colon_idx;
         let mut char_count = 0usize;
-        let mut oversized = false;
+        let mut hit_bound = false;
         for (idx, ch) in text[..colon_idx].char_indices().rev() {
-            if !is_host_char(ch) {
+            if !is_host_token_char(ch) {
                 break;
             }
             char_count += 1;
-            if char_count > MAX_DNS_HOST_CHARS + 1 || colon_idx - idx > MAX_DNS_HOST_BYTES + 1 {
-                oversized = true;
+            if char_count > MAX_HOST_SCAN_CHARS + 1 || colon_idx - idx > MAX_HOST_SCAN_BYTES + 1 {
+                hit_bound = true;
                 break;
             }
             h_start = idx;
         }
-        if oversized {
-            continue;
-        }
         let raw_host = &text[h_start..colon_idx];
         let host = raw_host.strip_suffix('.').unwrap_or(raw_host);
-        if host.chars().count() <= MAX_DNS_HOST_CHARS
-            && host.len() <= MAX_DNS_HOST_BYTES
-            && is_valid_host_or_idn(host)
-        {
+        if host.is_empty() {
+            continue;
+        }
+        if host.is_ascii() {
+            if !hit_bound && is_valid_ascii_hostname(host) {
+                return true;
+            }
+        } else {
             return true;
         }
     }
     false
 }
 
-fn is_host_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric()
-        || matches!(ch, '.' | '-' | '_')
-        || (!ch.is_ascii() && (ch.is_alphanumeric() || is_combining_mark(ch)))
+fn is_host_token_char(ch: char) -> bool {
+    if ch.is_ascii() {
+        ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_')
+    } else {
+        !ch.is_whitespace() && !ch.is_control()
+    }
 }
 
-fn is_combining_mark(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x0300..=0x036F
-            | 0x0483..=0x0489
-            | 0x0591..=0x05BD
-            | 0x05BF
-            | 0x05C1..=0x05C2
-            | 0x05C4..=0x05C5
-            | 0x05C7
-            | 0x0610..=0x061A
-            | 0x064B..=0x065F
-            | 0x0670
-            | 0x1AB0..=0x1AFF
-            | 0x1DC0..=0x1DFF
-            | 0x20D0..=0x20FF
-            | 0x3099..=0x309A
-            | 0xFE20..=0xFE2F
-    )
-}
-
-fn is_valid_host_or_idn(host: &str) -> bool {
-    if host.is_empty() {
+fn is_valid_ascii_hostname(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
         return false;
     }
     let mut last_label: Option<&str> = None;
-    let mut count = 0usize;
     for label in host.split('.') {
-        if label.is_empty() || label.chars().count() > 63 {
+        if label.is_empty() || label.len() > 63 {
             return false;
         }
-        let mut chars = label.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-        let last = chars.next_back().unwrap_or(first);
-        if !first.is_alphanumeric()
-            || !(last.is_alphanumeric() || is_combining_mark(last))
-            || !label
-                .chars()
-                .all(|c| c.is_alphanumeric() || is_combining_mark(c) || c == '-' || c == '_')
+        let lb = label.as_bytes();
+        if !lb[0].is_ascii_alphanumeric()
+            || !lb[lb.len() - 1].is_ascii_alphanumeric()
+            || !lb
+                .iter()
+                .all(|&c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
         {
             return false;
         }
         last_label = Some(label);
-        count += 1;
     }
-    let Some(last) = last_label else {
-        return false;
-    };
-    if count < 2 && host.is_ascii() {
-        return false;
-    }
-    !last.contains('_') && last.chars().any(char::is_alphabetic)
+    last_label.is_some_and(|tld| !tld.contains('_') && tld.bytes().any(|b| b.is_ascii_alphabetic()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1528,6 +1497,9 @@ mod tests {
 
         for dns_endpoint in [
             "gpu-box.tailnet-example.ts.net:41641",
+            "gpu-box:18777",
+            "gpu-box:0443",
+            "endpoint=gpu-box:0443",
             "ws1.local:18777",
             "node-1.lan:8080",
             "api.example.com:443.",
@@ -1537,17 +1509,36 @@ mod tests {
             "host.example:065535",
             "büro:41641",
             "bu\u{0308}ro:41641",
+            "कि:41641",
+            "\u{0915}\u{093C}:41641",
+            "\u{0915}\u{093F}:0443",
             "endpoint=cafe\u{0301}:0443",
             "büro.local:41641",
             "gpu.bu\u{0308}ro.ts.net:18777",
             "пример.рф:8080",
             "api.büro.de:443.",
+            "①:80",
         ] {
             let mut bad_ep = valid.clone();
             bad_ep.nodes[0].display_name = dns_endpoint.to_string();
             let err = render_discovery_json(&bad_ep).unwrap_err();
             assert!(!err.to_string().contains(dns_endpoint));
             assert!(render_discovery_text(&bad_ep).is_err());
+
+            let mut bad_os = valid.clone();
+            bad_os.nodes[0].os = Some(format!("linux {dns_endpoint}"));
+            assert!(render_discovery_json(&bad_os).is_err());
+            assert!(render_discovery_text(&bad_os).is_err());
+
+            let mut bad_arch = valid.clone();
+            bad_arch.nodes[0].arch = Some(format!("x86_64 {dns_endpoint}"));
+            assert!(render_discovery_json(&bad_arch).is_err());
+            assert!(render_discovery_text(&bad_arch).is_err());
+
+            let mut bad_gpu = valid.clone();
+            bad_gpu.nodes[0].gpus[0].name = Some(format!("GPU {dns_endpoint}"));
+            assert!(render_discovery_json(&bad_gpu).is_err());
+            assert!(render_discovery_text(&bad_gpu).is_err());
 
             let mut bad_msg = valid.clone();
             bad_msg.providers[0].message = Some(format!("dial {dns_endpoint}"));
@@ -1558,9 +1549,11 @@ mod tests {
 
         for ordinary in [
             "Workstation One",
+            "gpu-box",
             "Büro Workstation",
             "Bu\u{0308}ro Workstation",
             "München Node",
+            "कि Node",
             "gpu-box.tailnet-example.ts.net",
             "büro.local",
             "bu\u{0308}ro.local",
@@ -1571,10 +1564,15 @@ mod tests {
             "service:port",
             "büro:port",
             "bu\u{0308}ro:port",
+            "कि:port",
             "PCI 00:02.0",
             "cuda:0",
             "step-1.2:10",
             "v1.0.2:4",
+            "gpu-box:0",
+            "gpu-box:00",
+            "gpu-box:65536",
+            "gpu-box:0443abc",
             "bad.host:0",
             "bad.host:00",
             "bad.host:000",
@@ -1586,9 +1584,10 @@ mod tests {
             "bad.host:0443:1",
             "büro:0",
             "bu\u{0308}ro:0",
+            "कि:0",
+            "कि:65536",
             "büro:65536",
             "büro:0443abc",
-            "①:80",
         ] {
             assert!(
                 !contains_network_address_or_mac(ordinary),
