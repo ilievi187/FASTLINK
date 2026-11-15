@@ -1,13 +1,15 @@
 //! State/action tests for explicit discovery. Fixtures only; no network scan.
 
+#![cfg(target_os = "linux")]
 #![cfg(unix)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fastlink_gui::inventory::InventoryCommand;
 use fastlink_gui::state::{AppState, Screen};
@@ -169,4 +171,83 @@ fn explicit_discovery_action_invokes_discover_json() {
     assert_eq!(discovery.nodes.len(), 2);
     assert!(state.discovery_error().is_none());
     assert!(state.discovery_age().is_some());
+}
+
+#[test]
+fn cancel_stops_discovery_and_provider_child_promptly() {
+    let _guard = serial();
+    let dir = TempDir::new("cancel");
+    let provider_pidfile = dir.path().join("provider.pid");
+    let cli_pidfile = dir.path().join("cli.pid");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+if [ \"$1\" = \"discover\" ]; then
+  sleep 60 &
+  provider=$!
+  echo \"$provider\" > '{}'
+  echo \"$$\" > '{}'
+  wait \"$provider\"
+fi
+exit 9
+",
+            provider_pidfile.display(),
+            cli_pidfile.display()
+        ),
+    );
+
+    let mut state = AppState::new(InventoryCommand::new(&script));
+    assert!(state.discover(), "discovery must start");
+    wait_for_file(&provider_pidfile);
+    wait_for_file(&cli_pidfile);
+    let provider_pid = read_pid(&provider_pidfile);
+    let cli_pid = read_pid(&cli_pidfile);
+
+    let started = Instant::now();
+    assert!(state.cancel_discovery(), "active discovery must cancel");
+    wait_for_discovery(&mut state);
+    let elapsed = started.elapsed();
+
+    assert!(elapsed < Duration::from_secs(2), "cancel took {elapsed:?}");
+    assert!(state.discovery().is_none());
+    let error = state.discovery_error().expect("cancelled error");
+    assert!(error.summary.contains("cancelled"), "{error:?}");
+    assert!(process_is_gone_within(cli_pid, Duration::from_secs(2)));
+    assert!(process_is_gone_within(provider_pid, Duration::from_secs(2)));
+}
+
+fn read_pid(path: &Path) -> u32 {
+    fs::read_to_string(path)
+        .expect("pid file")
+        .trim()
+        .parse()
+        .expect("numeric pid")
+}
+
+fn wait_for_file(path: &Path) {
+    let mut waited = 0;
+    while !path.exists() {
+        assert!(waited < 200, "timed out waiting for {}", path.display());
+        thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+}
+
+fn process_is_gone_within(pid: u32, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        let alive = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill -0 {pid} 2>/dev/null"))
+            .status()
+            .expect("run kill -0")
+            .success();
+        if !alive {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
 }

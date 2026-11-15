@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use serde::de::{Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::Deserialize;
@@ -386,6 +388,15 @@ impl DiscoveryCommand {
         format!("{} discover --json", self.runner.program().display())
     }
 
+    /// Attach a cancellation token that kills the CLI and its provider process
+    /// group on Unix when set.
+    #[must_use]
+    pub fn with_cancel_token(self, token: Arc<AtomicBool>) -> Self {
+        Self {
+            runner: self.runner.with_cancel_token(token),
+        }
+    }
+
     /// Run discovery. All failures are reduced to safe UI text: no stderr,
     /// provider error output, addresses or raw parser values are returned.
     pub fn run(&self) -> Result<DiscoveryInventory, LoadError> {
@@ -403,7 +414,9 @@ impl DiscoveryCommand {
 }
 
 fn safe_runner_error(error: LoadError) -> LoadError {
-    let summary = if error.summary.contains("timed out") {
+    let summary = if error.summary.contains("cancelled") {
+        "Discovery was cancelled. No candidates were shown."
+    } else if error.summary.contains("timed out") {
         "Discovery timed out before a safe result was received."
     } else if error.summary.contains("could not start") {
         "Discovery could not start. Check the configured FASTLINK binary."

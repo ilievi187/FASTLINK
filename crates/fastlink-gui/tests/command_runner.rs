@@ -21,9 +21,10 @@ use fastlink_gui::inventory::{
 
 const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
 
-/// Fake executables are written and spawned by a shared test process. Some
-/// filesystems briefly report `ETXTBSY` when a script is executed while another
-/// thread is creating a script, so script tests run one at a time.
+/// Fake executables are written and spawned by a shared test process. A spawn
+/// can briefly hold a just-written executable's write fd across fork/exec
+/// (O_CLOEXEC only applies at exec), so every command-spawning test in this
+/// binary, including the actual-binary check, uses this lock.
 static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -546,6 +547,7 @@ cat <<'JSON'
 /// accepts its live output. It never launches a GUI window.
 #[test]
 fn actual_fastlink_binary_from_environment_satisfies_parser() {
+    let _guard = serial();
     let Some(program) = std::env::var_os(PROGRAM_ENV) else {
         eprintln!("{PROGRAM_ENV} is not set; skipping actual-binary contract check");
         return;

@@ -141,7 +141,11 @@ view. Clicking it runs exactly:
 The command uses the same `--fastlink-bin` / `FASTLINK_BIN` / `PATH` selection,
 bounded process runner, timeout, output cap and cleanup as local inventory.
 There is no discovery at launch, on local **Refresh**, on a timer, or from the
-provider list. After a run finishes, the same button acts as a refresh action.
+provider list. While a discovery is active, the button is disabled and a
+**Cancel** action is shown. On Linux, Cancel terminates the CLI's process group,
+including provider helper processes, and the UI stays busy until that cleanup
+result arrives. After a run finishes, the same discover button acts as a refresh
+action.
 
 The sanitized contract shape is:
 
@@ -280,8 +284,12 @@ Discovery tests use only the sanitized fixtures and fake CLI scripts. They prove
 that launch and local refresh never invoke `discover`, an explicit action passes
 `discover --json`, provider/candidate metadata renders honestly, unavailable and
 empty providers are handled, bad schema/address fields fail closed, raw provider
-stderr is not surfaced, and the shared runner timeout remains bounded. No actual
-LAN/Tailscale scan is performed by the test suite.
+stderr is not surfaced, and the shared runner timeout remains bounded. A Linux
+regression test starts a fake discovery CLI with a long-lived provider child,
+cancels from state, and verifies the CLI and provider PIDs are gone promptly. A
+deterministic drain-window regression sets cancellation after the child exits
+but before buffered output is accepted, proving the completed JSON is rejected.
+No actual LAN/Tailscale scan is performed by the test suite.
 
 ### Actual-binary contract check
 
@@ -314,9 +322,14 @@ the hostname, machine id or hash.
   still reads buffered output even when the overall deadline has just passed;
   this prevents completed JSON from being misreported as empty or malformed.
   The hard byte cap is enforced during that drain too. The window remains
-  responsive while the worker thread waits. Discovery currently has no cancel
-  control in this slice; the button is disabled while the bounded run is active.
-  A completed run can be refreshed by clicking the button again.
+  responsive while the worker thread waits. An active discovery can be cancelled
+  with **Cancel**: on Linux the CLI is spawned in its own process group and the
+  whole group is signalled, so provider children are terminated as well. The UI
+  remains busy until the worker reports the cancellation; it does not merely
+  hide the result. Cancellation is checked after the post-exit drain as well, so
+  buffered JSON from a child that just exited is rejected if Cancel arrived
+  during the drain window. A completed run can be refreshed by clicking Discover
+  again.
 - **Bounded output capture (Linux/Unix).** stdout and stderr are nonblocking
   pipes drained by the same worker loop; no reader threads are created. The
   reader enforces a 1 MiB counted cap per stream as bytes arrive and kills the
@@ -328,15 +341,18 @@ the hostname, machine id or hash.
   detail is separately compacted to at most 900 characters and 12 lines, and
   the error header reports bytes captured, bytes retained, retained characters,
   and that UI cap. It never claims that all captured bytes are visible.
-- **Process cleanup.** On timeout, capture-limit or wait errors the owned CLI
-  child is killed and reaped before the worker returns. Only the direct child is
-  terminated; inherited descendants are not killed cross-platform, but pipe
-  closure means they cannot keep the GUI worker waiting or consume capture disk.
+- **Process cleanup.** On Linux/Unix, timeout, capture-limit, wait-error and
+  explicit cancellation kill the CLI's process group, which includes provider
+  helper processes. The direct child is always reaped. Normal successful exit
+  does not signal the group. On non-Unix fallback targets only the direct child
+  can be killed; provider descendants may survive. Linux is the supported
+  runtime for this milestone.
 - **Non-Unix fallback risk.** Other targets compile against a temporary-file
   polling fallback. Its 1 MiB check is best-effort rather than OS-enforced: a
   fast writer can overshoot between polls, and a surviving descendant may keep
-  an inherited file growing until it exits. Linux is the only supported and
-  runtime-tested path for this milestone.
+  an inherited file growing until it exits. Cancellation on those targets kills
+  only the direct CLI child, not the provider process tree. Linux is the only
+  supported and runtime-tested path for this milestone.
 - **Stale snapshots are labelled.** If a refresh fails, the last successful
   snapshot stays visible with a warning banner instead of being replaced by
   fabricated or cleared data.

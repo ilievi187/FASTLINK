@@ -11,6 +11,8 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,12 +21,14 @@ use std::fs::{self, File, OpenOptions};
 #[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 #[cfg(not(unix))]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 #[cfg(not(unix))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use std::process::{ChildStderr, ChildStdout};
 
@@ -327,11 +331,20 @@ impl fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 /// The command used to obtain inventory: `<program> devices --json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct InventoryCommand {
     program: PathBuf,
     timeout: Duration,
+    cancel: Option<Arc<AtomicBool>>,
 }
+
+impl PartialEq for InventoryCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.program == other.program && self.timeout == other.timeout
+    }
+}
+
+impl Eq for InventoryCommand {}
 
 impl InventoryCommand {
     #[must_use]
@@ -339,7 +352,16 @@ impl InventoryCommand {
         Self {
             program: program.into(),
             timeout: DEFAULT_TIMEOUT,
+            cancel: None,
         }
+    }
+
+    /// Attach a cancellation token. Unix runners kill the child's process
+    /// group, including provider children; other targets kill the direct child.
+    #[must_use]
+    pub fn with_cancel_token(mut self, token: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(token);
+        self
     }
 
     /// Resolve the CLI path, in order: explicit CLI flag, `FASTLINK_BIN`, then
@@ -443,15 +465,21 @@ impl InventoryCommand {
 
     #[cfg(unix)]
     fn invoke_child(&self, args: &[&str], command_line: &str) -> Result<CapturedOutput, LoadError> {
-        let child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Give the CLI its own process group so cancellation and error cleanup
+        // can terminate provider children it spawned.
+        command.process_group(0);
+        let child = command
             .spawn()
             .map_err(|err| self.spawn_error(command_line, &err))?;
 
-        capture_child_unix(child, self.timeout).map_err(|err| self.wait_error(command_line, err))
+        capture_child_unix(child, self.timeout, self.cancel.as_deref())
+            .map_err(|err| self.wait_error(command_line, err))
     }
 
     #[cfg(not(unix))]
@@ -473,7 +501,7 @@ impl InventoryCommand {
             .spawn()
             .map_err(|err| self.spawn_error(command_line, &err))?;
 
-        let status = wait_with_timeout_file(child, self.timeout, &captures)
+        let status = wait_with_timeout_file(child, self.timeout, &captures, self.cancel.as_deref())
             .map_err(|err| self.wait_error(command_line, err))?;
 
         if let Some((stream, observed)) = captures
@@ -526,6 +554,13 @@ impl InventoryCommand {
             }
             WaitError::CaptureLimit { stream, observed } => {
                 self.capture_limit_error(command_line, stream, observed)
+            }
+            WaitError::Cancelled => {
+                if command_line.contains(" discover ") {
+                    LoadError::new("Discovery was cancelled. No candidates were shown.")
+                } else {
+                    LoadError::new("The command was cancelled.")
+                }
             }
             WaitError::Io(err) => LoadError::new(format!(
                 "could not read output from `{command_line}`: {err}"
@@ -637,6 +672,7 @@ impl StderrDetail {
 #[derive(Debug)]
 enum WaitError {
     Timeout,
+    Cancelled,
     CaptureLimit { stream: &'static str, observed: u64 },
     Io(std::io::Error),
 }
@@ -647,9 +683,28 @@ impl From<std::io::Error> for WaitError {
     }
 }
 
+/// Stop the child and, on Unix, every process in the process group the child
+/// created. This is required for real discovery cancellation: provider helper
+/// processes must not survive the CLI.
 fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            if pid > 0 {
+                // SAFETY: negative pid targets the child's process group, not
+                // the current process. SIGKILL is used for bounded cleanup.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn cancel_requested(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|token| token.load(Ordering::Relaxed))
 }
 
 /// A nonblocking pipe reader owned by the waiting worker. There are no reader
@@ -755,8 +810,19 @@ fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn capture_child_unix(child: Child, timeout: Duration) -> Result<CapturedOutput, WaitError> {
-    capture_child_unix_with(child, timeout, POLL_INTERVAL, MAX_CAPTURE_BYTES)
+fn capture_child_unix(
+    child: Child,
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<CapturedOutput, WaitError> {
+    capture_child_unix_with(
+        child,
+        timeout,
+        POLL_INTERVAL,
+        MAX_CAPTURE_BYTES,
+        cancel,
+        None,
+    )
 }
 
 #[cfg(unix)]
@@ -765,6 +831,8 @@ fn capture_child_unix_with(
     timeout: Duration,
     poll_interval: Duration,
     max_capture_bytes: u64,
+    cancel: Option<&AtomicBool>,
+    before_drain: Option<&dyn Fn()>,
 ) -> Result<CapturedOutput, WaitError> {
     let stdout_handle = match child.stdout.take() {
         Some(handle) => handle,
@@ -815,6 +883,10 @@ fn capture_child_unix_with(
     let started = Instant::now();
     let overall_deadline = started + timeout;
     let status = loop {
+        if cancel_requested(cancel) {
+            stop_child(&mut child);
+            return Err(WaitError::Cancelled);
+        }
         if let Err(err) = pump_pair(&mut stdout, &mut stderr, overall_deadline) {
             stop_child(&mut child);
             return Err(WaitError::Io(err));
@@ -825,7 +897,13 @@ fn capture_child_unix_with(
         }
 
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                if cancel_requested(cancel) {
+                    stop_child(&mut child);
+                    return Err(WaitError::Cancelled);
+                }
+                break status;
+            }
             Ok(None) => {
                 if started.elapsed() >= timeout {
                     stop_child(&mut child);
@@ -844,12 +922,21 @@ fn capture_child_unix_with(
     // even if the worker observed the exit after the overall deadline. Skipping
     // buffered output here would misreport completed JSON as empty/malformed.
     // A still-running child is still killed at the overall deadline above.
+    if let Some(hook) = before_drain {
+        hook();
+    }
     let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
     if let Err(err) = pump_pair(&mut stdout, &mut stderr, drain_deadline) {
         return Err(WaitError::Io(err));
     }
     if let Some(limit) = overflow_pair(&stdout, &stderr) {
         return Err(limit);
+    }
+    // Cancel may have arrived while buffered output was draining. Never surface
+    // an accepted result after cancellation was requested.
+    if cancel_requested(cancel) {
+        stop_child(&mut child);
+        return Err(WaitError::Cancelled);
     }
 
     Ok(CapturedOutput {
@@ -1023,9 +1110,14 @@ fn wait_with_timeout_file(
     mut child: Child,
     timeout: Duration,
     captures: &CaptureFiles,
+    cancel: Option<&AtomicBool>,
 ) -> Result<ExitStatus, WaitError> {
     let started = Instant::now();
     loop {
+        if cancel_requested(cancel) {
+            stop_child(&mut child);
+            return Err(WaitError::Cancelled);
+        }
         match captures.oversized() {
             Ok(Some((stream, observed))) => {
                 stop_child(&mut child);
@@ -1039,6 +1131,10 @@ fn wait_with_timeout_file(
         }
         match child.try_wait() {
             Ok(Some(status)) => {
+                if cancel_requested(cancel) {
+                    stop_child(&mut child);
+                    return Err(WaitError::Cancelled);
+                }
                 if let Some((stream, observed)) = captures.oversized()? {
                     return Err(WaitError::CaptureLimit { stream, observed });
                 }
@@ -1447,6 +1543,8 @@ cat <<'JSON'
             Duration::from_millis(20),
             Duration::from_millis(500),
             MAX_CAPTURE_BYTES,
+            None,
+            None,
         )
         .expect("completed child must be captured");
 
@@ -1467,9 +1565,15 @@ cat <<'JSON'
         let child = spawn_capture_child(&script);
         thread::sleep(Duration::from_millis(100));
 
-        let captured =
-            capture_child_unix_with(child, Duration::ZERO, POLL_INTERVAL, MAX_CAPTURE_BYTES)
-                .expect("already-finished child must be captured at timeout=0");
+        let captured = capture_child_unix_with(
+            child,
+            Duration::ZERO,
+            POLL_INTERVAL,
+            MAX_CAPTURE_BYTES,
+            None,
+            None,
+        )
+        .expect("already-finished child must be captured at timeout=0");
 
         assert!(captured.status.success());
         let inventory = parse_inventory_json(&String::from_utf8_lossy(&captured.stdout))
@@ -1490,6 +1594,8 @@ head -c 32768 /dev/zero | tr '\\0' 'E'
             Duration::from_millis(20),
             Duration::from_millis(500),
             16 * 1024,
+            None,
+            None,
         )
         .expect_err("buffered output above the cap must still fail");
 
@@ -1499,6 +1605,37 @@ head -c 32768 /dev/zero | tr '\\0' 'E'
                 assert!(observed > 16 * 1024);
             }
             other => panic!("expected capture limit, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_during_post_exit_drain_rejects_buffered_output() {
+        let script = format!(
+            "cat <<'JSON'
+{FIXTURE}JSON
+"
+        );
+        let child = spawn_capture_child(&script);
+        let token = Arc::new(AtomicBool::new(false));
+        let hook_token = Arc::clone(&token);
+        let hook = move || {
+            hook_token.store(true, Ordering::SeqCst);
+        };
+
+        let error = capture_child_unix_with(
+            child,
+            Duration::from_secs(2),
+            POLL_INTERVAL,
+            MAX_CAPTURE_BYTES,
+            Some(token.as_ref()),
+            Some(&hook),
+        )
+        .expect_err("cancellation during drain must reject buffered output");
+
+        match error {
+            WaitError::Cancelled => {}
+            other => panic!("expected cancellation, got {other:?}"),
         }
     }
 }

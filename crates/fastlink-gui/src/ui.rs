@@ -741,11 +741,22 @@ fn discovery_section(ui: &mut Ui, state: &mut AppState) {
         }
         if busy {
             ui.spinner();
+            let cancelling = state.discovery_cancelling();
             ui.label(
-                RichText::new("Discovering (bounded by the CLI timeout)…")
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
+                RichText::new(if cancelling {
+                    "Cancelling discovery…"
+                } else {
+                    "Discovering (bounded by the CLI timeout)…"
+                })
+                .small()
+                .color(ui.visuals().weak_text_color()),
             );
+            if ui
+                .add_enabled(!cancelling, egui::Button::new("Cancel"))
+                .clicked()
+            {
+                state.cancel_discovery();
+            }
         }
     });
 

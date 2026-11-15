@@ -8,7 +8,9 @@
 //! pairing, listener or persisted consent.
 
 use std::collections::{BTreeSet, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -127,6 +129,7 @@ pub struct AppState {
     opted_in: BTreeSet<String>,
     discovery_command: DiscoveryCommand,
     discovery_loader: DiscoveryLoader,
+    discovery_cancel: Option<Arc<AtomicBool>>,
     discovery: Option<DiscoveryInventory>,
     discovery_error: Option<LoadError>,
     discovery_at: Option<Instant>,
@@ -146,6 +149,7 @@ impl AppState {
             opted_in: BTreeSet::new(),
             discovery_command,
             discovery_loader: DiscoveryLoader::new(),
+            discovery_cancel: None,
             discovery: None,
             discovery_error: None,
             discovery_at: None,
@@ -217,8 +221,19 @@ impl AppState {
         }
         self.discovery_error = None;
         self.discovery = None;
-        match self.discovery_loader.start(self.discovery_command.clone()) {
-            Ok(started) => started,
+        self.discovery_cancel = None;
+
+        let token = Arc::new(AtomicBool::new(false));
+        let command = self
+            .discovery_command
+            .clone()
+            .with_cancel_token(token.clone());
+        match self.discovery_loader.start(command) {
+            Ok(true) => {
+                self.discovery_cancel = Some(token);
+                true
+            }
+            Ok(false) => false,
             Err(_) => {
                 self.discovery_error = Some(LoadError::new(
                     "Discovery could not start. Check the configured FASTLINK binary.",
@@ -228,9 +243,33 @@ impl AppState {
         }
     }
 
+    /// Request real cancellation of the active discovery run. The worker runner
+    /// kills the CLI process group; the UI stays busy until that cleanup result
+    /// arrives.
+    pub fn cancel_discovery(&mut self) -> bool {
+        if !self.discovery_loader.is_busy() {
+            return false;
+        }
+        let Some(token) = self.discovery_cancel.as_ref() else {
+            return false;
+        };
+        if token.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn discovery_cancelling(&self) -> bool {
+        self.discovery_cancel
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::SeqCst))
+    }
+
     /// Apply a completed discovery attempt. Kept public so headless state/UI
     /// tests can exercise results without network activity.
     pub fn apply_discovery_result(&mut self, result: Result<DiscoveryInventory, LoadError>) {
+        self.discovery_cancel = None;
         match result {
             Ok(discovery) => {
                 self.discovery = Some(discovery);
@@ -320,7 +359,13 @@ impl AppState {
             changed = true;
         }
         if let Some(result) = self.discovery_loader.poll() {
-            self.apply_discovery_result(result);
+            if self.discovery_cancelling() {
+                self.apply_discovery_result(Err(LoadError::new(
+                    "Discovery was cancelled. No candidates were shown.",
+                )));
+            } else {
+                self.apply_discovery_result(result);
+            }
             changed = true;
         }
         changed
