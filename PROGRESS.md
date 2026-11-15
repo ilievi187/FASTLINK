@@ -49,3 +49,14 @@
 - Verified `cargo fmt --check`, `cargo check --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets` (42/42 unit and integration tests passing) on `integrate/fastlink-team`.
 
 **Explicit limitation:** No multi-device hardware or GPU inference benchmarks have been run (CPU-only loopback and synthetic profile tests).
+
+
+## 2026-11-15 — Linux Local Device Inventory (`feat/linux-device-inventory`)
+
+- Added `src/devices.rs` and wired `fastlink devices [--json]` in `src/main.rs` and `src/lib.rs`.
+- Reports exactly one local node using passive host evidence only: hashed stable local ID (`/etc/machine-id` / `/var/lib/dbus/machine-id` with `hostname-derived` fallback), hostname, OS/kernel release/architecture, logical CPU count, RAM total/available/free bytes (`/proc/meminfo`), and directly discoverable DRM GPU metadata/VRAM (`/sys/class/drm/card*` + `pci.ids`).
+- Uses versioned JSON schema `fastlink.devices.v1` (`schema_version: 1`) with explicit `null`/empty values and `unknown_fields` for anything not directly discoverable; never fabricates capacity, throughput, network connectivity, or remote peers, and performs no network scans, port binds, or GPU compute.
+- Added `tests/devices_test.rs` covering populated host evidence, missing/unknown fields, corrupt/malformed inputs, CLI arg validation, and live binary execution.
+- Verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets`.
+
+**Explicit limitation:** Local-only passive Linux sysfs/procfs inventory; non-amdgpu GPUs without sysfs VRAM counters report `vram_total_bytes: null` / `vram_free_bytes: null`, and capacity/throughput/network connectivity remain explicitly `unknown` until measured.

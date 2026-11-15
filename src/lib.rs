@@ -3,6 +3,7 @@
 
 pub mod cli_plan;
 pub mod cluster_orchestrator;
+pub mod devices;
 pub mod kv_delta;
 pub mod llama_rpc;
 pub mod manifest;

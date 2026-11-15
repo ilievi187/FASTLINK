@@ -28,6 +28,9 @@ cargo run --release -- serve 127.0.0.1:18777 ./.fastlink-data
 # Terminal B
 cargo run --release -- send ./examples/hello.txt 127.0.0.1:18777
 cargo run --release -- send ./examples/hello.txt 127.0.0.1:18777
+# Inspect local host capability inventory (local-only, passive host evidence)
+cargo run --release -- devices
+cargo run --release -- devices --json
 ```
 
 Re-run after editing the file: unchanged chunks are reused and only missing chunks are sent.
