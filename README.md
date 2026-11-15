@@ -72,9 +72,10 @@ tests, actual-`FASTLINK_BIN` contract check and limitations are documented in
 **Verification:** the GUI parser is tested against the integrated
 `fastlink devices --json` output by invoking the real binary from
 `FASTLINK_BIN`; the default suite uses a sanitized fixture with the exact
-backend field set. CLI output capture is bounded and uses private temporary
-files instead of pipes, so large or inherited streams cannot deadlock the
-worker. No GUI window is launched by those tests.
+backend field set. On Linux/Unix, CLI output capture uses bounded nonblocking
+pipe readers rather than growing files, so fast writers and inherited streams
+cannot deadlock, exhaust disk, or keep the worker alive. No GUI window is
+launched by those tests.
 
 ## Example baseline (synthetic and highly repetitive)
 

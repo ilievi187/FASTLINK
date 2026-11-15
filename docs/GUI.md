@@ -120,9 +120,13 @@ values with the same types.
 
 - Linux with X11 or Wayland and an OpenGL driver.
 - Rust 1.95 or newer (required by eframe/egui 0.36).
-- A writable system temporary directory for bounded CLI output capture.
 - No Node, Python, web view or display-server wrapper is needed for the native
   binary.
+
+On the Linux/Unix capture path, no writable temporary directory is required:
+CLI output is read through nonblocking pipes. The non-Unix fallback uses
+temporary files, but that path is not supported or runtime-tested in this
+milestone.
 
 The GUI is a separate Cargo package (`crates/fastlink-gui`) so the core CLI and
 protocol keep their small dependency set.
@@ -183,8 +187,9 @@ The workspace's `default-members` include the GUI, so the standard commands
 above cover both the core crate and the shell. Unix-only command-runner tests
 use temporary fake CLI scripts to verify argument passing, error reporting and
 the invocation timeout. They also cover output larger than the OS pipe capacity,
-oversized-stream diagnostics, retained/truncated stderr, timeout child cleanup,
-and a grandchild that inherits the output handles.
+a fast 64 MiB writer, oversized-stream diagnostics, retained/truncated stderr
+with accurate byte/character accounting, timeout child cleanup, and inherited
+readers/writers that must neither block nor keep consuming capture resources.
 
 ### Actual-binary contract check
 
@@ -213,17 +218,26 @@ the hostname, machine id or hash.
 - **Bounded invocation.** The CLI process is killed after 20 seconds so a hung
   command cannot freeze the UI. The window remains responsive while the worker
   thread waits.
-- **Bounded output capture.** stdout and stderr are redirected to private
-  temporary files rather than pipes. This removes pipe-capacity deadlocks and
-  EOF waits: a valid large inventory still parses, and a grandchild holding the
-  inherited handles cannot block the worker. Each stream is capped at 1 MiB;
-  stderr diagnostics retain 64 KiB with an explicit truncation marker. Capture
-  files are removed after the invocation.
+- **Bounded output capture (Linux/Unix).** stdout and stderr are nonblocking
+  pipes drained by the same worker loop; no reader threads are created. The
+  reader enforces a 1 MiB counted cap per stream as bytes arrive and kills the
+  child when it is exceeded. The kernel pipe buffer may transiently hold one
+  pipe capacity beyond the counted bytes, but capture never writes a growing
+  regular file and cannot consume unbounded disk. An inherited writer is cut
+  off when the read ends close.
+- **Stderr diagnostics.** At most 64 KiB of stderr is retained. The rendered
+  detail is separately compacted to at most 900 characters and 12 lines, and
+  the error header reports bytes captured, bytes retained, retained characters,
+  and that UI cap. It never claims that all captured bytes are visible.
 - **Process cleanup.** On timeout, capture-limit or wait errors the owned CLI
   child is killed and reaped before the worker returns. Only the direct child is
-  terminated; inherited descendants are not killed cross-platform, but the
-  file-based capture means they cannot keep the GUI worker waiting past its
-  deadline.
+  terminated; inherited descendants are not killed cross-platform, but pipe
+  closure means they cannot keep the GUI worker waiting or consume capture disk.
+- **Non-Unix fallback risk.** Other targets compile against a temporary-file
+  polling fallback. Its 1 MiB check is best-effort rather than OS-enforced: a
+  fast writer can overshoot between polls, and a surviving descendant may keep
+  an inherited file growing until it exits. Linux is the only supported and
+  runtime-tested path for this milestone.
 - **Stale snapshots are labelled.** If a refresh fails, the last successful
   snapshot stays visible with a warning banner instead of being replaced by
   fabricated or cleared data.
@@ -248,6 +262,7 @@ the hostname, machine id or hash.
 | `failed (exit status: 1)` with a CLI error | The selected FASTLINK build failed. Run `fastlink devices --json` in a terminal. |
 | `did not return a fastlink.devices.v1 inventory` | The CLI emitted JSON that does not match the implemented contract above. |
 | `exceeded the ... capture limit` | The CLI wrote more than 1 MiB to stdout or stderr. Run it directly to find the noise. |
+| `stderr:` header in an error | Reports captured bytes, retained bytes/characters, and the 900-character/12-line UI detail cap. |
 | `unsupported inventory scope` | This milestone only supports `local_only`; use a matching CLI/GUI pair. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |

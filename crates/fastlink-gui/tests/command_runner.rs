@@ -12,6 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fastlink_gui::inventory::{
@@ -306,7 +307,35 @@ cat <<'JSON'
 }
 
 #[test]
-fn exit_stderr_is_retained_with_a_truncation_marker() {
+fn fast_oversized_writer_is_rejected_promptly() {
+    let _guard = serial();
+    let dir = TempDir::new("fast-oversized");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+head -c 67108864 /dev/zero | tr '\\0' ' '
+cat <<'JSON'
+{FIXTURE}JSON
+"
+        ),
+    );
+
+    let started = Instant::now();
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(5))
+        .run()
+        .expect_err("64 MiB stdout must fail");
+    let elapsed = started.elapsed();
+
+    assert!(error.summary.contains("capture limit"), "{error:?}");
+    assert!(!error.summary.contains("did not finish"), "{error:?}");
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[test]
+fn exit_stderr_detail_reports_capture_retention_and_ui_cap() {
     let _guard = serial();
     let dir = TempDir::new("stderr-truncated");
     let script = write_script(
@@ -324,7 +353,23 @@ exit 3
         .expect_err("nonzero exit must fail");
     assert!(error.summary.contains("failed"), "{error:?}");
     let detail = error.detail.as_deref().unwrap_or_default();
-    assert!(detail.contains("stderr truncated"), "{detail}");
+    assert!(detail.contains("131072 bytes captured"), "{detail}");
+    assert!(detail.contains("65536 bytes retained"), "{detail}");
+    assert!(detail.contains("900 characters"), "{detail}");
+    assert!(
+        detail.chars().count() <= 900,
+        "{} chars",
+        detail.chars().count()
+    );
+    assert!(
+        detail.lines().count() <= 12,
+        "{} lines",
+        detail.lines().count()
+    );
+    assert!(
+        !detail.contains("showing 65536 of 131072"),
+        "must not claim truncated bytes are visible: {detail}"
+    );
     assert!(!error.summary.contains("did not finish"), "{error:?}");
 }
 
@@ -361,6 +406,97 @@ exec sleep 5
         !status.success(),
         "owned child is still running after timeout"
     );
+}
+
+#[test]
+fn fast_writer_progress_is_capped_near_the_limit() {
+    let _guard = serial();
+    let dir = TempDir::new("fast-writer-progress");
+    let counter_path = dir.path().join("writer-progress");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+i=0
+while [ \"$i\" -lt 16 ]; do
+  dd if=/dev/zero bs=1048576 count=1 status=none || break
+  i=$((i+1))
+  echo \"$i\" > '{}'
+done
+",
+            counter_path.display()
+        ),
+    );
+
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(5))
+        .run()
+        .expect_err("fast oversized writer must fail");
+    assert!(error.summary.contains("capture limit"), "{error:?}");
+
+    let written_mib = read_counter(&counter_path);
+    assert!(
+        written_mib <= 5,
+        "writer completed {written_mib} MiB before the reader enforced the 1 MiB cap"
+    );
+}
+
+#[test]
+fn inherited_writer_stops_when_the_capture_is_closed() {
+    let _guard = serial();
+    let dir = TempDir::new("inherited-writer");
+    let counter_path = dir.path().join("writer-progress");
+    let stop_path = dir.path().join("writer-stop");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+cat <<'JSON'
+{FIXTURE}JSON
+(
+  i=0
+  while [ \"$i\" -lt 100 ] && [ ! -f '{stop}' ]; do
+    head -c 1024 /dev/zero | tr '\\0' ' ' || break
+    i=$((i+1))
+    echo \"$i\" > '{counter}'
+    sleep 0.01
+  done
+) &
+",
+            stop = stop_path.display(),
+            counter = counter_path.display()
+        ),
+    );
+
+    let inventory = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect("inherited writer must not break the inventory read");
+    assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+
+    thread::sleep(Duration::from_millis(200));
+    let first = read_counter(&counter_path);
+    thread::sleep(Duration::from_millis(200));
+    let second = read_counter(&counter_path);
+    let _ = fs::write(&stop_path, b"stop");
+
+    assert!(
+        second <= first + 2,
+        "inherited writer kept using the capture after the child exited: {first} -> {second}"
+    );
+    assert!(
+        second < 10,
+        "inherited writer made excessive progress before capture closure: {second}"
+    );
+}
+
+fn read_counter(path: &Path) -> u64 {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 #[test]

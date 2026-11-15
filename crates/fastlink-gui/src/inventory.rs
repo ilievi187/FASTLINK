@@ -9,13 +9,24 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+#[cfg(not(unix))]
+use std::fs::{self, File, OpenOptions};
+#[cfg(not(unix))]
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(not(unix))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(unix))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(unix)]
+use std::process::{ChildStderr, ChildStdout};
 
 use serde::Deserialize;
 
@@ -31,15 +42,22 @@ pub const DEFAULT_PROGRAM: &str = "fastlink";
 pub const PROGRAM_ENV: &str = "FASTLINK_BIN";
 /// Default upper bound for one inventory invocation.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
-/// Hard per-stream capture limit. An inventory document is expected to be tiny;
-/// this bounds memory, disk growth and reader work even for a misbehaving CLI.
+/// Per-stream capture limit. On Linux/Unix the nonblocking reader enforces this
+/// count in the capture path; on the non-Unix fallback it is a polling
+/// threshold (best-effort, not an OS-enforced hard bound).
 pub const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
 /// How much stderr is retained for a diagnostic message.
 pub const MAX_STDERR_DETAIL_BYTES: usize = 64 * 1024;
+/// Maximum characters retained in the rendered error detail.
+pub const UI_DETAIL_CHARS: usize = 900;
+/// Maximum lines retained in the rendered error detail.
+pub const UI_DETAIL_LINES: usize = 12;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
-const MAX_DETAIL_CHARS: usize = 900;
-const MAX_DETAIL_LINES: usize = 12;
+#[cfg(unix)]
+const POST_EXIT_DRAIN: Duration = Duration::from_millis(50);
+#[cfg(not(unix))]
 const MAX_CAPTURE_CREATE_ATTEMPTS: usize = 16;
+#[cfg(not(unix))]
 static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Top-level inventory document.
@@ -361,13 +379,65 @@ impl InventoryCommand {
     /// a process; it never opens sockets, scans the network or reads device
     /// state itself.
     ///
-    /// stdout/stderr are captured into bounded temporary files instead of pipes.
-    /// The kernel drains both streams concurrently, so a chatty CLI cannot fill
-    /// a pipe and deadlock. A grandchild inheriting the file handles cannot keep
-    /// the worker waiting for EOF either: regular-file reads never wait for all
-    /// writers to close. The deadline covers child execution and capture-size
-    /// monitoring; reading is capped at [`MAX_CAPTURE_BYTES`].
+    /// On Linux/Unix, stdout/stderr are nonblocking pipes drained by this same
+    /// worker loop. No reader threads are spawned, so there is nothing to leak.
+    /// The byte count is enforced as data is read; an inherited writer can only
+    /// fill the bounded kernel pipe, never grow disk usage. A grandchild holding
+    /// a pipe cannot block the worker because reads never wait for EOF.
+    ///
+    /// The non-Unix fallback captures to temporary files and enforces the cap by
+    /// polling. It is best-effort, not a hard OS-level bound; Linux is the
+    /// supported runtime for this milestone.
     pub fn run(&self) -> Result<DeviceInventory, LoadError> {
+        let captured = self.invoke_child()?;
+
+        if !captured.status.success() {
+            return Err(self.exit_error(captured.status, &captured.stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        if stdout.trim().is_empty() {
+            return Err(
+                LoadError::new(format!("`{}` produced no JSON", self.command_line()))
+                    .with_hint(
+                        "The inventory command must print the versioned JSON document to stdout.",
+                    )
+                    .with_detail(captured.stderr.as_detail_text()),
+            );
+        }
+
+        parse_inventory_json(&stdout).map_err(|err| {
+            let mut detail = err.to_string();
+            if !captured.stderr.bytes.is_empty() {
+                detail.push_str("\nstderr: ");
+                detail.push_str(&captured.stderr.as_detail_text());
+            }
+            LoadError::new(format!(
+                "`{}` did not return a {SUPPORTED_SCHEMA} inventory",
+                self.command_line()
+            ))
+            .with_detail(detail)
+            .with_hint(
+                "Check the JSON contract in docs/GUI.md and make sure the CLI and GUI schema versions match.",
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    fn invoke_child(&self) -> Result<CapturedOutput, LoadError> {
+        let child = Command::new(&self.program)
+            .args(["devices", "--json"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| self.spawn_error(&err))?;
+
+        capture_child_unix(child, self.timeout).map_err(|err| self.wait_error(err))
+    }
+
+    #[cfg(not(unix))]
+    fn invoke_child(&self) -> Result<CapturedOutput, LoadError> {
         let mut captures = CaptureFiles::create()
             .map_err(|err| self.capture_error("create output capture", err))?;
         let stdout = captures
@@ -385,30 +455,9 @@ impl InventoryCommand {
             .spawn()
             .map_err(|err| self.spawn_error(&err))?;
 
-        let status = match wait_with_timeout(child, self.timeout, &captures) {
-            Ok(status) => status,
-            Err(WaitError::Timeout) => {
-                return Err(LoadError::new(format!(
-                    "`{}` did not finish within {} s",
-                    self.command_line(),
-                    self.timeout.as_secs_f32()
-                ))
-                .with_hint(
-                    "The GUI refuses to hang forever. Check that the FASTLINK CLI is not waiting on input or on a network resource.",
-                ));
-            }
-            Err(WaitError::CaptureLimit { stream, observed }) => {
-                return Err(self.capture_limit_error(stream, observed));
-            }
-            Err(WaitError::Io(err)) => {
-                return Err(LoadError::new(format!(
-                    "could not wait for `{}`: {err}",
-                    self.command_line()
-                )));
-            }
-        };
+        let status = wait_with_timeout_file(child, self.timeout, &captures)
+            .map_err(|err| self.wait_error(err))?;
 
-        // A grandchild may still grow a capture after the owned child exits.
         if let Some((stream, observed)) = captures
             .oversized()
             .map_err(|err| self.capture_error("inspect output capture", err))?
@@ -416,11 +465,15 @@ impl InventoryCommand {
             return Err(self.capture_limit_error(stream, observed));
         }
 
+        let stderr = captures
+            .read_stderr_detail()
+            .map_err(|err| self.capture_error("read stderr capture", err))?;
         if !status.success() {
-            let stderr = captures
-                .read_stderr_detail()
-                .map_err(|err| self.capture_error("read stderr capture", err))?;
-            return Err(self.exit_error(status, &stderr));
+            return Ok(CapturedOutput {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            });
         }
 
         let (stdout, stdout_total, stdout_truncated) = captures
@@ -429,45 +482,36 @@ impl InventoryCommand {
         if stdout_truncated {
             return Err(self.capture_limit_error("stdout", stdout_total));
         }
-        let stdout = String::from_utf8_lossy(&stdout);
-        if stdout.trim().is_empty() {
-            let stderr = captures
-                .read_stderr_detail()
-                .map_err(|err| self.capture_error("read stderr capture", err))?;
-            return Err(
-                LoadError::new(format!("`{}` produced no JSON", self.command_line()))
-                    .with_hint(
-                        "The inventory command must print the versioned JSON document to stdout.",
-                    )
-                    .with_detail(stderr.as_detail_text()),
-            );
-        }
 
-        parse_inventory_json(&stdout).map_err(|err| {
-            let mut detail = err.to_string();
-            match captures.read_stderr_detail() {
-                Ok(stderr) if !stderr.bytes.is_empty() => {
-                    detail.push_str("\nstderr: ");
-                    detail.push_str(&stderr.as_detail_text());
-                }
-                Ok(_) => {}
-                Err(read_err) => {
-                    detail.push_str(&format!(
-                        "\n(could not read stderr capture: {read_err})"
-                    ));
-                }
-            }
-            LoadError::new(format!(
-                "`{}` did not return a {SUPPORTED_SCHEMA} inventory",
-                self.command_line()
-            ))
-            .with_detail(detail)
-            .with_hint(
-                "Check the JSON contract in docs/GUI.md and make sure the CLI and GUI schema versions match.",
-            )
+        Ok(CapturedOutput {
+            status,
+            stdout,
+            stderr,
         })
     }
 
+    fn wait_error(&self, err: WaitError) -> LoadError {
+        match err {
+            WaitError::Timeout => LoadError::new(format!(
+                "`{}` did not finish within {} s",
+                self.command_line(),
+                self.timeout.as_secs_f32()
+            ))
+            .with_hint(
+                "The GUI refuses to hang forever. Check that the FASTLINK CLI is not waiting on input or on a network resource.",
+            ),
+            WaitError::CaptureLimit { stream, observed } => {
+                self.capture_limit_error(stream, observed)
+            }
+            WaitError::Io(err) => LoadError::new(format!(
+                "could not read output from `{}`: {err}",
+                self.command_line()
+            ))
+            .with_hint("Run the CLI directly to inspect the failure."),
+        }
+    }
+
+    #[cfg(not(unix))]
     fn capture_error(&self, action: &str, err: std::io::Error) -> LoadError {
         LoadError::new(format!(
             "could not {action} for `{}`: {err}",
@@ -526,6 +570,41 @@ impl InventoryCommand {
 }
 
 #[derive(Debug)]
+struct CapturedOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: StderrDetail,
+}
+
+/// Retained stderr bytes plus the total number of bytes the capture read.
+/// `bytes` is bounded by [`MAX_STDERR_DETAIL_BYTES`]; the rendered detail is
+/// further compacted by [`compact_detail`].
+#[derive(Debug)]
+struct StderrDetail {
+    bytes: Vec<u8>,
+    total: u64,
+}
+
+impl StderrDetail {
+    fn as_detail_text(&self) -> String {
+        if self.bytes.is_empty() && self.total == 0 {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&self.bytes);
+        let retained_chars = text.chars().count();
+        format!(
+            "[stderr: {} bytes captured; {} bytes retained ({} chars); UI detail cap {} characters / {} lines]\n{}",
+            self.total,
+            self.bytes.len(),
+            retained_chars,
+            UI_DETAIL_CHARS,
+            UI_DETAIL_LINES,
+            text
+        )
+    }
+}
+
+#[derive(Debug)]
 enum WaitError {
     Timeout,
     CaptureLimit { stream: &'static str, observed: u64 },
@@ -538,31 +617,158 @@ impl From<std::io::Error> for WaitError {
     }
 }
 
-fn wait_with_timeout(
-    mut child: Child,
-    timeout: Duration,
-    captures: &CaptureFiles,
-) -> Result<ExitStatus, WaitError> {
-    let started = Instant::now();
-    loop {
-        match captures.oversized() {
-            Ok(Some((stream, observed))) => {
-                stop_child(&mut child);
-                return Err(WaitError::CaptureLimit { stream, observed });
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A nonblocking pipe reader owned by the waiting worker. There are no reader
+/// threads; a grandchild holding the write end cannot block this reader.
+#[cfg(unix)]
+struct PipeReader<H: AsRawFd> {
+    fd: RawFd,
+    handle: Option<H>,
+    retained: Vec<u8>,
+    retained_limit: usize,
+    total: u64,
+    eof: bool,
+    stream: &'static str,
+}
+
+#[cfg(unix)]
+impl<H: AsRawFd> PipeReader<H> {
+    fn new(handle: H, stream: &'static str, retained_limit: usize) -> std::io::Result<Self> {
+        let fd = handle.as_raw_fd();
+        set_nonblocking(fd)?;
+        Ok(Self {
+            fd,
+            handle: Some(handle),
+            retained: Vec::new(),
+            retained_limit,
+            total: 0,
+            eof: false,
+            stream,
+        })
+    }
+
+    fn pump(&mut self, deadline: Instant) -> std::io::Result<()> {
+        if self.eof {
+            return Ok(());
+        }
+        let mut buffer = [0u8; 8192];
+        loop {
+            if Instant::now() >= deadline || self.is_over() {
+                return Ok(());
             }
-            Ok(None) => {}
+            // SAFETY: `fd` is an open, nonblocking pipe read end owned by
+            // `handle`; `buffer` is valid for writes of its full length.
+            let read = unsafe {
+                libc::read(
+                    self.fd,
+                    buffer.as_mut_ptr().cast::<libc::c_void>(),
+                    buffer.len(),
+                )
+            };
+            if read > 0 {
+                self.account(&buffer[..read as usize]);
+                if self.is_over() {
+                    return Ok(());
+                }
+            } else if read == 0 {
+                self.eof = true;
+                self.handle.take();
+                return Ok(());
+            } else {
+                let err = std::io::Error::last_os_error();
+                match err.kind() {
+                    std::io::ErrorKind::WouldBlock => return Ok(()),
+                    std::io::ErrorKind::Interrupted => continue,
+                    _ => return Err(err),
+                }
+            }
+        }
+    }
+
+    fn account(&mut self, chunk: &[u8]) {
+        self.total = self.total.saturating_add(chunk.len() as u64);
+        let room = self.retained_limit.saturating_sub(self.retained.len());
+        if room > 0 {
+            self.retained
+                .extend_from_slice(&chunk[..room.min(chunk.len())]);
+        }
+    }
+
+    fn is_over(&self) -> bool {
+        self.total > MAX_CAPTURE_BYTES
+    }
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: `fd` is an open pipe descriptor owned by the caller.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: same descriptor; F_SETFL with O_NONBLOCK is a valid flag update.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn capture_child_unix(mut child: Child, timeout: Duration) -> Result<CapturedOutput, WaitError> {
+    let stdout_handle = match child.stdout.take() {
+        Some(handle) => handle,
+        None => {
+            stop_child(&mut child);
+            return Err(WaitError::Io(std::io::Error::other(
+                "stdout pipe was not captured",
+            )));
+        }
+    };
+    let stderr_handle = match child.stderr.take() {
+        Some(handle) => handle,
+        None => {
+            stop_child(&mut child);
+            return Err(WaitError::Io(std::io::Error::other(
+                "stderr pipe was not captured",
+            )));
+        }
+    };
+
+    let mut stdout =
+        match PipeReader::<ChildStdout>::new(stdout_handle, "stdout", MAX_CAPTURE_BYTES as usize) {
+            Ok(reader) => reader,
             Err(err) => {
                 stop_child(&mut child);
                 return Err(WaitError::Io(err));
             }
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if let Some((stream, observed)) = captures.oversized()? {
-                    return Err(WaitError::CaptureLimit { stream, observed });
-                }
-                return Ok(status);
+        };
+    let mut stderr =
+        match PipeReader::<ChildStderr>::new(stderr_handle, "stderr", MAX_STDERR_DETAIL_BYTES) {
+            Ok(reader) => reader,
+            Err(err) => {
+                stop_child(&mut child);
+                return Err(WaitError::Io(err));
             }
+        };
+
+    let started = Instant::now();
+    let overall_deadline = started + timeout;
+    let status = loop {
+        if let Err(err) = pump_pair(&mut stdout, &mut stderr, overall_deadline) {
+            stop_child(&mut child);
+            return Err(WaitError::Io(err));
+        }
+        if let Some(limit) = overflow_pair(&stdout, &stderr) {
+            stop_child(&mut child);
+            return Err(limit);
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if started.elapsed() >= timeout {
                     stop_child(&mut child);
@@ -575,18 +781,63 @@ fn wait_with_timeout(
                 return Err(WaitError::Io(err));
             }
         }
+    };
+
+    // The owned child has exited. Drain bytes already delivered without
+    // waiting for EOF: a grandchild may still hold the write ends.
+    let drain_deadline = (Instant::now() + POST_EXIT_DRAIN).min(overall_deadline);
+    if let Err(err) = pump_pair(&mut stdout, &mut stderr, drain_deadline) {
+        return Err(WaitError::Io(err));
+    }
+    if let Some(limit) = overflow_pair(&stdout, &stderr) {
+        return Err(limit);
+    }
+
+    Ok(CapturedOutput {
+        status,
+        stdout: stdout.retained,
+        stderr: StderrDetail {
+            bytes: stderr.retained,
+            total: stderr.total,
+        },
+    })
+}
+
+#[cfg(unix)]
+fn pump_pair<A: AsRawFd, B: AsRawFd>(
+    stdout: &mut PipeReader<A>,
+    stderr: &mut PipeReader<B>,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    stdout.pump(deadline)?;
+    stderr.pump(deadline)
+}
+
+#[cfg(unix)]
+fn overflow_pair<A: AsRawFd, B: AsRawFd>(
+    stdout: &PipeReader<A>,
+    stderr: &PipeReader<B>,
+) -> Option<WaitError> {
+    if stdout.is_over() {
+        Some(WaitError::CaptureLimit {
+            stream: stdout.stream,
+            observed: stdout.total,
+        })
+    } else if stderr.is_over() {
+        Some(WaitError::CaptureLimit {
+            stream: stderr.stream,
+            observed: stderr.total,
+        })
+    } else {
+        None
     }
 }
 
-fn stop_child(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Bounded regular-file capture for child stdout/stderr.
+/// Non-Unix fallback: bounded temporary-file capture with polling.
 ///
-/// `File` handles left open by grandchildren never block reads. Files are
-/// removed on drop even when the child failed or timed out.
+/// This path cannot provide the Linux reader-enforced hard bound. It is kept
+/// compile-safe for other targets and documented as best-effort.
+#[cfg(not(unix))]
 #[derive(Debug)]
 struct CaptureFiles {
     stdout_path: PathBuf,
@@ -595,28 +846,7 @@ struct CaptureFiles {
     stderr: Option<File>,
 }
 
-#[derive(Debug)]
-struct StderrDetail {
-    bytes: Vec<u8>,
-    total: u64,
-    truncated: bool,
-}
-
-impl StderrDetail {
-    fn as_detail_text(&self) -> String {
-        let mut text = String::new();
-        if self.truncated {
-            text.push_str(&format!(
-                "(stderr truncated; showing {} of {} bytes)\n",
-                self.bytes.len(),
-                self.total
-            ));
-        }
-        text.push_str(&String::from_utf8_lossy(&self.bytes));
-        text
-    }
-}
-
+#[cfg(not(unix))]
 impl CaptureFiles {
     fn create() -> std::io::Result<Self> {
         let mut last_error = None;
@@ -714,15 +944,12 @@ impl CaptureFiles {
             .stderr
             .as_mut()
             .ok_or_else(|| std::io::Error::other("stderr capture is not open"))?;
-        let (bytes, total, truncated) = read_capped(file, MAX_STDERR_DETAIL_BYTES as u64)?;
-        Ok(StderrDetail {
-            bytes,
-            total,
-            truncated,
-        })
+        let (bytes, total, _truncated) = read_capped(file, MAX_STDERR_DETAIL_BYTES as u64)?;
+        Ok(StderrDetail { bytes, total })
     }
 }
 
+#[cfg(not(unix))]
 impl Drop for CaptureFiles {
     fn drop(&mut self) {
         drop(self.stdout.take());
@@ -732,6 +959,48 @@ impl Drop for CaptureFiles {
     }
 }
 
+#[cfg(not(unix))]
+fn wait_with_timeout_file(
+    mut child: Child,
+    timeout: Duration,
+    captures: &CaptureFiles,
+) -> Result<ExitStatus, WaitError> {
+    let started = Instant::now();
+    loop {
+        match captures.oversized() {
+            Ok(Some((stream, observed))) => {
+                stop_child(&mut child);
+                return Err(WaitError::CaptureLimit { stream, observed });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                stop_child(&mut child);
+                return Err(WaitError::Io(err));
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if let Some((stream, observed)) = captures.oversized()? {
+                    return Err(WaitError::CaptureLimit { stream, observed });
+                }
+                return Ok(status);
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    stop_child(&mut child);
+                    return Err(WaitError::Timeout);
+                }
+                thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => {
+                stop_child(&mut child);
+                return Err(WaitError::Io(err));
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
 fn read_capped(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64, bool)> {
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
@@ -745,14 +1014,10 @@ fn read_capped(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64, bo
     Ok((bytes, observed, truncated))
 }
 
+#[cfg(not(unix))]
 fn open_capture_file(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
     options.open(path)
 }
 
@@ -767,13 +1032,19 @@ fn compact_detail(raw: &str) -> String {
         .chars()
         .filter(|ch| *ch == '\n' || *ch == '\t' || !ch.is_control())
         .collect();
-    let lines: Vec<&str> = sanitized.lines().take(MAX_DETAIL_LINES).collect();
-    let mut result = lines.join("\n");
-    if sanitized.lines().count() > MAX_DETAIL_LINES {
+    let all_lines: Vec<&str> = sanitized.lines().collect();
+    let line_truncated = all_lines.len() > UI_DETAIL_LINES;
+    let kept_lines = if line_truncated {
+        &all_lines[..UI_DETAIL_LINES - 1]
+    } else {
+        &all_lines[..]
+    };
+    let mut result = kept_lines.join("\n");
+    if line_truncated {
         result.push_str("\n…");
     }
-    if result.chars().count() > MAX_DETAIL_CHARS {
-        result = result.chars().take(MAX_DETAIL_CHARS).collect();
+    if result.chars().count() > UI_DETAIL_CHARS {
+        result = result.chars().take(UI_DETAIL_CHARS - 1).collect();
         result.push('…');
     }
     result
@@ -1081,7 +1352,8 @@ mod tests {
         let raw = format!("line\u{7}\n{}", "x\n".repeat(50));
         let detail = compact_detail(&raw);
         assert!(!detail.contains('\u{7}'));
-        assert!(detail.lines().count() <= MAX_DETAIL_LINES + 1);
+        assert!(detail.lines().count() <= UI_DETAIL_LINES);
+        assert!(detail.chars().count() <= UI_DETAIL_CHARS);
         assert!(detail.ends_with('…'));
     }
 }
