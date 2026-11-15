@@ -631,13 +631,19 @@ struct PipeReader<H: AsRawFd> {
     retained: Vec<u8>,
     retained_limit: usize,
     total: u64,
+    cap: u64,
     eof: bool,
     stream: &'static str,
 }
 
 #[cfg(unix)]
 impl<H: AsRawFd> PipeReader<H> {
-    fn new(handle: H, stream: &'static str, retained_limit: usize) -> std::io::Result<Self> {
+    fn new(
+        handle: H,
+        stream: &'static str,
+        retained_limit: usize,
+        cap: u64,
+    ) -> std::io::Result<Self> {
         let fd = handle.as_raw_fd();
         set_nonblocking(fd)?;
         Ok(Self {
@@ -646,6 +652,7 @@ impl<H: AsRawFd> PipeReader<H> {
             retained: Vec::new(),
             retained_limit,
             total: 0,
+            cap,
             eof: false,
             stream,
         })
@@ -699,7 +706,7 @@ impl<H: AsRawFd> PipeReader<H> {
     }
 
     fn is_over(&self) -> bool {
-        self.total > MAX_CAPTURE_BYTES
+        self.total > self.cap
     }
 }
 
@@ -718,7 +725,17 @@ fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn capture_child_unix(mut child: Child, timeout: Duration) -> Result<CapturedOutput, WaitError> {
+fn capture_child_unix(child: Child, timeout: Duration) -> Result<CapturedOutput, WaitError> {
+    capture_child_unix_with(child, timeout, POLL_INTERVAL, MAX_CAPTURE_BYTES)
+}
+
+#[cfg(unix)]
+fn capture_child_unix_with(
+    mut child: Child,
+    timeout: Duration,
+    poll_interval: Duration,
+    max_capture_bytes: u64,
+) -> Result<CapturedOutput, WaitError> {
     let stdout_handle = match child.stdout.take() {
         Some(handle) => handle,
         None => {
@@ -738,22 +755,32 @@ fn capture_child_unix(mut child: Child, timeout: Duration) -> Result<CapturedOut
         }
     };
 
-    let mut stdout =
-        match PipeReader::<ChildStdout>::new(stdout_handle, "stdout", MAX_CAPTURE_BYTES as usize) {
-            Ok(reader) => reader,
-            Err(err) => {
-                stop_child(&mut child);
-                return Err(WaitError::Io(err));
-            }
-        };
-    let mut stderr =
-        match PipeReader::<ChildStderr>::new(stderr_handle, "stderr", MAX_STDERR_DETAIL_BYTES) {
-            Ok(reader) => reader,
-            Err(err) => {
-                stop_child(&mut child);
-                return Err(WaitError::Io(err));
-            }
-        };
+    let stdout_retain = max_capture_bytes.min(MAX_CAPTURE_BYTES) as usize;
+    let mut stdout = match PipeReader::<ChildStdout>::new(
+        stdout_handle,
+        "stdout",
+        stdout_retain,
+        max_capture_bytes,
+    ) {
+        Ok(reader) => reader,
+        Err(err) => {
+            stop_child(&mut child);
+            return Err(WaitError::Io(err));
+        }
+    };
+    let stderr_retain = (MAX_STDERR_DETAIL_BYTES as u64).min(max_capture_bytes) as usize;
+    let mut stderr = match PipeReader::<ChildStderr>::new(
+        stderr_handle,
+        "stderr",
+        stderr_retain,
+        max_capture_bytes,
+    ) {
+        Ok(reader) => reader,
+        Err(err) => {
+            stop_child(&mut child);
+            return Err(WaitError::Io(err));
+        }
+    };
 
     let started = Instant::now();
     let overall_deadline = started + timeout;
@@ -774,7 +801,7 @@ fn capture_child_unix(mut child: Child, timeout: Duration) -> Result<CapturedOut
                     stop_child(&mut child);
                     return Err(WaitError::Timeout);
                 }
-                thread::sleep(POLL_INTERVAL);
+                thread::sleep(poll_interval);
             }
             Err(err) => {
                 stop_child(&mut child);
@@ -783,9 +810,11 @@ fn capture_child_unix(mut child: Child, timeout: Duration) -> Result<CapturedOut
         }
     };
 
-    // The owned child has exited. Drain bytes already delivered without
-    // waiting for EOF: a grandchild may still hold the write ends.
-    let drain_deadline = (Instant::now() + POST_EXIT_DRAIN).min(overall_deadline);
+    // The owned child has exited. It gets its own short bounded drain grace,
+    // even if the worker observed the exit after the overall deadline. Skipping
+    // buffered output here would misreport completed JSON as empty/malformed.
+    // A still-running child is still killed at the overall deadline above.
+    let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
     if let Err(err) = pump_pair(&mut stdout, &mut stderr, drain_deadline) {
         return Err(WaitError::Io(err));
     }
@@ -1355,5 +1384,91 @@ mod tests {
         assert!(detail.lines().count() <= UI_DETAIL_LINES);
         assert!(detail.chars().count() <= UI_DETAIL_CHARS);
         assert!(detail.ends_with('…'));
+    }
+
+    #[cfg(unix)]
+    fn spawn_capture_child(script: &str) -> Child {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn capture test child")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_child_after_expired_deadline_is_still_drained() {
+        let script = format!(
+            "sleep 0.05
+cat <<'JSON'
+{FIXTURE}JSON
+"
+        );
+        let child = spawn_capture_child(&script);
+
+        // The poll interval is much longer than the timeout. The child finishes
+        // during that sleep, so the worker observes the exit only after the
+        // overall deadline has expired.
+        let captured = capture_child_unix_with(
+            child,
+            Duration::from_millis(20),
+            Duration::from_millis(500),
+            MAX_CAPTURE_BYTES,
+        )
+        .expect("completed child must be captured");
+
+        assert!(captured.status.success());
+        let inventory = parse_inventory_json(&String::from_utf8_lossy(&captured.stdout))
+            .expect("buffered valid JSON must not be discarded as empty");
+        assert_eq!(inventory.nodes.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn already_finished_child_is_drained_with_zero_timeout() {
+        let script = format!(
+            "cat <<'JSON'
+{FIXTURE}JSON
+"
+        );
+        let child = spawn_capture_child(&script);
+        thread::sleep(Duration::from_millis(100));
+
+        let captured =
+            capture_child_unix_with(child, Duration::ZERO, POLL_INTERVAL, MAX_CAPTURE_BYTES)
+                .expect("already-finished child must be captured at timeout=0");
+
+        assert!(captured.status.success());
+        let inventory = parse_inventory_json(&String::from_utf8_lossy(&captured.stdout))
+            .expect("zero-timeout drain must parse completed output");
+        assert_eq!(inventory.nodes.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_exit_drain_still_enforces_the_capture_cap() {
+        let script = "sleep 0.05
+head -c 32768 /dev/zero | tr '\\0' 'E'
+";
+        let child = spawn_capture_child(script);
+
+        let error = capture_child_unix_with(
+            child,
+            Duration::from_millis(20),
+            Duration::from_millis(500),
+            16 * 1024,
+        )
+        .expect_err("buffered output above the cap must still fail");
+
+        match error {
+            WaitError::CaptureLimit { stream, observed } => {
+                assert_eq!(stream, "stdout");
+                assert!(observed > 16 * 1024);
+            }
+            other => panic!("expected capture limit, got {other:?}"),
+        }
     }
 }

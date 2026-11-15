@@ -190,6 +190,9 @@ the invocation timeout. They also cover output larger than the OS pipe capacity,
 a fast 64 MiB writer, oversized-stream diagnostics, retained/truncated stderr
 with accurate byte/character accounting, timeout child cleanup, and inherited
 readers/writers that must neither block nor keep consuming capture resources.
+Additional deterministic pipe tests inject a poll interval longer than the
+timeout to prove that output from a child which completed just after the
+deadline is still drained and capped, including the `timeout=0` case.
 
 ### Actual-binary contract check
 
@@ -215,9 +218,13 @@ the hostname, machine id or hash.
   tested by this milestone.
 - **One-shot reads.** The inventory is read on startup and when Refresh is
   clicked. There is no background polling.
-- **Bounded invocation.** The CLI process is killed after 20 seconds so a hung
-  command cannot freeze the UI. The window remains responsive while the worker
-  thread waits.
+- **Bounded invocation.** A still-running CLI process is killed after 20
+  seconds so a hung command cannot freeze the UI. If the child has already
+  exited when the worker observes it, a separate bounded 50 ms post-exit drain
+  still reads buffered output even when the overall deadline has just passed;
+  this prevents completed JSON from being misreported as empty or malformed.
+  The hard byte cap is enforced during that drain too. The window remains
+  responsive while the worker thread waits.
 - **Bounded output capture (Linux/Unix).** stdout and stderr are nonblocking
   pipes drained by the same worker loop; no reader threads are created. The
   reader enforces a 1 MiB counted cap per stream as bytes arrive and kills the
