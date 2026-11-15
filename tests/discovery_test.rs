@@ -763,6 +763,14 @@ printf '%s\\n' '{mdns_lines}'
       "Online": true,
       "TailscaleIPs": ["100.64.99.45"]
     },
+    "nodekey:nodezeropad": {
+      "ID": "nNodeZeroPad",
+      "HostName": "node:0443",
+      "DNSName": "node:0443.",
+      "OS": "linux via node:0443",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.46"]
+    },
     "nodekey:normallabel": {
       "ID": "nOrdinaryPeer",
       "HostName": "cuda:0",
@@ -806,6 +814,7 @@ printf '%s\n' '{ts_payload}'
             "gpu-box.tailnet-example.ts.net:41641",
             "gpu-box:18777",
             "gpu-box:0443",
+            "node:0443",
             "ws-single:8080",
             "host.example:0443",
             "ws1.local:18777",
@@ -830,6 +839,7 @@ printf '%s\n' '{ts_payload}'
             "100.64.99.43",
             "100.64.99.44",
             "100.64.99.45",
+            "100.64.99.46",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -853,7 +863,7 @@ printf '%s\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes.len(), 8);
 
         let bad_lan_nodes: Vec<&Value> = nodes
             .iter()
@@ -882,7 +892,7 @@ printf '%s\n' '{ts_payload}'
             })
             .count();
         assert_eq!(
-            bad_ts_count, 3,
+            bad_ts_count, 4,
             "smuggled Tailscale nodes should fall back to generic name with null os"
         );
 
@@ -906,7 +916,7 @@ printf '%s\n' '{ts_payload}'
             &err_dir,
             "avahi-browse",
             "#!/bin/sh
-echo 'dial gpu-box:18777 gpu-box:0443 ws1.local:18777' >&2
+echo 'dial gpu-box:18777 gpu-box:0443 node:0443 ws1.local:18777' >&2
 exit 2
 ",
         );
@@ -914,7 +924,7 @@ exit 2
             &err_dir,
             "tailscale",
             "#!/bin/sh
-echo 'dial gpu-box:0443 host.example:0443' >&2
+echo 'dial gpu-box:0443 node:0443 host.example:0443' >&2
 exit 2
 ",
         );
@@ -937,6 +947,7 @@ exit 2
         for leaked in [
             "gpu-box:18777",
             "gpu-box:0443",
+            "node:0443",
             "ws1.local:18777",
             "host.example:0443",
         ] {
@@ -954,6 +965,7 @@ exit 2
         let mdns_lines = "\
 =;eth0;IPv4;büro:41641;_fastlink._tcp;local;buero.local;192.168.55.20;18777;\"os=linux büro.local:41641\" \"arch=x86_64 пример.рф:8080\" \"gpu0_name=RX via bu\u{0308}ro:41641\"\n\
 =;eth0;IPv4;\u{0915}\u{093F}:41641;_fastlink._tcp;local;devanagari.local;192.168.55.22;18779;\"os=linux \u{0915}\u{093F}:0443\" \"arch=x86_64 ①:80\" \"gpu0_name=RX via \u{0915}\u{093F}:41641\"\n\
+=;eth0;IPv4;\u{0E01}\u{0E31}:41641;_fastlink._tcp;local;thai.local;192.168.55.23;18780;\"os=linux \u{0E01}\u{0E31}:0443\" \"arch=x86_64 \u{0E01}\u{0E31}.local:0443\" \"gpu0_name=RX via \u{0E01}\u{0E31}:41641\"\n\
 =;eth0;IPv4;Büro Workstation;_fastlink._tcp;local;buero2.local;192.168.55.21;18778;\"os=linux service:port\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
         write_executable(
             &bin_dir,
@@ -983,10 +995,22 @@ printf '%s\\n' '{mdns_lines}'
             r#"","OS":"linux "#,
             "\u{0915}\u{093F}:41641",
             r#"","Online":true,"TailscaleIPs":["100.64.99.55"]},"#,
+            r#""nodekey:thai":{"ID":"nUniThai","HostName":""#,
+            "\u{0E01}\u{0E31}:41641",
+            r#"","DNSName":""#,
+            "\u{0E01}\u{0E31}.local:0443.",
+            r#"","OS":"linux "#,
+            "\u{0E01}\u{0E31}:0443",
+            r#"","Online":true,"TailscaleIPs":["100.64.99.57"]},"#,
             r#""nodekey:safeunicode":{"ID":"nSafeUni","HostName":"München Node","DNSName":"muenchen.tailnet-example.ts.net.","OS":"linux Qwen2.5:72b","Online":true,"TailscaleIPs":["100.64.99.54"]},"#,
             r#""nodekey:safedevanagari":{"ID":"nSafeDeva","HostName":""#,
             "\u{0915}\u{093F} Node",
-            r#"","DNSName":"deva.tailnet-example.ts.net.","OS":"linux cuda:0","Online":true,"TailscaleIPs":["100.64.99.56"]}"#,
+            r#"","DNSName":"deva.tailnet-example.ts.net.","OS":"linux cuda:0","Online":true,"TailscaleIPs":["100.64.99.56"]},"#,
+            r#""nodekey:safethai":{"ID":"nSafeThai","HostName":""#,
+            "\u{0E01}\u{0E31} Node",
+            r#"","DNSName":"thai.tailnet-example.ts.net.","OS":"linux "#,
+            "\u{0E01}\u{0E31}:port",
+            r#"","Online":true,"TailscaleIPs":["100.64.99.58"]}"#,
             r#"}}"#
         );
         write_executable(
@@ -1023,6 +1047,9 @@ printf '%s\\n' '{ts_payload}'
             "\u{0915}\u{093F}:41641",
             "\u{0915}\u{093F}:0443",
             "\u{0915}\u{093F}.local:0443",
+            "\u{0E01}\u{0E31}:41641",
+            "\u{0E01}\u{0E31}:0443",
+            "\u{0E01}\u{0E31}.local:0443",
             "①:80",
             "büro.local:41641",
             "gpu.bu\u{0308}ro.ts.net:18777",
@@ -1032,20 +1059,25 @@ printf '%s\\n' '{ts_payload}'
             "18777",
             "18778",
             "18779",
+            "18780",
             "0443",
             "8080",
             "buero.local",
             "buero2.local",
             "devanagari.local",
+            "thai.local",
             "192.168.55.20",
             "192.168.55.21",
             "192.168.55.22",
+            "192.168.55.23",
             "100.64.99.51",
             "100.64.99.52",
             "100.64.99.53",
             "100.64.99.54",
             "100.64.99.55",
             "100.64.99.56",
+            "100.64.99.57",
+            "100.64.99.58",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -1069,7 +1101,7 @@ printf '%s\\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 9);
+        assert_eq!(nodes.len(), 12);
 
         let bad_lan_nodes: Vec<&Value> = nodes
             .iter()
@@ -1080,7 +1112,7 @@ printf '%s\\n' '{ts_payload}'
             .collect();
         assert_eq!(
             bad_lan_nodes.len(),
-            2,
+            3,
             "smuggled Unicode LAN nodes should fall back to generic name"
         );
         for bad_lan in bad_lan_nodes {
@@ -1098,7 +1130,7 @@ printf '%s\\n' '{ts_payload}'
             })
             .count();
         assert_eq!(
-            bad_ts_count, 4,
+            bad_ts_count, 5,
             "smuggled Unicode/IDN Tailscale nodes should fall back to generic name with null os"
         );
 
@@ -1125,12 +1157,19 @@ printf '%s\\n' '{ts_payload}'
         assert_eq!(good_deva["os"], "linux cuda:0");
         assert!(text_stdout.contains("\u{0915}\u{093F} Node"));
 
+        let good_thai = nodes
+            .iter()
+            .find(|n| n["display_name"] == "\u{0E01}\u{0E31} Node")
+            .expect("ordinary Thai node without port should not be over-redacted");
+        assert_eq!(good_thai["os"], "linux \u{0E01}\u{0E31}:port");
+        assert!(text_stdout.contains("\u{0E01}\u{0E31} Node"));
+
         // Failing provider stderr containing raw Unicode/IDN endpoints must also never leak.
         write_executable(
             &bin_dir,
             "avahi-browse",
             "#!/bin/sh
-echo 'dial büro:41641 bu\u{0308}ro.local:18777 пример.рф:8080 \u{0915}\u{093F}:41641 ①:80' >&2
+echo 'dial büro:41641 bu\u{0308}ro.local:18777 пример.рф:8080 \u{0915}\u{093F}:41641 \u{0E01}\u{0E31}:41641 ①:80' >&2
 exit 2
 ",
         );
@@ -1138,7 +1177,7 @@ exit 2
             &bin_dir,
             "tailscale",
             "#!/bin/sh
-echo 'dial \u{0915}\u{093F}:0443 gpu-box:18777' >&2
+echo 'dial \u{0915}\u{093F}:0443 \u{0E01}\u{0E31}:0443 gpu-box:18777 node:0443' >&2
 exit 2
 ",
         );
@@ -1164,7 +1203,10 @@ exit 2
             "пример.рф:8080",
             "\u{0915}\u{093F}:41641",
             "\u{0915}\u{093F}:0443",
+            "\u{0E01}\u{0E31}:41641",
+            "\u{0E01}\u{0E31}:0443",
             "gpu-box:18777",
+            "node:0443",
             "①:80",
         ] {
             assert!(!err_json_out.contains(leaked));
