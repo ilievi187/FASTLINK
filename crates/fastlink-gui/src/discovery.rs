@@ -323,7 +323,40 @@ fn looks_like_network_address(token: &str) -> bool {
             return true;
         }
     }
+    if looks_like_dns_host_port(token) {
+        return true;
+    }
     looks_like_mac(token)
+}
+
+/// Detect a narrow endpoint form: a DNS-style dotted hostname followed by a
+/// valid numeric TCP/UDP port. Ordinary DNS names without a port remain usable.
+fn looks_like_dns_host_port(token: &str) -> bool {
+    let Some((host, port)) = token.rsplit_once(':') else {
+        return false;
+    };
+    if port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(port) = port.parse::<u16>() else {
+        return false;
+    };
+    if port == 0 {
+        return false;
+    }
+    let host = host.trim_matches('.');
+    if host.len() > 253 || !host.contains('.') {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 fn looks_like_mac(token: &str) -> bool {
@@ -539,15 +572,19 @@ mod tests {
 
     #[test]
     fn rejects_invalid_provider_records_without_echoing_them() {
-        let address_name = r#"{
-            "schema": "fastlink.discover.v1",
-            "scope": "user_opt_in_lan_tailscale",
-            "providers": [{"provider": "192.168.1.4", "status": "available"}],
-            "nodes": []
-        }"#;
-        let error = parse_discovery_json(address_name).expect_err("must reject");
-        assert_eq!(error, DiscoveryParseError::InvalidProvider { index: 0 });
-        assert!(!error.to_string().contains("192.168.1.4"));
+        for provider in ["192.168.1.4", "gpu-box.tailnet-example.ts.net:41641"] {
+            let json = format!(
+                r#"{{
+                    "schema": "fastlink.discover.v1",
+                    "scope": "user_opt_in_lan_tailscale",
+                    "providers": [{{"provider": "{provider}", "status": "available"}}],
+                    "nodes": []
+                }}"#
+            );
+            let error = parse_discovery_json(&json).expect_err("must reject");
+            assert_eq!(error, DiscoveryParseError::InvalidProvider { index: 0 });
+            assert!(!error.to_string().contains(provider));
+        }
 
         let duplicate = r#"{
             "schema": "fastlink.discover.v1",
@@ -572,6 +609,11 @@ mod tests {
             "fe80::1",
             "aa:bb:cc:dd:ee:ff",
             "https://example.local/device",
+            "gpu-box.tailnet-example.ts.net:41641",
+            "GPU-BOX.TAILNET-EXAMPLE.TS.NET:443",
+            "host.example:65535",
+            "192.168.1.50:41641",
+            "gpu-box.tailnet-example.ts.net:41641/path",
         ] {
             let json = format!(
                 r#"{{
@@ -594,25 +636,80 @@ mod tests {
             assert_eq!(discovery.nodes[0].display_name, None, "{name}");
             assert_eq!(discovery.nodes[0].os, None, "{name}");
             assert_eq!(discovery.nodes[0].arch, None, "{name}");
+            let rendered = crate::view::candidate_rows(&discovery.nodes[0])
+                .into_iter()
+                .map(|row| row.value)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!rendered.contains(name), "{name}");
             assert!(!format!("{:?}", discovery).contains(name), "{name}");
         }
     }
 
     #[test]
+    fn ordinary_dns_display_name_without_port_remains_usable() {
+        let name = "gpu-box.tailnet-example.ts.net";
+        let json = format!(
+            r#"{{
+                "schema": "fastlink.discover.v1",
+                "scope": "user_opt_in_lan_tailscale",
+                "providers": [],
+                "nodes": [{{
+                    "node_id": "candidate-1",
+                    "display_name": "{name}",
+                    "os": "linux",
+                    "arch": "x86_64",
+                    "gpus": [],
+                    "transports": ["lan"],
+                    "worker_state": "unverified",
+                    "trust_state": "unpaired"
+                }}]
+            }}"#
+        );
+        let discovery = parse_discovery_json(&json).expect("ordinary DNS name is allowed");
+        let node = &discovery.nodes[0];
+        assert_eq!(node.display_name.as_deref(), Some(name));
+        assert_eq!(node.os.as_deref(), Some("linux"));
+        assert_eq!(node.arch.as_deref(), Some("x86_64"));
+
+        for label in ["service:443", "version 1.2", "Example LAN device"] {
+            let json = format!(
+                r#"{{
+                    "schema": "fastlink.discover.v1",
+                    "scope": "user_opt_in_lan_tailscale",
+                    "providers": [],
+                    "nodes": [{{
+                        "node_id": "candidate-1",
+                        "display_name": "{label}",
+                        "gpus": [],
+                        "transports": ["lan"]
+                    }}]
+                }}"#
+            );
+            let discovery = parse_discovery_json(&json).expect("ordinary label is allowed");
+            assert_eq!(discovery.nodes[0].display_name.as_deref(), Some(label));
+        }
+    }
+
+    #[test]
     fn address_like_or_malformed_node_id_fails_closed() {
-        let json = r#"{
-            "schema": "fastlink.discover.v1",
-            "scope": "user_opt_in_lan_tailscale",
-            "providers": [],
-            "nodes": [{
-                "node_id": "fe80::1",
-                "gpus": [],
-                "transports": ["lan"]
-            }]
-        }"#;
-        let error = parse_discovery_json(json).expect_err("must fail closed");
-        assert_eq!(error, DiscoveryParseError::InvalidNodeId { index: 0 });
-        assert!(!error.to_string().contains("fe80::1"));
+        for node_id in ["fe80::1", "gpu-box.tailnet-example.ts.net:41641"] {
+            let json = format!(
+                r#"{{
+                    "schema": "fastlink.discover.v1",
+                    "scope": "user_opt_in_lan_tailscale",
+                    "providers": [],
+                    "nodes": [{{
+                        "node_id": "{node_id}",
+                        "gpus": [],
+                        "transports": ["lan"]
+                    }}]
+                }}"#
+            );
+            let error = parse_discovery_json(&json).expect_err("must fail closed");
+            assert_eq!(error, DiscoveryParseError::InvalidNodeId { index: 0 });
+            assert!(!error.to_string().contains(node_id));
+        }
     }
 
     #[test]
