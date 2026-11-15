@@ -323,15 +323,16 @@ fn looks_like_network_address(token: &str) -> bool {
             return true;
         }
     }
-    if looks_like_dns_host_port(token) {
+    if looks_like_host_port(token) {
         return true;
     }
     looks_like_mac(token)
 }
 
-/// Detect a narrow endpoint form: a DNS-style dotted hostname followed by a
-/// valid numeric TCP/UDP port. Ordinary DNS names without a port remain usable.
-fn looks_like_dns_host_port(token: &str) -> bool {
+/// Detect a narrow endpoint form: one or more DNS-style hostname labels
+/// followed by a valid nonzero numeric TCP/UDP port. Names without a port, and
+/// colon labels with nonnumeric or zero ports, remain usable.
+fn looks_like_host_port(token: &str) -> bool {
     let Some((host, port)) = token.rsplit_once(':') else {
         return false;
     };
@@ -345,7 +346,7 @@ fn looks_like_dns_host_port(token: &str) -> bool {
         return false;
     }
     let host = host.trim_matches('.');
-    if host.len() > 253 || !host.contains('.') {
+    if host.is_empty() || host.len() > 253 {
         return false;
     }
     host.split('.').all(|label| {
@@ -572,7 +573,11 @@ mod tests {
 
     #[test]
     fn rejects_invalid_provider_records_without_echoing_them() {
-        for provider in ["192.168.1.4", "gpu-box.tailnet-example.ts.net:41641"] {
+        for provider in [
+            "192.168.1.4",
+            "gpu-box.tailnet-example.ts.net:41641",
+            "gpu-box:18777",
+        ] {
             let json = format!(
                 r#"{{
                     "schema": "fastlink.discover.v1",
@@ -612,6 +617,8 @@ mod tests {
             "gpu-box.tailnet-example.ts.net:41641",
             "GPU-BOX.TAILNET-EXAMPLE.TS.NET:443",
             "host.example:65535",
+            "gpu-box:18777",
+            "localhost:8080",
             "192.168.1.50:41641",
             "gpu-box.tailnet-example.ts.net:41641/path",
         ] {
@@ -672,7 +679,14 @@ mod tests {
         assert_eq!(node.os.as_deref(), Some("linux"));
         assert_eq!(node.arch.as_deref(), Some("x86_64"));
 
-        for label in ["service:443", "version 1.2", "Example LAN device"] {
+        for label in [
+            "cuda:0",
+            "Qwen2.5:72b",
+            "Radeon RX 7900 XT",
+            "service:port",
+            "version 1.2",
+            "Example LAN device",
+        ] {
             let json = format!(
                 r#"{{
                     "schema": "fastlink.discover.v1",
@@ -693,7 +707,11 @@ mod tests {
 
     #[test]
     fn address_like_or_malformed_node_id_fails_closed() {
-        for node_id in ["fe80::1", "gpu-box.tailnet-example.ts.net:41641"] {
+        for node_id in [
+            "fe80::1",
+            "gpu-box.tailnet-example.ts.net:41641",
+            "gpu-box:18777",
+        ] {
             let json = format!(
                 r#"{{
                     "schema": "fastlink.discover.v1",

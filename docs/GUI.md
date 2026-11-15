@@ -184,9 +184,11 @@ Privacy and honesty rules:
   `mac_address`, `peer_ip`, `tailscale_ip`) cause the whole discovery response
   to fail closed. Unknown additive fields are otherwise dropped.
 - Display names that look like IP/MAC/endpoint data are withheld. This includes
-  endpoint-style dotted DNS hostnames with a valid numeric port (for example
-  `gpu-box.tailnet-example.ts.net:41641`) in display names, OS or architecture
-  values. Ordinary DNS display names without a port remain usable. Opaque node
+  endpoint-style DNS-style hostnames with a valid nonzero numeric port, whether
+  single-label or dotted (for example `gpu-box:18777` or
+  `gpu-box.tailnet-example.ts.net:41641`), in display names, OS or architecture
+  values. Ordinary labels such as `cuda:0`, `Qwen2.5:72b`, `Radeon RX 7900 XT`
+  and `service:port`, plus DNS names without a port, remain usable. Opaque node
   IDs are validated against a safe identifier alphabet; unsafe IDs fail closed.
 - Candidate OS/architecture metadata is sanitized, and unknown resource fields
   stay `Unknown`. GPU entries are counted only; their contents are dropped.
@@ -288,9 +290,9 @@ that launch and local refresh never invoke `discover`, an explicit action passes
 `discover --json`, provider/candidate metadata renders honestly, unavailable and
 empty providers are handled, bad schema/address fields fail closed, raw provider
 stderr is not surfaced, and the shared runner timeout remains bounded. Privacy
-regressions cover IP/MAC literals, endpoint-style dotted DNS `host:port` values,
-ordinary DNS names without a port, and safe UI/error rendering without echoed
-endpoints. A Linux regression test starts a fake discovery CLI with a long-lived
+regressions cover IP/MAC literals, endpoint-style single-label and dotted DNS
+`host:port` values, ordinary non-endpoint colon labels (`cuda:0`, `service:port`,
+`Qwen2.5:72b`), and safe UI/error rendering without echoed endpoints. A Linux regression test starts a fake discovery CLI with a long-lived
 provider child, cancels from state, and verifies the CLI and provider PIDs are
 gone promptly. A deterministic drain-window regression sets cancellation after
 the child exits but before buffered output is accepted, proving the completed
