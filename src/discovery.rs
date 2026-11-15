@@ -4,31 +4,38 @@
 //! Keeps raw peer IP/MAC/endpoint details strictly transient and absent from
 //! public types, serialized JSON, logs, and errors.
 
+#[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
-
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::io::{AsRawFd, RawFd};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
-#[cfg(unix)]
-use std::process::ChildStdout;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
+use std::thread;
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
+use serde::Deserialize;
+use serde::Serialize;
 
 pub const DISCOVER_SCHEMA: &str = "fastlink.discover.v1";
 pub const DISCOVER_SCOPE: &str = "user_opt_in_lan_tailscale";
 pub const DEFAULT_PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const POST_EXIT_DRAIN: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +98,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Ephemeral routing info kept strictly inside provider parsing; never serialized
 /// or returned in public discovery output.
 #[allow(dead_code)]
@@ -100,6 +108,7 @@ struct TransientEndpoint {
     port: Option<u16>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 enum CaptureError {
     NotFound,
@@ -110,6 +119,7 @@ enum CaptureError {
     IoFailed,
 }
 
+#[cfg(target_os = "linux")]
 struct ProviderOutput {
     status: ExitStatus,
     stdout: Vec<u8>,
@@ -135,6 +145,56 @@ pub fn discover_with_config(
     config: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
 ) -> DiscoveryReport {
+    #[cfg(target_os = "linux")]
+    {
+        discover_linux(config, cancel)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = config;
+        unsupported_platform_report(cancel)
+    }
+}
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn unsupported_platform_report(cancel: Option<&AtomicBool>) -> DiscoveryReport {
+    let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
+    let (status, lan_msg, ts_msg) = if cancelled {
+        (
+            "cancelled",
+            "mDNS discovery cancelled",
+            "Tailscale discovery cancelled",
+        )
+    } else {
+        (
+            "unavailable",
+            "mDNS discovery is only supported on Linux",
+            "Tailscale discovery is only supported on Linux",
+        )
+    };
+    let mut report = DiscoveryReport {
+        schema: DISCOVER_SCHEMA.to_string(),
+        scope: DISCOVER_SCOPE.to_string(),
+        providers: vec![
+            ProviderStatus {
+                provider: "lan_mdns".to_string(),
+                status: status.to_string(),
+                message: Some(lan_msg.to_string()),
+            },
+            ProviderStatus {
+                provider: "tailscale".to_string(),
+                status: status.to_string(),
+                message: Some(ts_msg.to_string()),
+            },
+        ],
+        nodes: Vec::new(),
+    };
+    enforce_report_redaction(&mut report);
+    report
+}
+
+#[cfg(target_os = "linux")]
+fn discover_linux(config: &DiscoveryConfig, cancel: Option<&AtomicBool>) -> DiscoveryReport {
     let mut providers = Vec::with_capacity(2);
     let mut nodes = Vec::new();
 
@@ -163,8 +223,10 @@ pub fn discover_with_config(
     report
 }
 
+#[cfg(target_os = "linux")]
 const MDNS_SERVICE_TYPE: &str = "_fastlink._tcp";
 
+#[cfg(target_os = "linux")]
 fn run_lan_mdns_provider(
     config: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
@@ -214,6 +276,7 @@ fn run_lan_mdns_provider(
     )
 }
 
+#[cfg(target_os = "linux")]
 fn malformed_mdns_status() -> ProviderStatus {
     ProviderStatus {
         provider: "lan_mdns".to_string(),
@@ -222,6 +285,7 @@ fn malformed_mdns_status() -> ProviderStatus {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_avahi_browse_output(stdout: &str) -> Result<Vec<DiscoveredNode>, ()> {
     let mut nodes_by_id: BTreeMap<String, DiscoveredNode> = BTreeMap::new();
 
@@ -315,6 +379,7 @@ fn parse_avahi_browse_output(stdout: &str) -> Result<Vec<DiscoveredNode>, ()> {
     Ok(nodes_by_id.into_values().collect())
 }
 
+#[cfg(target_os = "linux")]
 fn merge_discovered_node(existing: &mut DiscoveredNode, candidate: DiscoveredNode) {
     if existing.os.is_none() {
         existing.os = candidate.os;
@@ -341,6 +406,7 @@ fn merge_discovered_node(existing: &mut DiscoveredNode, candidate: DiscoveredNod
     }
 }
 
+#[cfg(target_os = "linux")]
 fn split_avahi_fields(line: &str) -> Result<Vec<String>, ()> {
     let mut fields = Vec::new();
     let mut current = String::new();
@@ -366,6 +432,7 @@ fn split_avahi_fields(line: &str) -> Result<Vec<String>, ()> {
     Ok(fields)
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 struct MdnsTxtMetadata {
     node_id: Option<String>,
@@ -377,6 +444,7 @@ struct MdnsTxtMetadata {
     gpus: Vec<DiscoveredGpu>,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_avahi_txt_metadata(raw: &str) -> Result<MdnsTxtMetadata, ()> {
     let entries = parse_avahi_txt_entries(raw)?;
     let mut meta = MdnsTxtMetadata::default();
@@ -430,6 +498,7 @@ fn parse_avahi_txt_metadata(raw: &str) -> Result<MdnsTxtMetadata, ()> {
     Ok(meta)
 }
 
+#[cfg(target_os = "linux")]
 fn parse_gpu_txt_key(key: &str) -> Option<(usize, bool)> {
     let rest = key.strip_prefix("gpu")?;
     if let Some(digits) = rest.strip_suffix("_name") {
@@ -443,6 +512,7 @@ fn parse_gpu_txt_key(key: &str) -> Option<(usize, bool)> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_avahi_txt_entries(raw: &str) -> Result<Vec<(String, String)>, ()> {
     let mut entries = Vec::new();
     let mut chars = raw.chars().peekable();
@@ -486,6 +556,7 @@ fn parse_avahi_txt_entries(raw: &str) -> Result<Vec<(String, String)>, ()> {
     Ok(entries)
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Deserialize)]
 struct TailscaleStatusDoc {
     #[serde(rename = "BackendState")]
@@ -494,6 +565,7 @@ struct TailscaleStatusDoc {
     peer: Option<BTreeMap<String, TailscalePeer>>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Deserialize)]
 struct TailscalePeer {
     #[serde(rename = "ID")]
@@ -516,6 +588,7 @@ struct TailscalePeer {
     addrs: Option<Vec<String>>,
 }
 
+#[cfg(target_os = "linux")]
 fn run_tailscale_provider(
     config: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
@@ -576,7 +649,7 @@ fn run_tailscale_provider(
     let mut nodes = Vec::new();
     if let Some(peers) = doc.peer {
         for (map_key, peer) in peers {
-            if peer.online == Some(false) {
+            if peer.online != Some(true) {
                 continue;
             }
             // Hold raw addresses strictly transiently inside provider scope only.
@@ -641,6 +714,7 @@ fn run_tailscale_provider(
     )
 }
 
+#[cfg(target_os = "linux")]
 fn map_provider_capture_error(provider: &str, label: &str, err: CaptureError) -> ProviderStatus {
     let (status, message) = match err {
         CaptureError::NotFound => ("unavailable", format!("{label} CLI unavailable")),
@@ -659,12 +733,14 @@ fn map_provider_capture_error(provider: &str, label: &str, err: CaptureError) ->
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn opaque_node_id(provider: &str, material: &str) -> String {
     let input = format!("fastlink-discover-v1:{provider}:{material}");
     let hex = blake3::hash(input.as_bytes()).to_hex().to_string();
     hex[..32].to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn sanitize_safe_token(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
@@ -794,6 +870,7 @@ fn contains_mac(text: &str) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
 fn run_bounded_provider(
     program: &Path,
     args: &[&str],
@@ -809,9 +886,8 @@ fn run_bounded_provider(
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    cmd.process_group(0);
+        .stderr(Stdio::null())
+        .process_group(0);
 
     let child = cmd.spawn().map_err(|err| {
         if err.kind() == io::ErrorKind::NotFound {
@@ -824,23 +900,21 @@ fn run_bounded_provider(
     capture_child(child, timeout, max_output_bytes, cancel)
 }
 
+#[cfg(target_os = "linux")]
 fn stop_child(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pgid = child.id();
-        if pgid > 0 {
-            // SAFETY: `process_group(0)` placed `child` and its descendants in group `pgid`,
-            // so signaling `-pgid` kills the entire tree without affecting the caller.
-            unsafe {
-                libc::kill(-(pgid as libc::pid_t), libc::SIGKILL);
-            }
+    let pgid = child.id();
+    if pgid > 0 {
+        // SAFETY: `process_group(0)` placed `child` and its descendants in group `pgid`,
+        // so signaling `-pgid` kills the entire tree without affecting the caller.
+        unsafe {
+            libc::kill(-(pgid as libc::pid_t), libc::SIGKILL);
         }
     }
     let _ = child.kill();
     let _ = child.wait();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn capture_child(
     mut child: Child,
     timeout: Duration,
@@ -913,7 +987,7 @@ fn capture_child(
     })
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct PipeReader {
     fd: RawFd,
     handle: Option<ChildStdout>,
@@ -924,7 +998,7 @@ struct PipeReader {
     cancelled: bool,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl PipeReader {
     fn new(handle: ChildStdout, cap: usize) -> io::Result<Self> {
         let fd = handle.as_raw_fd();
@@ -991,7 +1065,7 @@ impl PipeReader {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: `fd` is an open descriptor owned by the caller.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -1003,58 +1077,6 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn capture_child(
-    mut child: Child,
-    timeout: Duration,
-    max_output_bytes: usize,
-    cancel: Option<&AtomicBool>,
-) -> Result<ProviderOutput, CaptureError> {
-    use std::io::Read;
-    let Some(stdout_handle) = child.stdout.take() else {
-        stop_child(&mut child);
-        return Err(CaptureError::IoFailed);
-    };
-
-    let reader = thread::spawn(move || -> io::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        let mut limited = stdout_handle.take((max_output_bytes as u64).saturating_add(1));
-        limited.read_to_end(&mut buf)?;
-        Ok(buf)
-    });
-
-    let started = Instant::now();
-    let status = loop {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            stop_child(&mut child);
-            return Err(CaptureError::Cancelled);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    stop_child(&mut child);
-                    return Err(CaptureError::Timeout);
-                }
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(_) => {
-                stop_child(&mut child);
-                return Err(CaptureError::IoFailed);
-            }
-        }
-    };
-
-    let stdout = reader
-        .join()
-        .map_err(|_| CaptureError::IoFailed)?
-        .map_err(|_| CaptureError::IoFailed)?;
-    if stdout.len() > max_output_bytes {
-        return Err(CaptureError::OutputLimitExceeded);
-    }
-    Ok(ProviderOutput { status, stdout })
 }
 
 fn enforce_report_redaction(report: &mut DiscoveryReport) {
@@ -1366,5 +1388,32 @@ mod tests {
         let mut bad_schema = valid;
         bad_schema.schema = "fastlink.discover.v0".to_string();
         assert!(render_discovery_json(&bad_schema).is_err());
+    }
+
+    #[test]
+    fn unsupported_platform_report_is_truthful_without_nodes() {
+        let unavailable = unsupported_platform_report(None);
+        assert!(validate_discovery_report(&unavailable).is_ok());
+        assert_eq!(unavailable.providers.len(), 2);
+        assert_eq!(unavailable.providers[0].provider, "lan_mdns");
+        assert_eq!(unavailable.providers[0].status, "unavailable");
+        assert_eq!(
+            unavailable.providers[0].message.as_deref(),
+            Some("mDNS discovery is only supported on Linux")
+        );
+        assert_eq!(unavailable.providers[1].provider, "tailscale");
+        assert_eq!(unavailable.providers[1].status, "unavailable");
+        assert_eq!(
+            unavailable.providers[1].message.as_deref(),
+            Some("Tailscale discovery is only supported on Linux")
+        );
+        assert!(unavailable.nodes.is_empty());
+
+        let cancel = AtomicBool::new(true);
+        let cancelled = unsupported_platform_report(Some(&cancel));
+        assert!(validate_discovery_report(&cancelled).is_ok());
+        assert_eq!(cancelled.providers[0].status, "cancelled");
+        assert_eq!(cancelled.providers[1].status, "cancelled");
+        assert!(cancelled.nodes.is_empty());
     }
 }

@@ -108,6 +108,34 @@ fn library_discover_handles_missing_binaries_and_precancelled_flag_cross_platfor
     assert!(render_discovery_json(&cancelled_report).is_ok());
 }
 
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn unsupported_platform_reports_unavailable_without_spawning_binaries() {
+    let existing_exe = std::env::current_exe().expect("current test executable");
+    let config = DiscoveryConfig {
+        lan_mdns_program: existing_exe.clone(),
+        tailscale_program: existing_exe,
+        timeout: Duration::from_secs(1),
+        max_output_bytes: 16 * 1024,
+    };
+
+    let report = discover_with_config(&config, None);
+    assert_eq!(report.providers[0].provider, "lan_mdns");
+    assert_eq!(report.providers[0].status, "unavailable");
+    assert_eq!(
+        report.providers[0].message.as_deref(),
+        Some("mDNS discovery is only supported on Linux")
+    );
+    assert_eq!(report.providers[1].provider, "tailscale");
+    assert_eq!(report.providers[1].status, "unavailable");
+    assert_eq!(
+        report.providers[1].message.as_deref(),
+        Some("Tailscale discovery is only supported on Linux")
+    );
+    assert!(report.nodes.is_empty());
+    assert!(render_discovery_json(&report).is_ok());
+}
+
 #[cfg(target_os = "linux")]
 mod linux_tests {
     use std::fs;
@@ -285,6 +313,75 @@ printf '%s\n' '{\"BackendState\":\"Stopped\",\"Self\":{\"TailscaleIPs\":[\"100.6
             .expect("unavailable message");
         assert!(msg.contains("Stopped"), "unexpected message: {msg}");
         assert_eq!(doc["nodes"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn tailscale_unknown_online_state_and_offline_peers_are_omitted() {
+        let bin = env!("CARGO_BIN_EXE_fastlink");
+        let bin_dir = temp_dir("ts-online-strict");
+        let payload = r#"{
+  "BackendState": "Running",
+  "Peer": {
+    "nodekey:online": {
+      "ID": "nPeerOn",
+      "HostName": "online-box",
+      "Online": true,
+      "TailscaleIPs": ["100.64.20.1"]
+    },
+    "nodekey:offline": {
+      "ID": "nPeerOff",
+      "HostName": "offline-box",
+      "Online": false,
+      "TailscaleIPs": ["100.64.20.2"]
+    },
+    "nodekey:null": {
+      "ID": "nPeerNull",
+      "HostName": "null-online-box",
+      "Online": null,
+      "TailscaleIPs": ["100.64.20.3"]
+    },
+    "nodekey:omitted": {
+      "ID": "nPeerOmitted",
+      "HostName": "missing-online-box",
+      "TailscaleIPs": ["100.64.20.4"]
+    }
+  }
+}"#;
+        write_executable(
+            &bin_dir,
+            "tailscale",
+            &format!(
+                "#!/bin/sh
+printf '%s\n' '{payload}'
+"
+            ),
+        );
+
+        let output = Command::new(bin)
+            .args(["discover", "--json"])
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover --json");
+        let _ = fs::remove_dir_all(&bin_dir);
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        let doc: Value = serde_json::from_str(&stdout).expect("valid JSON");
+        let nodes = doc["nodes"].as_array().expect("nodes array");
+        assert_eq!(
+            nodes.len(),
+            1,
+            "only Online: true peer should be emitted: {stdout}"
+        );
+        assert_eq!(nodes[0]["display_name"], "online-box");
+        for omitted in [
+            "offline-box",
+            "null-online-box",
+            "missing-online-box",
+            "100.64.20.",
+        ] {
+            assert!(!stdout.contains(omitted), "omitted peer leaked: {omitted}");
+        }
     }
 
     #[test]
