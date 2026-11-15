@@ -48,3 +48,13 @@ Note: Test execution (`cargo test`) is deferred pending explicit owner permissio
   - `tests/auth_node_runtime_test.rs`: 3-stage and single-stage authenticated loopback pipeline tests (compilation + clippy verified; execution pending permission).
 - **Wave 5 (AGY)** — `integrate/fastlink-team`:
   - `src/cluster_orchestrator.rs` + `tests/cluster_orchestrator_test.rs`: Added `ClusterOrchestrator::run_authenticated_inference` wiring `run_authenticated_loopback_pipeline` into the cluster orchestrator.
+
+## Checkpoint 4 — 2026-11-15 (Linux Local Inventory; Desktop GUI In Progress)
+
+- GitHub issue #7 confirmed open: heterogeneous one-model runtime; Linux desktop GUI is the first delivery priority. Keep all large-model, device-count, and tok/s claims unproven until real inference measurements exist.
+- **M1 backend subtask (AGY)** — `feat/linux-device-inventory`, commit `2cbcc843c735307762c5b38d9b777314ccd63f22`, fast-forwarded into `integrate/fastlink-team` and pushed; remote branch verified at the same SHA.
+  - Added passive, local-only `fastlink devices [--json]` with versioned `fastlink.devices.v1`, host CPU/RAM and available Linux DRM GPU metadata, explicit unknown fields, and no network discovery or GPU compute.
+  - Added `tests/devices_test.rs`; commander independently verified `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` (47 passed, 0 failed), and actual `cargo run --quiet -- devices --json` output.
+- **M1 desktop GUI (OpenCode)** — active in isolated worktree `/home/nightknight/Projects/FASTLINK/.worktrees/feat-linux-local-device-ui`, branch `feat/linux-local-device-ui`; eframe/egui shell, headless tests, and honest session-only local opt-in are in progress. No GUI commit/merge accepted yet.
+- Protected-resource snapshot before dispatch: no Heretic or FASTLINK model service running; no GPU inference, model load, or benchmark was started. Existing dirty root worktree remains untouched.
+- Next: finish GUI implementation, align its parser to the committed CLI schema (`nodes[]`, `gpus[]`, `logical_cpu_count`), run gates/build, then review and merge validated GUI changes into this integration branch. No merge to `main` without a separate verified review.
