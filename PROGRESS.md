@@ -13,3 +13,8 @@
 - SHA-256 of source and output matched; byte comparison passed.
 
 **Explicit limitation:** This does not yet accelerate GPU inference; no GPU benchmarks exist for FASTLINK's new Rust transport. This log is not a measure of real RPC performance.
+
+## 2026-11-16 — Release candidate: passive Linux device inventory
+
+- Added `fastlink devices [--json]` with local-only passive host inventory. Unknown capability values remain explicitly unknown; the command does not perform network discovery, start services, or run GPU compute.
+- This release slice contains no LAN/Tailscale discovery, secure worker, llama.cpp inference, or performance claims.
