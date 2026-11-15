@@ -346,17 +346,16 @@ fn looks_like_host_port(token: &str) -> bool {
         return false;
     }
     let host = host.trim_matches('.');
-    if host.is_empty() || host.len() > 253 {
+    if host.is_empty() || host.chars().count() > 253 {
         return false;
     }
     host.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
+        let chars = label.chars().count();
+        chars > 0
+            && chars <= 63
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && label.chars().all(|ch| ch.is_alphanumeric() || ch == '-')
     })
 }
 
@@ -619,6 +618,9 @@ mod tests {
             "host.example:65535",
             "gpu-box:18777",
             "localhost:8080",
+            "büro:41641",
+            "büro.example:0443",
+            "BÜRO:41641",
             "192.168.1.50:41641",
             "gpu-box.tailnet-example.ts.net:41641/path",
         ] {
@@ -686,6 +688,9 @@ mod tests {
             "service:port",
             "version 1.2",
             "Example LAN device",
+            "Büro Rechner",
+            "café",
+            "büro.example",
         ] {
             let json = format!(
                 r#"{{
@@ -711,6 +716,7 @@ mod tests {
             "fe80::1",
             "gpu-box.tailnet-example.ts.net:41641",
             "gpu-box:18777",
+            "büro:41641",
         ] {
             let json = format!(
                 r#"{{
