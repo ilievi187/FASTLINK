@@ -1,6 +1,7 @@
 # Known limitations — pre-alpha
 
 - **CPU-only prototype:** no distributed GPU compute, no llama.cpp adapter, no GPU tensor API.
+- **Desktop shell (pre-alpha):** Linux-verified local device inventory only; opt-in is session-only and not persisted; no pairing, models, chat, inference or remote controls. Requires a FASTLINK build with `devices --json`.
 - No authentication or encryption. Loopback-only listener enforces safe-by-default behavior.
 - Fixed 64 KiB chunks may resend entire blocks for shifted data; content-defined chunking is future work.
 - Simple RLE handles long runs but is ineffective for high-entropy tensors; Zstd/LZ4 experiments are planned.

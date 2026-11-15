@@ -44,6 +44,27 @@ cargo run --release -- send ./examples/hello.txt 127.0.0.1:18778
 
 No unauthorized network access, automatic device discovery, or credential setup is included.
 
+## Desktop shell (Linux, pre-alpha)
+
+`fastlink-gui` is a native Linux desktop shell for the first local-device
+milestone. It invokes `fastlink devices --json` and renders the returned device
+cards, with explicit session-only opt-in and honest empty states for peers,
+models and chat. It performs no discovery, downloads, inference or GPU compute.
+
+```bash
+cargo build -p fastlink-gui
+cargo run -p fastlink-gui -- --fastlink-bin /path/to/fastlink
+# or: FASTLINK_BIN=/path/to/fastlink cargo run -p fastlink-gui
+```
+
+The built binary is `target/debug/fastlink-gui` (`target/release/fastlink-gui`
+with `--release`). The inventory JSON contract, build requirements, headless
+tests and limitations are documented in [Desktop shell](docs/GUI.md).
+
+**Limitation:** the `devices` subcommand is delivered by the separate
+`feat/linux-device-inventory` work. Until that build is used, the GUI shows the
+CLI error and a configuration hint rather than inventing device telemetry.
+
 ## Example baseline (synthetic and highly repetitive)
 
 A local test with an 8 MiB mostly-zero file gave:

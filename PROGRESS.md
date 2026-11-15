@@ -1,5 +1,18 @@
 # Development progress
 
+## 2026-11-15 — Linux local-device desktop shell (`feat/linux-local-device-ui`)
+
+- Added the `fastlink-gui` workspace crate: native eframe/egui desktop shell for the first local-device milestone.
+- Reads the versioned inventory contract by invoking `<FASTLINK_BIN> devices --json` (configurable with `--fastlink-bin` or `FASTLINK_BIN`); the source command is shown in the window.
+- Added device cards (hostname/id, OS, architecture, logical CPU cores, reported total/available RAM, backend, GPU and network entries), manual refresh, device selection and explicit session-only opt-in.
+- Unknown or `null` inventory values render as `Unknown`; empty peer/model/chat areas are labelled as not implemented instead of being populated with synthetic data.
+- Added a bounded worker invocation (20 s timeout), stale-snapshot warning on refresh failure, and honest CLI/JSON/schema error views.
+- Added headless tests: JSON/contract parser, state/opt-in/selection transitions, fake-CLI command execution, and UI rendering of idle/loading/error/stale/empty/long-value screens via `egui::Context::run_ui`.
+- Verified on Linux: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all-targets` (45 existing core tests plus 52 GUI tests) and `cargo build -p fastlink-gui`.
+- Added build/run/test documentation in `docs/GUI.md` and a README section.
+
+**Explicit limitations:** Window rendering uses OpenGL (no CUDA/ROCm compute). Linux is the only verified target. No pairing, models, chat, inference or remote controls exist yet. Inventory calls fail honestly until a FASTLINK build with `devices --json` is selected. Opt-in is session-only and never persisted.
+
 ## 2026-11-05 — M0
 
 - Public GitHub repository established: `ilievi187/FASTLINK`.
