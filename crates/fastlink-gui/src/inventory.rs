@@ -9,10 +9,13 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -28,9 +31,16 @@ pub const DEFAULT_PROGRAM: &str = "fastlink";
 pub const PROGRAM_ENV: &str = "FASTLINK_BIN";
 /// Default upper bound for one inventory invocation.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Hard per-stream capture limit. An inventory document is expected to be tiny;
+/// this bounds memory, disk growth and reader work even for a misbehaving CLI.
+pub const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
+/// How much stderr is retained for a diagnostic message.
+pub const MAX_STDERR_DETAIL_BYTES: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_DETAIL_CHARS: usize = 900;
 const MAX_DETAIL_LINES: usize = 12;
+const MAX_CAPTURE_CREATE_ATTEMPTS: usize = 16;
+static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Top-level inventory document.
 ///
@@ -350,17 +360,33 @@ impl InventoryCommand {
     /// Invoke the inventory command. This is the only place the shell launches
     /// a process; it never opens sockets, scans the network or reads device
     /// state itself.
+    ///
+    /// stdout/stderr are captured into bounded temporary files instead of pipes.
+    /// The kernel drains both streams concurrently, so a chatty CLI cannot fill
+    /// a pipe and deadlock. A grandchild inheriting the file handles cannot keep
+    /// the worker waiting for EOF either: regular-file reads never wait for all
+    /// writers to close. The deadline covers child execution and capture-size
+    /// monitoring; reading is capped at [`MAX_CAPTURE_BYTES`].
     pub fn run(&self) -> Result<DeviceInventory, LoadError> {
+        let mut captures = CaptureFiles::create()
+            .map_err(|err| self.capture_error("create output capture", err))?;
+        let stdout = captures
+            .stdout_stdio()
+            .map_err(|err| self.capture_error("prepare stdout capture", err))?;
+        let stderr = captures
+            .stderr_stdio()
+            .map_err(|err| self.capture_error("prepare stderr capture", err))?;
+
         let child = Command::new(&self.program)
             .args(["devices", "--json"])
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()
             .map_err(|err| self.spawn_error(&err))?;
 
-        let output = match wait_with_timeout(child, self.timeout) {
-            Ok(output) => output,
+        let status = match wait_with_timeout(child, self.timeout, &captures) {
+            Ok(status) => status,
             Err(WaitError::Timeout) => {
                 return Err(LoadError::new(format!(
                     "`{}` did not finish within {} s",
@@ -371,6 +397,9 @@ impl InventoryCommand {
                     "The GUI refuses to hang forever. Check that the FASTLINK CLI is not waiting on input or on a network resource.",
                 ));
             }
+            Err(WaitError::CaptureLimit { stream, observed }) => {
+                return Err(self.capture_limit_error(stream, observed));
+            }
             Err(WaitError::Io(err)) => {
                 return Err(LoadError::new(format!(
                     "could not wait for `{}`: {err}",
@@ -379,31 +408,85 @@ impl InventoryCommand {
             }
         };
 
-        if !output.status.success() {
-            return Err(self.exit_error(output.status, &output.stderr));
+        // A grandchild may still grow a capture after the owned child exits.
+        if let Some((stream, observed)) = captures
+            .oversized()
+            .map_err(|err| self.capture_error("inspect output capture", err))?
+        {
+            return Err(self.capture_limit_error(stream, observed));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !status.success() {
+            let stderr = captures
+                .read_stderr_detail()
+                .map_err(|err| self.capture_error("read stderr capture", err))?;
+            return Err(self.exit_error(status, &stderr));
+        }
+
+        let (stdout, stdout_total, stdout_truncated) = captures
+            .read_stdout()
+            .map_err(|err| self.capture_error("read stdout capture", err))?;
+        if stdout_truncated {
+            return Err(self.capture_limit_error("stdout", stdout_total));
+        }
+        let stdout = String::from_utf8_lossy(&stdout);
         if stdout.trim().is_empty() {
+            let stderr = captures
+                .read_stderr_detail()
+                .map_err(|err| self.capture_error("read stderr capture", err))?;
             return Err(
                 LoadError::new(format!("`{}` produced no JSON", self.command_line()))
                     .with_hint(
                         "The inventory command must print the versioned JSON document to stdout.",
                     )
-                    .with_detail(String::from_utf8_lossy(&output.stderr).into_owned()),
+                    .with_detail(stderr.as_detail_text()),
             );
         }
 
         parse_inventory_json(&stdout).map_err(|err| {
+            let mut detail = err.to_string();
+            match captures.read_stderr_detail() {
+                Ok(stderr) if !stderr.bytes.is_empty() => {
+                    detail.push_str("\nstderr: ");
+                    detail.push_str(&stderr.as_detail_text());
+                }
+                Ok(_) => {}
+                Err(read_err) => {
+                    detail.push_str(&format!(
+                        "\n(could not read stderr capture: {read_err})"
+                    ));
+                }
+            }
             LoadError::new(format!(
                 "`{}` did not return a {SUPPORTED_SCHEMA} inventory",
                 self.command_line()
             ))
-            .with_detail(err.to_string())
+            .with_detail(detail)
             .with_hint(
                 "Check the JSON contract in docs/GUI.md and make sure the CLI and GUI schema versions match.",
             )
         })
+    }
+
+    fn capture_error(&self, action: &str, err: std::io::Error) -> LoadError {
+        LoadError::new(format!(
+            "could not {action} for `{}`: {err}",
+            self.command_line()
+        ))
+        .with_hint("Check that the system temporary directory is writable and has space.")
+    }
+
+    fn capture_limit_error(&self, stream: &str, observed: u64) -> LoadError {
+        LoadError::new(format!(
+            "`{}` exceeded the {MAX_CAPTURE_BYTES} byte {stream} capture limit",
+            self.command_line()
+        ))
+        .with_detail(format!(
+            "Observed at least {observed} bytes in the {stream} capture."
+        ))
+        .with_hint(
+            "A FASTLINK inventory should be small. Run the CLI directly and look for debug logging or runaway diagnostics.",
+        )
     }
 
     fn spawn_error(&self, err: &std::io::Error) -> LoadError {
@@ -419,12 +502,12 @@ impl InventoryCommand {
         }
     }
 
-    fn exit_error(&self, status: ExitStatus, stderr: &[u8]) -> LoadError {
-        let stderr = String::from_utf8_lossy(stderr);
+    fn exit_error(&self, status: ExitStatus, stderr: &StderrDetail) -> LoadError {
+        let stderr_text = String::from_utf8_lossy(&stderr.bytes);
         let mut error = LoadError::new(format!("`{}` failed ({status})", self.command_line()))
-            .with_detail(stderr.clone().into_owned());
+            .with_detail(stderr.as_detail_text());
 
-        let lower = stderr.to_lowercase();
+        let lower = stderr_text.to_lowercase();
         let missing_subcommand = lower.contains("unrecognized subcommand")
             || lower.contains("unexpected argument")
             || lower.contains("unknown subcommand")
@@ -445,33 +528,232 @@ impl InventoryCommand {
 #[derive(Debug)]
 enum WaitError {
     Timeout,
+    CaptureLimit { stream: &'static str, observed: u64 },
     Io(std::io::Error),
+}
+
+impl From<std::io::Error> for WaitError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
 }
 
 fn wait_with_timeout(
     mut child: Child,
     timeout: Duration,
-) -> Result<std::process::Output, WaitError> {
+    captures: &CaptureFiles,
+) -> Result<ExitStatus, WaitError> {
     let started = Instant::now();
     loop {
+        match captures.oversized() {
+            Ok(Some((stream, observed))) => {
+                stop_child(&mut child);
+                return Err(WaitError::CaptureLimit { stream, observed });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                stop_child(&mut child);
+                return Err(WaitError::Io(err));
+            }
+        }
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => {
+                if let Some((stream, observed)) = captures.oversized()? {
+                    return Err(WaitError::CaptureLimit { stream, observed });
+                }
+                return Ok(status);
+            }
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop_child(&mut child);
                     return Err(WaitError::Timeout);
                 }
                 thread::sleep(POLL_INTERVAL);
             }
             Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_child(&mut child);
                 return Err(WaitError::Io(err));
             }
         }
     }
-    child.wait_with_output().map_err(WaitError::Io)
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Bounded regular-file capture for child stdout/stderr.
+///
+/// `File` handles left open by grandchildren never block reads. Files are
+/// removed on drop even when the child failed or timed out.
+#[derive(Debug)]
+struct CaptureFiles {
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+    stdout: Option<File>,
+    stderr: Option<File>,
+}
+
+#[derive(Debug)]
+struct StderrDetail {
+    bytes: Vec<u8>,
+    total: u64,
+    truncated: bool,
+}
+
+impl StderrDetail {
+    fn as_detail_text(&self) -> String {
+        let mut text = String::new();
+        if self.truncated {
+            text.push_str(&format!(
+                "(stderr truncated; showing {} of {} bytes)\n",
+                self.bytes.len(),
+                self.total
+            ));
+        }
+        text.push_str(&String::from_utf8_lossy(&self.bytes));
+        text
+    }
+}
+
+impl CaptureFiles {
+    fn create() -> std::io::Result<Self> {
+        let mut last_error = None;
+        for _ in 0..MAX_CAPTURE_CREATE_ATTEMPTS {
+            let id = NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            let base = format!("fastlink-gui-inventory-{}-{nanos}-{id}", std::process::id());
+            let stdout_path = std::env::temp_dir().join(format!("{base}.stdout"));
+            let stderr_path = std::env::temp_dir().join(format!("{base}.stderr"));
+
+            let stdout = match open_capture_file(&stdout_path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(err);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let stderr = match open_capture_file(&stderr_path) {
+                Ok(file) => file,
+                Err(err) => {
+                    drop(stdout);
+                    let _ = fs::remove_file(&stdout_path);
+                    if err.kind() == std::io::ErrorKind::AlreadyExists {
+                        last_error = Some(err);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
+
+            return Ok(Self {
+                stdout_path,
+                stderr_path,
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+            });
+        }
+        Err(last_error
+            .unwrap_or_else(|| std::io::Error::other("could not create a unique capture file")))
+    }
+
+    fn stdout_stdio(&self) -> std::io::Result<Stdio> {
+        Ok(Stdio::from(self.stdout_file()?.try_clone()?))
+    }
+
+    fn stderr_stdio(&self) -> std::io::Result<Stdio> {
+        Ok(Stdio::from(self.stderr_file()?.try_clone()?))
+    }
+
+    fn stdout_file(&self) -> std::io::Result<&File> {
+        self.stdout
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("stdout capture is not open"))
+    }
+
+    fn stderr_file(&self) -> std::io::Result<&File> {
+        self.stderr
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("stderr capture is not open"))
+    }
+
+    fn stdout_size(&self) -> std::io::Result<u64> {
+        Ok(self.stdout_file()?.metadata()?.len())
+    }
+
+    fn stderr_size(&self) -> std::io::Result<u64> {
+        Ok(self.stderr_file()?.metadata()?.len())
+    }
+
+    fn oversized(&self) -> std::io::Result<Option<(&'static str, u64)>> {
+        let stdout = self.stdout_size()?;
+        if stdout > MAX_CAPTURE_BYTES {
+            return Ok(Some(("stdout", stdout)));
+        }
+        let stderr = self.stderr_size()?;
+        if stderr > MAX_CAPTURE_BYTES {
+            return Ok(Some(("stderr", stderr)));
+        }
+        Ok(None)
+    }
+
+    fn read_stdout(&mut self) -> std::io::Result<(Vec<u8>, u64, bool)> {
+        let file = self
+            .stdout
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("stdout capture is not open"))?;
+        read_capped(file, MAX_CAPTURE_BYTES)
+    }
+
+    fn read_stderr_detail(&mut self) -> std::io::Result<StderrDetail> {
+        let file = self
+            .stderr
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("stderr capture is not open"))?;
+        let (bytes, total, truncated) = read_capped(file, MAX_STDERR_DETAIL_BYTES as u64)?;
+        Ok(StderrDetail {
+            bytes,
+            total,
+            truncated,
+        })
+    }
+}
+
+impl Drop for CaptureFiles {
+    fn drop(&mut self) {
+        drop(self.stdout.take());
+        drop(self.stderr.take());
+        let _ = fs::remove_file(&self.stdout_path);
+        let _ = fs::remove_file(&self.stderr_path);
+    }
+}
+
+fn read_capped(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64, bool)> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    let total = file.metadata()?.len();
+    let truncated = bytes.len() as u64 > limit || total > limit;
+    if bytes.len() as u64 > limit {
+        bytes.truncate(limit as usize);
+    }
+    let observed = total.max(bytes.len() as u64);
+    Ok((bytes, observed, truncated))
+}
+
+fn open_capture_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Keep stderr useful but bounded: first lines, first characters, no control

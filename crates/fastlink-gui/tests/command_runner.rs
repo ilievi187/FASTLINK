@@ -10,6 +10,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -210,6 +211,197 @@ fn hanging_inventory_is_bounded_by_the_timeout() {
 
     assert!(error.summary.contains("did not finish"), "{error:?}");
     assert!(elapsed < Duration::from_secs(4), "took {elapsed:?}");
+}
+
+#[test]
+fn large_stdout_and_stderr_above_pipe_capacity_are_drained_and_parsed() {
+    let _guard = serial();
+    let dir = TempDir::new("large-streams");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+head -c 131072 /dev/zero | tr '\\0' 'E' >&2
+head -c 131072 /dev/zero | tr '\\0' ' '
+cat <<'JSON'
+{FIXTURE}JSON
+"
+        ),
+    );
+
+    let started = Instant::now();
+    let inventory = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect("large-but-bounded stdout/stderr must not deadlock");
+    let elapsed = started.elapsed();
+
+    assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+    assert_eq!(inventory.nodes.len(), 1);
+    assert_eq!(
+        inventory.local_node_id(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "capture took {elapsed:?}; pipe draining likely deadlocked"
+    );
+}
+
+#[test]
+fn oversized_stdout_is_rejected_deterministically() {
+    let _guard = serial();
+    let dir = TempDir::new("oversized-stdout");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+head -c 2097152 /dev/zero | tr '\\0' ' '
+cat <<'JSON'
+{FIXTURE}JSON
+"
+        ),
+    );
+
+    let started = Instant::now();
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect_err("oversized stdout must fail");
+    let elapsed = started.elapsed();
+
+    assert!(error.summary.contains("capture limit"), "{error:?}");
+    assert!(!error.summary.contains("did not finish"), "{error:?}");
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[test]
+fn oversized_stderr_is_rejected_deterministically() {
+    let _guard = serial();
+    let dir = TempDir::new("oversized-stderr");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+head -c 2097152 /dev/zero | tr '\\0' 'E' >&2
+cat <<'JSON'
+{FIXTURE}JSON
+"
+        ),
+    );
+
+    let started = Instant::now();
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect_err("oversized stderr must fail");
+    let elapsed = started.elapsed();
+
+    assert!(error.summary.contains("capture limit"), "{error:?}");
+    assert!(!error.summary.contains("did not finish"), "{error:?}");
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[test]
+fn exit_stderr_is_retained_with_a_truncation_marker() {
+    let _guard = serial();
+    let dir = TempDir::new("stderr-truncated");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        "#!/bin/sh
+head -c 131072 /dev/zero | tr '\\0' 'E' >&2
+exit 3
+",
+    );
+
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect_err("nonzero exit must fail");
+    assert!(error.summary.contains("failed"), "{error:?}");
+    let detail = error.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("stderr truncated"), "{detail}");
+    assert!(!error.summary.contains("did not finish"), "{error:?}");
+}
+
+#[test]
+fn timeout_kills_the_owned_child_process() {
+    let _guard = serial();
+    let dir = TempDir::new("timeout-kill");
+    let pidfile = dir.path().join("child.pid");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+echo $$ > '{}'
+exec sleep 5
+",
+            pidfile.display()
+        ),
+    );
+
+    let error = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_millis(250))
+        .run()
+        .expect_err("must time out");
+    assert!(error.summary.contains("did not finish"), "{error:?}");
+
+    let pid = fs::read_to_string(&pidfile).expect("pid file");
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("kill -0 {} 2>/dev/null", pid.trim()))
+        .status()
+        .expect("run kill -0");
+    assert!(
+        !status.success(),
+        "owned child is still running after timeout"
+    );
+}
+
+#[test]
+fn inherited_stream_holder_does_not_block_after_child_exit() {
+    let _guard = serial();
+    let dir = TempDir::new("grandchild");
+    let pidfile = dir.path().join("grandchild.pid");
+    let script = write_script(
+        dir.path(),
+        "fastlink",
+        &format!(
+            "#!/bin/sh
+sleep 2 &
+echo $! > '{}'
+cat <<'JSON'
+{FIXTURE}JSON
+",
+            pidfile.display()
+        ),
+    );
+
+    let started = Instant::now();
+    let inventory = InventoryCommand::new(&script)
+        .with_timeout(Duration::from_secs(3))
+        .run()
+        .expect("a grandchild holding the output must not block the worker");
+    let elapsed = started.elapsed();
+
+    assert_eq!(inventory.schema, SUPPORTED_SCHEMA);
+    assert_eq!(inventory.nodes.len(), 1);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "worker waited {elapsed:?} for an inherited output holder"
+    );
+
+    if let Ok(pid) = fs::read_to_string(&pidfile) {
+        let _ = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill {} 2>/dev/null || true", pid.trim()))
+            .status();
+    }
 }
 
 /// This test is intentionally environment-gated: `cargo test` must pass in
