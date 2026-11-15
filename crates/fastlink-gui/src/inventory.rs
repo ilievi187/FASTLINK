@@ -285,6 +285,13 @@ pub struct LoadError {
     pub hint: Option<String>,
 }
 
+/// Captured result of one bounded CLI invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandOutput {
+    pub stdout: String,
+    pub stderr_detail: String,
+}
+
 impl LoadError {
     #[must_use]
     pub fn new(summary: impl Into<String>) -> Self {
@@ -389,32 +396,16 @@ impl InventoryCommand {
     /// polling. It is best-effort, not a hard OS-level bound; Linux is the
     /// supported runtime for this milestone.
     pub fn run(&self) -> Result<DeviceInventory, LoadError> {
-        let captured = self.invoke_child()?;
-
-        if !captured.status.success() {
-            return Err(self.exit_error(captured.status, &captured.stderr));
-        }
-
-        let stdout = String::from_utf8_lossy(&captured.stdout);
-        if stdout.trim().is_empty() {
-            return Err(
-                LoadError::new(format!("`{}` produced no JSON", self.command_line()))
-                    .with_hint(
-                        "The inventory command must print the versioned JSON document to stdout.",
-                    )
-                    .with_detail(captured.stderr.as_detail_text()),
-            );
-        }
-
-        parse_inventory_json(&stdout).map_err(|err| {
+        let command_line = self.command_line();
+        let output = self.run_capture(&["devices", "--json"], &command_line)?;
+        parse_inventory_json(&output.stdout).map_err(|err| {
             let mut detail = err.to_string();
-            if !captured.stderr.bytes.is_empty() {
+            if !output.stderr_detail.is_empty() {
                 detail.push_str("\nstderr: ");
-                detail.push_str(&captured.stderr.as_detail_text());
+                detail.push_str(&output.stderr_detail);
             }
             LoadError::new(format!(
-                "`{}` did not return a {SUPPORTED_SCHEMA} inventory",
-                self.command_line()
+                "`{command_line}` did not return a {SUPPORTED_SCHEMA} inventory"
             ))
             .with_detail(detail)
             .with_hint(
@@ -423,51 +414,78 @@ impl InventoryCommand {
         })
     }
 
+    /// Shared bounded command invocation used by both local inventory and
+    /// explicit discovery. It enforces the same timeout, output cap, child
+    /// cleanup and stall handling, but leaves JSON parsing to the caller.
+    pub(crate) fn run_capture(
+        &self,
+        args: &[&str],
+        command_line: &str,
+    ) -> Result<CommandOutput, LoadError> {
+        let captured = self.invoke_child(args, command_line)?;
+
+        if !captured.status.success() {
+            return Err(self.exit_error(command_line, captured.status, &captured.stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&captured.stdout).into_owned();
+        if stdout.trim().is_empty() {
+            return Err(LoadError::new(format!("`{command_line}` produced no JSON"))
+                .with_hint("The requested FASTLINK command must print its JSON document to stdout.")
+                .with_detail(captured.stderr.as_detail_text()));
+        }
+
+        Ok(CommandOutput {
+            stdout,
+            stderr_detail: captured.stderr.as_detail_text(),
+        })
+    }
+
     #[cfg(unix)]
-    fn invoke_child(&self) -> Result<CapturedOutput, LoadError> {
+    fn invoke_child(&self, args: &[&str], command_line: &str) -> Result<CapturedOutput, LoadError> {
         let child = Command::new(&self.program)
-            .args(["devices", "--json"])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|err| self.spawn_error(&err))?;
+            .map_err(|err| self.spawn_error(command_line, &err))?;
 
-        capture_child_unix(child, self.timeout).map_err(|err| self.wait_error(err))
+        capture_child_unix(child, self.timeout).map_err(|err| self.wait_error(command_line, err))
     }
 
     #[cfg(not(unix))]
-    fn invoke_child(&self) -> Result<CapturedOutput, LoadError> {
+    fn invoke_child(&self, args: &[&str], command_line: &str) -> Result<CapturedOutput, LoadError> {
         let mut captures = CaptureFiles::create()
-            .map_err(|err| self.capture_error("create output capture", err))?;
+            .map_err(|err| self.capture_error(command_line, "create output capture", err))?;
         let stdout = captures
             .stdout_stdio()
-            .map_err(|err| self.capture_error("prepare stdout capture", err))?;
+            .map_err(|err| self.capture_error(command_line, "prepare stdout capture", err))?;
         let stderr = captures
             .stderr_stdio()
-            .map_err(|err| self.capture_error("prepare stderr capture", err))?;
+            .map_err(|err| self.capture_error(command_line, "prepare stderr capture", err))?;
 
         let child = Command::new(&self.program)
-            .args(["devices", "--json"])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
-            .map_err(|err| self.spawn_error(&err))?;
+            .map_err(|err| self.spawn_error(command_line, &err))?;
 
         let status = wait_with_timeout_file(child, self.timeout, &captures)
-            .map_err(|err| self.wait_error(err))?;
+            .map_err(|err| self.wait_error(command_line, err))?;
 
         if let Some((stream, observed)) = captures
             .oversized()
-            .map_err(|err| self.capture_error("inspect output capture", err))?
+            .map_err(|err| self.capture_error(command_line, "inspect output capture", err))?
         {
-            return Err(self.capture_limit_error(stream, observed));
+            return Err(self.capture_limit_error(command_line, stream, observed));
         }
 
         let stderr = captures
             .read_stderr_detail()
-            .map_err(|err| self.capture_error("read stderr capture", err))?;
+            .map_err(|err| self.capture_error(command_line, "read stderr capture", err))?;
         if !status.success() {
             return Ok(CapturedOutput {
                 status,
@@ -478,9 +496,9 @@ impl InventoryCommand {
 
         let (stdout, stdout_total, stdout_truncated) = captures
             .read_stdout()
-            .map_err(|err| self.capture_error("read stdout capture", err))?;
+            .map_err(|err| self.capture_error(command_line, "read stdout capture", err))?;
         if stdout_truncated {
-            return Err(self.capture_limit_error("stdout", stdout_total));
+            return Err(self.capture_limit_error(command_line, "stdout", stdout_total));
         }
 
         Ok(CapturedOutput {
@@ -490,51 +508,52 @@ impl InventoryCommand {
         })
     }
 
-    fn wait_error(&self, err: WaitError) -> LoadError {
+    fn wait_error(&self, command_line: &str, err: WaitError) -> LoadError {
         match err {
-            WaitError::Timeout => LoadError::new(format!(
-                "`{}` did not finish within {} s",
-                self.command_line(),
-                self.timeout.as_secs_f32()
-            ))
-            .with_hint(
-                "The GUI refuses to hang forever. Check that the FASTLINK CLI is not waiting on input or on a network resource.",
-            ),
+            WaitError::Timeout => {
+                let summary = format!(
+                    "`{command_line}` did not finish within {} s",
+                    self.timeout.as_secs_f32()
+                );
+                if command_line.contains(" discover ") {
+                    LoadError::new("Discovery timed out before a safe result was received.")
+                        .with_detail(summary)
+                } else {
+                    LoadError::new(summary).with_hint(
+                        "The GUI refuses to hang forever. Check that the FASTLINK CLI is not waiting on input or on a network resource.",
+                    )
+                }
+            }
             WaitError::CaptureLimit { stream, observed } => {
-                self.capture_limit_error(stream, observed)
+                self.capture_limit_error(command_line, stream, observed)
             }
             WaitError::Io(err) => LoadError::new(format!(
-                "could not read output from `{}`: {err}",
-                self.command_line()
+                "could not read output from `{command_line}`: {err}"
             ))
             .with_hint("Run the CLI directly to inspect the failure."),
         }
     }
 
     #[cfg(not(unix))]
-    fn capture_error(&self, action: &str, err: std::io::Error) -> LoadError {
-        LoadError::new(format!(
-            "could not {action} for `{}`: {err}",
-            self.command_line()
-        ))
-        .with_hint("Check that the system temporary directory is writable and has space.")
+    fn capture_error(&self, command_line: &str, action: &str, err: std::io::Error) -> LoadError {
+        LoadError::new(format!("could not {action} for `{command_line}`: {err}"))
+            .with_hint("Check that the system temporary directory is writable and has space.")
     }
 
-    fn capture_limit_error(&self, stream: &str, observed: u64) -> LoadError {
+    fn capture_limit_error(&self, command_line: &str, stream: &str, observed: u64) -> LoadError {
         LoadError::new(format!(
-            "`{}` exceeded the {MAX_CAPTURE_BYTES} byte {stream} capture limit",
-            self.command_line()
+            "`{command_line}` exceeded the {MAX_CAPTURE_BYTES} byte {stream} capture limit"
         ))
         .with_detail(format!(
             "Observed at least {observed} bytes in the {stream} capture."
         ))
         .with_hint(
-            "A FASTLINK inventory should be small. Run the CLI directly and look for debug logging or runaway diagnostics.",
+            "A FASTLINK inventory or discovery document should be small. Run the CLI directly and look for debug logging or runaway diagnostics.",
         )
     }
 
-    fn spawn_error(&self, err: &std::io::Error) -> LoadError {
-        let error = LoadError::new(format!("could not start `{}`: {err}", self.command_line()));
+    fn spawn_error(&self, command_line: &str, err: &std::io::Error) -> LoadError {
+        let error = LoadError::new(format!("could not start `{command_line}`: {err}"));
         if err.kind() == std::io::ErrorKind::NotFound {
             error
                 .with_hint(format!(
@@ -546,20 +565,31 @@ impl InventoryCommand {
         }
     }
 
-    fn exit_error(&self, status: ExitStatus, stderr: &StderrDetail) -> LoadError {
+    fn exit_error(
+        &self,
+        command_line: &str,
+        status: ExitStatus,
+        stderr: &StderrDetail,
+    ) -> LoadError {
         let stderr_text = String::from_utf8_lossy(&stderr.bytes);
-        let mut error = LoadError::new(format!("`{}` failed ({status})", self.command_line()))
+        let mut error = LoadError::new(format!("`{command_line}` failed ({status})"))
             .with_detail(stderr.as_detail_text());
 
         let lower = stderr_text.to_lowercase();
         let missing_subcommand = lower.contains("unrecognized subcommand")
             || lower.contains("unexpected argument")
             || lower.contains("unknown subcommand")
-            || (lower.contains("usage") && lower.contains("devices"));
+            || (lower.contains("usage") && lower.contains("devices"))
+            || (lower.contains("usage") && lower.contains("discover"));
         if missing_subcommand {
-            error = error.with_hint(
-                "This FASTLINK binary may not implement `devices --json` yet. Point --fastlink-bin at an updated build.",
-            );
+            let requested = if command_line.contains(" discover ") {
+                "discover --json"
+            } else {
+                "devices --json"
+            };
+            error = error.with_hint(format!(
+                "This FASTLINK binary may not implement `{requested}` yet. Point --fastlink-bin at an updated build."
+            ));
         } else {
             error = error.with_hint(
                 "Run the same command in a terminal to see the full CLI error, or select another binary.",

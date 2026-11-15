@@ -6,12 +6,21 @@ local-device opt-in**. It is a native desktop binary (`fastlink-gui`) built with
 Rust, [egui](https://github.com/emilk/egui) and eframe.
 
 **Status: pre-alpha.** The shell is aligned with the implemented
-`fastlink devices --json` backend (`fastlink.devices.v1`).
+`fastlink devices --json` inventory. It also consumes the opt-in
+`fastlink.discover.v1` contract behind an explicit **Discover devices** action;
+the backend CLI in this integration base does not implement `discover` yet, so
+that action fails closed with a safe error until a supporting CLI is supplied.
 
 ## What it does
 
-- Invokes exactly one command: `<FASTLINK CLI> devices --json`.
+- Invokes `<FASTLINK CLI> devices --json` on startup/Refresh for local inventory.
+- Invokes `<FASTLINK CLI> discover --json` **only** after the user clicks
+  **Discover devices**. It never runs on app launch, local inventory refresh,
+  background timers, or provider listing.
 - Parses the implemented `fastlink.devices.v1` local-only inventory.
+- Parses `fastlink.discover.v1` from the M2 opt-in discovery contract:
+  `user_opt_in_lan_tailscale` scope, provider availability, and unverified
+  candidate metadata.
 - Treats the sole node in `scope:"local_only"` as the local device.
 - Preserves the backend's opaque hashed `node_id`; it never expects a literal
   `"local"` id and never rewrites the hash.
@@ -31,12 +40,16 @@ Rust, [egui](https://github.com/emilk/egui) and eframe.
 
 ## What it does not do
 
-- No network scanning, discovery, listening sockets or pairing.
+- No automatic or background discovery. The discover command is click-only.
+- No pairing, trust establishment or remote controls. Every discovery candidate
+  is labelled unpaired and unverified; there is no Pair button.
+- No address, IP, endpoint, MAC, raw Tailscale peer address or raw provider
+  error text is displayed, logged, persisted or committed.
 - No model catalog, model download, inference or chat.
-- No remote-device controls. Opt-in exists only for the local node.
 - No CUDA/ROCm compute or GPU benchmark work. The integration tests are
   CPU/software headless tests and do not launch a GUI window.
-- No persistence: selection and opt-in are discarded when the window closes.
+- No persistence: selection, local opt-in, discovery results and errors are
+  discarded when the window closes.
 
 Window rendering uses the normal OpenGL driver through eframe's glow backend;
 that is UI rendering, not FASTLINK compute.
@@ -116,6 +129,75 @@ A sanitized fixture with the exact backend field set and JSON layout lives at
 node hashes and GPU identifiers are never committed; the fixture uses synthetic
 values with the same types.
 
+## Opt-in discovery (M2 slice)
+
+The GUI exposes an explicit **Discover devices** button below the local device
+view. Clicking it runs exactly:
+
+```bash
+<FASTLINK CLI> discover --json
+```
+
+The command uses the same `--fastlink-bin` / `FASTLINK_BIN` / `PATH` selection,
+bounded process runner, timeout, output cap and cleanup as local inventory.
+There is no discovery at launch, on local **Refresh**, on a timer, or from the
+provider list. After a run finishes, the same button acts as a refresh action.
+
+The sanitized contract shape is:
+
+```json
+{
+  "schema": "fastlink.discover.v1",
+  "scope": "user_opt_in_lan_tailscale",
+  "providers": [
+    {"provider": "lan_mdns", "status": "available", "message": null},
+    {"provider": "tailscale", "status": "unavailable", "message": "safe class only"}
+  ],
+  "nodes": [
+    {
+      "node_id": "opaque-id",
+      "display_name": "Example device",
+      "os": null,
+      "arch": null,
+      "logical_cpu_count": null,
+      "ram_total_bytes": null,
+      "ram_available_bytes": null,
+      "gpus": [],
+      "transports": ["lan"],
+      "worker_state": "unverified",
+      "trust_state": "unpaired"
+    }
+  ]
+}
+```
+
+Privacy and honesty rules:
+
+- Only `available`, `unavailable` and unknown provider statuses are shown.
+  Provider `message` values are discarded and never rendered: they may contain
+  raw provider error text or addresses.
+- Address-like fields (`ip`, `addr`, `address`, `endpoint`, `mac`,
+  `mac_address`, `peer_ip`, `tailscale_ip`) cause the whole discovery response
+  to fail closed. Unknown additive fields are otherwise dropped.
+- Display names that look like IP/MAC/endpoint data are withheld. Opaque node IDs
+  are validated against a safe identifier alphabet; unsafe IDs fail closed.
+- Candidate OS/architecture metadata is sanitized, and unknown resource fields
+  stay `Unknown`. GPU entries are counted only; their contents are dropped.
+- Every candidate is labelled **Unpaired · unverified**. Pairing is not
+  implemented, so there is no Pair button and no candidate enters a scheduler or
+  worker-ready state.
+- A Tailscale transport label is not evidence of a FASTLINK worker. The UI says
+  this explicitly on every tailnet candidate.
+- Invalid schema/scope, forbidden address fields, malformed JSON, oversized
+  arrays, unsafe candidates or command failures produce a fixed safe error with
+  no raw stderr, provider text, addresses or candidates.
+- Discovery results and errors are in-memory only and disappear when the window
+  closes.
+
+A sanitized discovery fixture lives at
+`crates/fastlink-gui/testdata/discovery-v1.json`. All provider names, candidate
+names and IDs are synthetic.
+
 ## Requirements
 
 - Linux with X11 or Wayland and an OpenGL driver.
@@ -194,6 +276,13 @@ Additional deterministic pipe tests inject a poll interval longer than the
 timeout to prove that output from a child which completed just after the
 deadline is still drained and capped, including the `timeout=0` case.
 
+Discovery tests use only the sanitized fixtures and fake CLI scripts. They prove
+that launch and local refresh never invoke `discover`, an explicit action passes
+`discover --json`, provider/candidate metadata renders honestly, unavailable and
+empty providers are handled, bad schema/address fields fail closed, raw provider
+stderr is not surfaced, and the shared runner timeout remains bounded. No actual
+LAN/Tailscale scan is performed by the test suite.
+
 ### Actual-binary contract check
 
 `tests/command_runner.rs` also contains an environment-gated test that invokes
@@ -216,15 +305,18 @@ the hostname, machine id or hash.
 
 - **Pre-alpha.** Linux is the only verified target; Windows/macOS builds are not
   tested by this milestone.
-- **One-shot reads.** The inventory is read on startup and when Refresh is
-  clicked. There is no background polling.
+- **One-shot reads.** Local inventory is read on startup and when Refresh is
+  clicked. Discovery runs only when **Discover devices** is clicked. There is no
+  background polling or automatic network action.
 - **Bounded invocation.** A still-running CLI process is killed after 20
   seconds so a hung command cannot freeze the UI. If the child has already
   exited when the worker observes it, a separate bounded 50 ms post-exit drain
   still reads buffered output even when the overall deadline has just passed;
   this prevents completed JSON from being misreported as empty or malformed.
   The hard byte cap is enforced during that drain too. The window remains
-  responsive while the worker thread waits.
+  responsive while the worker thread waits. Discovery currently has no cancel
+  control in this slice; the button is disabled while the bounded run is active.
+  A completed run can be refreshed by clicking the button again.
 - **Bounded output capture (Linux/Unix).** stdout and stderr are nonblocking
   pipes drained by the same worker loop; no reader threads are created. The
   reader enforces a 1 MiB counted cap per stream as bytes arrive and kills the
@@ -252,7 +344,11 @@ the hostname, machine id or hash.
   pair, does not configure the CLI, is not persisted, and sends nothing.
 - **Trust boundary.** The GUI runs the executable you configure. It does not
   restrict what that executable does; use a FASTLINK binary you trust. The GUI
-  itself opens no sockets and performs no discovery.
+  itself opens no sockets. Opt-in discovery is delegated to the CLI only after
+  an explicit click, and its results never imply trust or worker readiness.
+- **Discovery backend dependency.** The integration base for this slice does not
+  yet implement `fastlink discover --json`; with that binary the action fails
+  closed with a safe error. Tests use fixtures/fake CLI scripts only.
 - **RAM percentage** is derived only when total and available values are
   reported and consistent. Zero or inconsistent values are explained in the UI
   instead of being clamped or hidden.
@@ -271,5 +367,8 @@ the hostname, machine id or hash.
 | `exceeded the ... capture limit` | The CLI wrote more than 1 MiB to stdout or stderr. Run it directly to find the noise. |
 | `stderr:` header in an error | Reports captured bytes, retained bytes/characters, and the 900-character/12-line UI detail cap. |
 | `unsupported inventory scope` | This milestone only supports `local_only`; use a matching CLI/GUI pair. |
+| `Discovery response did not match the expected schema` | The discovery JSON was invalid or contained forbidden address fields. No candidates are shown. |
+| `Discovery timed out` | The bounded discovery command did not finish in time. Run it directly to diagnose without exposing provider output in the GUI. |
+| `Discovery command failed` | The CLI exited unsuccessfully; raw stderr/provider text is intentionally not shown. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |

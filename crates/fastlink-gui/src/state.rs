@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::discovery::{DiscoveryCommand, DiscoveryInventory};
 use crate::inventory::{DeviceInventory, InventoryCommand, InventoryNode, LoadError};
 
 /// What the central panel should show right now.
@@ -30,13 +31,20 @@ pub enum Screen {
 /// Result produced by one inventory invocation.
 pub type LoadResult = Result<DeviceInventory, LoadError>;
 
-/// Owns the worker channel for one inventory invocation at a time.
-#[derive(Debug, Default)]
-pub struct InventoryLoader {
-    receiver: Option<Receiver<LoadResult>>,
+/// One bounded command worker. Both local inventory and explicit discovery own
+/// separate instances, so a local refresh can never start discovery.
+#[derive(Debug)]
+pub struct WorkerLoader<T> {
+    receiver: Option<Receiver<Result<T, LoadError>>>,
 }
 
-impl InventoryLoader {
+impl<T> Default for WorkerLoader<T> {
+    fn default() -> Self {
+        Self { receiver: None }
+    }
+}
+
+impl<T> WorkerLoader<T> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -47,30 +55,25 @@ impl InventoryLoader {
         self.receiver.is_some()
     }
 
-    /// Start `command` on a worker thread. Returns `Ok(false)` when a load is
-    /// already running.
-    pub fn start(&mut self, command: InventoryCommand) -> Result<bool, LoadError> {
-        self.start_with(move || command.run())
-    }
-
     /// Start an arbitrary provider. The app passes a command invocation; tests
     /// use this to hold the loading state open deterministically.
     pub fn start_with<F>(&mut self, task: F) -> Result<bool, LoadError>
     where
-        F: FnOnce() -> LoadResult + Send + 'static,
+        F: FnOnce() -> Result<T, LoadError> + Send + 'static,
+        T: Send + 'static,
     {
         if self.receiver.is_some() {
             return Ok(false);
         }
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
-            .name("fastlink-gui-inventory".to_owned())
+            .name("fastlink-gui-worker".to_owned())
             .spawn(move || {
                 let result = task();
                 let _ = sender.send(result);
             })
             .map_err(|err| {
-                LoadError::new(format!("could not start inventory worker: {err}")).with_hint(
+                LoadError::new(format!("could not start worker: {err}")).with_hint(
                     "The operating system refused a new thread. See docs/GUI.md for manual CLI checks.",
                 )
             })?;
@@ -79,7 +82,7 @@ impl InventoryLoader {
     }
 
     /// Non-blocking poll for the finished worker.
-    pub fn poll(&mut self) -> Option<LoadResult> {
+    pub fn poll(&mut self) -> Option<Result<T, LoadError>> {
         let receiver = self.receiver.as_ref()?;
         match receiver.try_recv() {
             Ok(result) => {
@@ -89,11 +92,26 @@ impl InventoryLoader {
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.receiver = None;
-                Some(Err(LoadError::new(
-                    "the inventory worker stopped without a result",
-                )))
+                Some(Err(LoadError::new("the worker stopped without a result")))
             }
         }
+    }
+}
+
+pub type InventoryLoader = WorkerLoader<DeviceInventory>;
+pub type DiscoveryLoader = WorkerLoader<DiscoveryInventory>;
+
+impl WorkerLoader<DeviceInventory> {
+    /// Start local inventory on a worker thread.
+    pub fn start(&mut self, command: InventoryCommand) -> Result<bool, LoadError> {
+        self.start_with(move || command.run())
+    }
+}
+
+impl WorkerLoader<DiscoveryInventory> {
+    /// Start explicit opt-in discovery on a worker thread.
+    pub fn start(&mut self, command: DiscoveryCommand) -> Result<bool, LoadError> {
+        self.start_with(move || command.run())
     }
 }
 
@@ -107,11 +125,17 @@ pub struct AppState {
     loaded_at: Option<Instant>,
     selected_id: Option<String>,
     opted_in: BTreeSet<String>,
+    discovery_command: DiscoveryCommand,
+    discovery_loader: DiscoveryLoader,
+    discovery: Option<DiscoveryInventory>,
+    discovery_error: Option<LoadError>,
+    discovery_at: Option<Instant>,
 }
 
 impl AppState {
     #[must_use]
     pub fn new(command: InventoryCommand) -> Self {
+        let discovery_command = DiscoveryCommand::new(command.clone());
         Self {
             command,
             loader: InventoryLoader::new(),
@@ -120,6 +144,11 @@ impl AppState {
             loaded_at: None,
             selected_id: None,
             opted_in: BTreeSet::new(),
+            discovery_command,
+            discovery_loader: DiscoveryLoader::new(),
+            discovery: None,
+            discovery_error: None,
+            discovery_at: None,
         }
     }
 
@@ -151,6 +180,68 @@ impl AppState {
     #[must_use]
     pub fn loaded_age(&self) -> Option<Duration> {
         self.loaded_at.map(|instant| instant.elapsed())
+    }
+
+    #[must_use]
+    pub fn discovery_busy(&self) -> bool {
+        self.discovery_loader.is_busy()
+    }
+
+    #[must_use]
+    pub fn discovery(&self) -> Option<&DiscoveryInventory> {
+        self.discovery.as_ref()
+    }
+
+    #[must_use]
+    pub fn discovery_error(&self) -> Option<&LoadError> {
+        self.discovery_error.as_ref()
+    }
+
+    #[must_use]
+    pub fn discovery_age(&self) -> Option<Duration> {
+        self.discovery_at.map(|instant| instant.elapsed())
+    }
+
+    #[must_use]
+    pub fn discovery_command_line(&self) -> String {
+        self.discovery_command.command_line()
+    }
+
+    /// Explicit user action: start `fastlink discover --json`.
+    ///
+    /// This is the only method that starts discovery. Construction and
+    /// `refresh()` never call it.
+    pub fn discover(&mut self) -> bool {
+        if self.discovery_loader.is_busy() {
+            return false;
+        }
+        self.discovery_error = None;
+        self.discovery = None;
+        match self.discovery_loader.start(self.discovery_command.clone()) {
+            Ok(started) => started,
+            Err(_) => {
+                self.discovery_error = Some(LoadError::new(
+                    "Discovery could not start. Check the configured FASTLINK binary.",
+                ));
+                false
+            }
+        }
+    }
+
+    /// Apply a completed discovery attempt. Kept public so headless state/UI
+    /// tests can exercise results without network activity.
+    pub fn apply_discovery_result(&mut self, result: Result<DiscoveryInventory, LoadError>) {
+        match result {
+            Ok(discovery) => {
+                self.discovery = Some(discovery);
+                self.discovery_error = None;
+            }
+            Err(err) => {
+                self.discovery = None;
+                self.discovery_error = Some(safe_discovery_error(err));
+            }
+        }
+        self.discovery_at = Some(Instant::now());
     }
 
     #[must_use]
@@ -223,11 +314,16 @@ impl AppState {
     /// Collect a finished worker result. Returns `true` when the UI should
     /// repaint because state changed.
     pub fn poll(&mut self) -> bool {
-        let Some(result) = self.loader.poll() else {
-            return false;
-        };
-        self.apply_result(result);
-        true
+        let mut changed = false;
+        if let Some(result) = self.loader.poll() {
+            self.apply_result(result);
+            changed = true;
+        }
+        if let Some(result) = self.discovery_loader.poll() {
+            self.apply_discovery_result(result);
+            changed = true;
+        }
+        changed
     }
 
     /// Apply a completed inventory load.
@@ -304,6 +400,16 @@ impl AppState {
     }
 }
 
+fn safe_discovery_error(error: LoadError) -> LoadError {
+    let safe = error.summary.starts_with("Discovery ")
+        && !crate::discovery::text_contains_address_like(&error.summary);
+    if safe {
+        LoadError::new(error.summary)
+    } else {
+        LoadError::new("Discovery failed safely. No candidates were shown.")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +434,23 @@ mod tests {
 
     fn error() -> LoadError {
         LoadError::new("inventory failed")
+    }
+
+    #[test]
+    fn discovery_errors_are_reduced_to_safe_ui_text() {
+        let mut state = AppState::new(InventoryCommand::new("fastlink"));
+        state.apply_discovery_result(Err(LoadError::new("provider failed at 192.168.1.9:41641")
+            .with_detail("raw endpoint 192.168.1.9")
+            .with_hint("see 192.168.1.9")));
+        let error = state.discovery_error().expect("safe discovery error");
+        assert!(!format!("{error:?}").contains("192.168.1.9"));
+        assert!(!format!("{error:?}").contains("41641"));
+        assert_eq!(
+            error.summary,
+            "Discovery failed safely. No candidates were shown."
+        );
+        assert!(error.detail.is_none());
+        assert!(error.hint.is_none());
     }
 
     #[test]

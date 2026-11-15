@@ -6,6 +6,9 @@
 
 use std::time::Duration;
 
+use crate::discovery::{
+    CandidateNode, ProviderStatus, Transport, TrustState, WorkerState, DISCOVERY_SCOPE,
+};
 use crate::inventory::{GpuDevice, InventoryNode, NodeCapabilities};
 
 /// Text used whenever the inventory did not report a value.
@@ -16,6 +19,13 @@ pub const NONE_REPORTED: &str = "None reported";
 pub const OPT_IN_LABEL: &str = "Allow this device to participate in FASTLINK compute";
 pub const OPT_IN_DETAIL: &str =
     "Session-only opt-in. It creates no pairing, opens no socket and sends no data in this milestone.";
+
+/// Always shown for discovery candidates in this slice.
+pub const DISCOVERY_UNPAIRED_WARNING: &str =
+    "This GUI has not paired or verified this candidate. Pairing is not implemented; no Pair action is available.";
+/// A tailnet listing is not evidence of a FASTLINK worker.
+pub const DISCOVERY_TAILNET_WARNING: &str =
+    "A Tailscale peer is not automatically a FASTLINK worker; metadata remains unverified.";
 
 /// One label/value row rendered by the node, GPU and capability tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +330,115 @@ pub fn discovery_label(mode: Option<&str>) -> String {
     optional_text(mode)
 }
 
+/// Opt-in discovery scope from the contract.
+#[must_use]
+pub fn discovery_scope_label(scope: &str) -> &'static str {
+    if scope == DISCOVERY_SCOPE {
+        "LAN + Tailscale (user opt-in)"
+    } else {
+        "Restricted discovery scope"
+    }
+}
+
+/// Provider availability without raw provider error text.
+#[must_use]
+pub fn provider_status_label(status: ProviderStatus) -> &'static str {
+    match status {
+        ProviderStatus::Available => "Available",
+        ProviderStatus::Unavailable => "Unavailable",
+        ProviderStatus::Unknown => UNKNOWN,
+    }
+}
+
+/// Candidate title from a sanitized display name.
+#[must_use]
+pub fn candidate_title(display_name: Option<&str>) -> String {
+    match display_name.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(name) => name.to_owned(),
+        None => "Unnamed candidate".to_owned(),
+    }
+}
+
+#[must_use]
+pub fn candidate_unpaired_warning() -> &'static str {
+    DISCOVERY_UNPAIRED_WARNING
+}
+
+#[must_use]
+pub fn candidate_tailnet_warning() -> &'static str {
+    DISCOVERY_TAILNET_WARNING
+}
+
+#[must_use]
+pub fn candidate_uses_tailscale(node: &CandidateNode) -> bool {
+    node.transports.contains(&Transport::Tailscale)
+}
+
+#[must_use]
+pub fn transport_label(transport: Transport) -> &'static str {
+    match transport {
+        Transport::Lan => "LAN",
+        Transport::Tailscale => "Tailscale",
+        Transport::Unknown => "Unknown transport",
+    }
+}
+
+#[must_use]
+pub fn worker_state_label(state: Option<WorkerState>) -> String {
+    match state {
+        Some(WorkerState::Unverified) => "Unverified".to_owned(),
+        Some(WorkerState::Verified) => "Reported verified (not trusted by this GUI)".to_owned(),
+        Some(WorkerState::Unknown) | None => UNKNOWN.to_owned(),
+    }
+}
+
+#[must_use]
+pub fn trust_state_label(state: Option<TrustState>) -> String {
+    match state {
+        Some(TrustState::Unpaired) => "Unpaired".to_owned(),
+        Some(TrustState::Paired) => "Reported paired (not verified by this GUI)".to_owned(),
+        Some(TrustState::Unknown) | None => UNKNOWN.to_owned(),
+    }
+}
+
+/// Rows for an unverified discovery candidate. Empty transports/worker/trust
+/// are unknown, not invented capabilities.
+#[must_use]
+pub fn candidate_rows(node: &CandidateNode) -> Vec<FieldRow> {
+    let transports = if node.transports.is_empty() {
+        FieldRow::unknown("Transports")
+    } else {
+        FieldRow::reported(
+            "Transports",
+            node.transports
+                .iter()
+                .map(|transport| transport_label(*transport))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    vec![
+        FieldRow::optional_text("Operating system", node.os.as_deref()),
+        FieldRow::optional_text("Architecture", node.arch.as_deref()),
+        match node.logical_cpu_count {
+            Some(cores) => FieldRow::reported("Logical CPU count", cpu_label(Some(cores))),
+            None => FieldRow::unknown("Logical CPU count"),
+        },
+        FieldRow::optional_bytes("RAM total", node.ram_total_bytes),
+        FieldRow::optional_bytes("RAM available", node.ram_available_bytes),
+        FieldRow::reported("GPUs", reported_count(node.gpu_count)),
+        transports,
+        match node.worker_state {
+            Some(state) => FieldRow::reported("Worker state", worker_state_label(Some(state))),
+            None => FieldRow::unknown("Worker state"),
+        },
+        match node.trust_state {
+            Some(state) => FieldRow::reported("Trust state", trust_state_label(Some(state))),
+            None => FieldRow::unknown("Trust state"),
+        },
+    ]
+}
+
 /// Short relative timestamp for the footer.
 #[must_use]
 pub fn format_age(age: Duration) -> String {
@@ -543,5 +662,94 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(12)), "12 s ago");
         assert_eq!(format_age(Duration::from_secs(90)), "1 min ago");
         assert_eq!(format_age(Duration::from_secs(3_900)), "1 h 5 min ago");
+    }
+
+    #[test]
+    fn discovery_candidate_rows_are_honest_and_unpaired() {
+        let discovery =
+            crate::discovery::parse_discovery_json(include_str!("../testdata/discovery-v1.json"))
+                .expect("discovery fixture must parse");
+        let lan = &discovery.nodes[0];
+        let rows = candidate_rows(lan);
+        let value = |label: &str| {
+            rows.iter()
+                .find(|row| row.label == label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        assert_eq!(value("Operating system").value, "linux");
+        assert_eq!(value("Architecture").value, "x86_64");
+        assert_eq!(value("Logical CPU count").value, "8 logical cores");
+        assert_eq!(value("RAM total").value, "16.0 GiB");
+        assert_eq!(value("RAM available").value, "8.0 GiB");
+        assert_eq!(value("GPUs").value, "1 reported");
+        assert_eq!(value("Transports").value, "LAN");
+        assert_eq!(value("Worker state").value, "Unverified");
+        assert_eq!(value("Trust state").value, "Unpaired");
+        assert!(candidate_unpaired_warning().contains("Pairing is not implemented"));
+
+        let tailnet = &discovery.nodes[1];
+        let rows = candidate_rows(tailnet);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.label == "Transports")
+                .unwrap()
+                .value,
+            "Tailscale"
+        );
+        assert!(candidate_uses_tailscale(tailnet));
+        assert!(candidate_tailnet_warning().contains("not automatically a FASTLINK worker"));
+    }
+
+    #[test]
+    fn discovery_unknown_resources_stay_unknown() {
+        let json = r#"{
+            "schema": "fastlink.discover.v1",
+            "scope": "user_opt_in_lan_tailscale",
+            "providers": [{"provider": "tailscale", "status": "unavailable"}],
+            "nodes": [{
+                "node_id": "candidate-9",
+                "display_name": null,
+                "os": null,
+                "arch": null,
+                "logical_cpu_count": null,
+                "ram_total_bytes": null,
+                "ram_available_bytes": null,
+                "gpus": [],
+                "transports": [],
+                "worker_state": null,
+                "trust_state": null
+            }]
+        }"#;
+        let discovery =
+            crate::discovery::parse_discovery_json(json).expect("null resources are allowed");
+        let node = &discovery.nodes[0];
+        let rows = candidate_rows(node);
+        for label in [
+            "Operating system",
+            "Architecture",
+            "Logical CPU count",
+            "RAM total",
+            "RAM available",
+            "Transports",
+            "Worker state",
+            "Trust state",
+        ] {
+            let row = rows.iter().find(|row| row.label == label).unwrap();
+            assert_eq!(row.value, UNKNOWN, "{label}");
+            assert!(!row.known, "{label}");
+        }
+        assert_eq!(
+            rows.iter().find(|row| row.label == "GPUs").unwrap().value,
+            NONE_REPORTED
+        );
+        assert_eq!(candidate_title(None), "Unnamed candidate");
+        assert_eq!(
+            provider_status_label(crate::discovery::ProviderStatus::Unavailable),
+            "Unavailable"
+        );
+        assert_eq!(
+            discovery_scope_label(crate::discovery::DISCOVERY_SCOPE),
+            "LAN + Tailscale (user opt-in)"
+        );
     }
 }
