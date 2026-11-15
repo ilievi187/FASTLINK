@@ -351,11 +351,22 @@ fn looks_like_host_port(token: &str) -> bool {
     }
     host.split('.').all(|label| {
         let chars = label.chars().count();
-        chars > 0
-            && chars <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label.chars().all(|ch| ch.is_alphanumeric() || ch == '-')
+        if chars == 0 || chars > 63 || label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+        if !label.is_ascii() {
+            // Conservatively accept a bounded non-ASCII, non-whitespace host
+            // label. This covers combining marks in decomposed IDN names; it is
+            // not full IDNA validation and only matters when a numeric port is
+            // also present.
+            label
+                .chars()
+                .all(|ch| !ch.is_whitespace() && !ch.is_control())
+        } else {
+            label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        }
     })
 }
 
@@ -621,6 +632,8 @@ mod tests {
             "büro:41641",
             "büro.example:0443",
             "BÜRO:41641",
+            "bu\u{0308}ro:41641",
+            "bu\u{0308}ro.example:0443",
             "192.168.1.50:41641",
             "gpu-box.tailnet-example.ts.net:41641/path",
         ] {
@@ -691,6 +704,8 @@ mod tests {
             "Büro Rechner",
             "café",
             "büro.example",
+            "bu\u{0308}ro",
+            "Bu\u{0308}ro Rechner",
         ] {
             let json = format!(
                 r#"{{
@@ -717,6 +732,7 @@ mod tests {
             "gpu-box.tailnet-example.ts.net:41641",
             "gpu-box:18777",
             "büro:41641",
+            "bu\u{0308}ro:41641",
         ] {
             let json = format!(
                 r#"{{
