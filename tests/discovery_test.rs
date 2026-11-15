@@ -695,6 +695,150 @@ printf '%s\n' '{ts_payload}'
     }
 
     #[test]
+    fn adversarial_dns_host_port_endpoints_are_stripped_from_json_and_human_output() {
+        let bin = env!("CARGO_BIN_EXE_fastlink");
+        let bin_dir = temp_dir("smuggled-dns-endpoints");
+
+        let mdns_lines = "\
+=;eth0;IPv4;ws1.local:18777;_fastlink._tcp;local;ws1.local;192.168.55.10;18777;\"os=linux node1.lan:8080\" \"arch=x86_64 api.example.com:443\" \"gpu0_name=RX via ws1.local:18777\"\n\
+=;eth0;IPv4;Workstation One;_fastlink._tcp;local;ws2.local;192.168.55.11;18778;\"os=linux\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
+        write_executable(
+            &bin_dir,
+            "avahi-browse",
+            &format!(
+                "#!/bin/sh
+printf '%s\\n' '{mdns_lines}'
+"
+            ),
+        );
+
+        let ts_payload = r#"{
+  "BackendState": "Running",
+  "Peer": {
+    "nodekey:dnsbad": {
+      "ID": "nDnsBadPeer",
+      "HostName": "gpu-box.tailnet-example.ts.net:41641",
+      "DNSName": "gpu-box.tailnet-example.ts.net:41641.",
+      "OS": "linux gpu-box.tailnet-example.ts.net:41641",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.42"]
+    },
+    "nodekey:normallabel": {
+      "ID": "nOrdinaryPeer",
+      "HostName": "cuda:0",
+      "DNSName": "render-node.tailnet-example.ts.net.",
+      "OS": "linux v2.1:8b",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.43"]
+    }
+  }
+}"#;
+        write_executable(
+            &bin_dir,
+            "tailscale",
+            &format!(
+                "#!/bin/sh
+printf '%s\n' '{ts_payload}'
+"
+            ),
+        );
+
+        let json_out = Command::new(bin)
+            .args(["discover", "--json"])
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover --json");
+        let text_out = Command::new(bin)
+            .arg("discover")
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover");
+        let _ = fs::remove_dir_all(&bin_dir);
+
+        assert!(json_out.status.success());
+        assert!(text_out.status.success());
+        let json_stdout = String::from_utf8(json_out.stdout).expect("utf8 json stdout");
+        let json_stderr = String::from_utf8(json_out.stderr).expect("utf8 json stderr");
+        let text_stdout = String::from_utf8(text_out.stdout).expect("utf8 text stdout");
+        let text_stderr = String::from_utf8(text_out.stderr).expect("utf8 text stderr");
+
+        let forbidden_endpoints = [
+            "gpu-box.tailnet-example.ts.net:41641",
+            "ws1.local:18777",
+            "node1.lan:8080",
+            "api.example.com:443",
+            "41641",
+            "18777",
+            "18778",
+            "8080",
+            "443",
+            "ws1.local",
+            "ws2.local",
+            "192.168.55.10",
+            "192.168.55.11",
+            "100.64.99.42",
+            "100.64.99.43",
+        ];
+        for leaked in forbidden_endpoints {
+            assert!(
+                !json_stdout.contains(leaked),
+                "leaked endpoint '{leaked}' in JSON stdout: {json_stdout}"
+            );
+            assert!(
+                !json_stderr.contains(leaked),
+                "leaked endpoint '{leaked}' in JSON stderr: {json_stderr}"
+            );
+            assert!(
+                !text_stdout.contains(leaked),
+                "leaked endpoint '{leaked}' in human stdout: {text_stdout}"
+            );
+            assert!(
+                !text_stderr.contains(leaked),
+                "leaked endpoint '{leaked}' in human stderr: {text_stderr}"
+            );
+        }
+
+        let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
+        assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
+        let nodes = doc["nodes"].as_array().expect("nodes array");
+        assert_eq!(nodes.len(), 4);
+
+        let bad_lan = nodes
+            .iter()
+            .find(|n| {
+                n["transports"] == serde_json::json!(["lan"])
+                    && n["display_name"] == "Unverified LAN peer"
+            })
+            .expect("smuggled LAN node should fall back to generic name");
+        assert!(bad_lan["os"].is_null());
+        assert!(bad_lan["arch"].is_null());
+        assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+
+        let bad_ts = nodes
+            .iter()
+            .find(|n| {
+                n["transports"] == serde_json::json!(["tailscale"])
+                    && n["display_name"] == "Unverified Tailscale peer"
+            })
+            .expect("smuggled Tailscale node should fall back to generic name");
+        assert!(bad_ts["os"].is_null());
+
+        let good_lan = nodes
+            .iter()
+            .find(|n| n["display_name"] == "Workstation One")
+            .expect("ordinary LAN node should not be over-redacted");
+        assert_eq!(good_lan["os"], "linux");
+        assert_eq!(good_lan["arch"], "x86_64");
+        assert_eq!(good_lan["gpus"][0]["name"], "Radeon RX 7900 XT");
+
+        let good_ts = nodes
+            .iter()
+            .find(|n| n["display_name"] == "cuda:0")
+            .expect("ordinary non-DNS label should not be over-redacted");
+        assert_eq!(good_ts["os"], "linux v2.1:8b");
+    }
+
+    #[test]
     fn malformed_provider_output_reports_error_safely_without_crashing_valid_peer() {
         let bin = env!("CARGO_BIN_EXE_fastlink");
         let bin_dir = temp_dir("malformed-output");

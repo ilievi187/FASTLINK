@@ -776,7 +776,7 @@ fn sanitize_metadata_label(raw: &str) -> Option<String> {
 }
 
 fn contains_network_address_or_mac(text: &str) -> bool {
-    contains_ipv4(text) || contains_ipv6(text) || contains_mac(text)
+    contains_ipv4(text) || contains_ipv6(text) || contains_mac(text) || contains_dns_host_port(text)
 }
 
 fn contains_ipv4(text: &str) -> bool {
@@ -865,6 +865,86 @@ fn contains_mac(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Bounded O(N) detector for DNS `host:port` endpoints (at least one dot,
+/// valid DNS labels with an alphabetic TLD-style label, and port `1..=65535`).
+fn contains_dns_host_port(text: &str) -> bool {
+    const MAX_DNS_HOST_LEN: usize = 253;
+    let bytes = text.as_bytes();
+
+    for (colon_idx, &b) in bytes.iter().enumerate() {
+        if b != b':' || colon_idx == 0 {
+            continue;
+        }
+
+        // Parse canonical numeric port `1..=65535` right of `:`.
+        let p_start = colon_idx + 1;
+        let mut p_end = p_start;
+        while p_end < bytes.len() && bytes[p_end].is_ascii_digit() && p_end - p_start < 6 {
+            p_end += 1;
+        }
+        let port_len = p_end - p_start;
+        if !(1..=5).contains(&port_len) || bytes[p_start] == b'0' {
+            continue;
+        }
+        if let Some(&next) = bytes.get(p_end) {
+            if next.is_ascii_alphanumeric() || next == b'_' || next == b'-' || next == b':' {
+                continue;
+            }
+            if next == b'.' && bytes.get(p_end + 1).is_some_and(u8::is_ascii_digit) {
+                continue;
+            }
+        }
+        if text[p_start..p_end].parse::<u16>().is_err() {
+            continue;
+        }
+
+        // Scan bounded DNS hostname slice left of `:`.
+        let min_start = colon_idx.saturating_sub(MAX_DNS_HOST_LEN + 1);
+        let mut h_start = colon_idx;
+        while h_start > min_start && is_dns_host_byte(bytes[h_start - 1]) {
+            h_start -= 1;
+        }
+        let raw_host = &text[h_start..colon_idx];
+        let host = raw_host.strip_suffix('.').unwrap_or(raw_host);
+        if host.len() <= MAX_DNS_HOST_LEN && is_valid_dns_host_with_dot(host) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_dns_host_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'
+}
+
+fn is_valid_dns_host_with_dot(host: &str) -> bool {
+    if !host.contains('.') {
+        return false;
+    }
+    let mut last_label: Option<&str> = None;
+    let mut count = 0usize;
+    for label in host.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        let lb = label.as_bytes();
+        if !lb[0].is_ascii_alphanumeric()
+            || !lb[lb.len() - 1].is_ascii_alphanumeric()
+            || !lb
+                .iter()
+                .all(|&c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        {
+            return false;
+        }
+        last_label = Some(label);
+        count += 1;
+    }
+    if count < 2 {
+        return false;
+    }
+    last_label.is_some_and(|tld| !tld.contains('_') && tld.bytes().any(|b| b.is_ascii_alphabetic()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1382,9 +1462,44 @@ mod tests {
         bad_id.nodes[0].node_id = "not-a-32-hex-digest".to_string();
         assert!(validate_discovery_report(&bad_id).is_err());
 
-        let mut bad_schema = valid;
+        let mut bad_schema = valid.clone();
         bad_schema.schema = "fastlink.discover.v0".to_string();
         assert!(render_discovery_json(&bad_schema).is_err());
+
+        for dns_endpoint in [
+            "gpu-box.tailnet-example.ts.net:41641",
+            "ws1.local:18777",
+            "node-1.lan:8080",
+            "api.example.com:443.",
+            "endpoint=my.host.internal:65535",
+        ] {
+            let mut bad_ep = valid.clone();
+            bad_ep.nodes[0].display_name = dns_endpoint.to_string();
+            let err = render_discovery_json(&bad_ep).unwrap_err();
+            assert!(!err.to_string().contains(dns_endpoint));
+            assert!(render_discovery_text(&bad_ep).is_err());
+        }
+
+        for ordinary in [
+            "Workstation One",
+            "gpu-box.tailnet-example.ts.net",
+            "Radeon RX 7900 XT",
+            "Model: 70B",
+            "Qwen2.5:72b",
+            "llama-3.1:8b",
+            "PCI 00:02.0",
+            "cuda:0",
+            "step-1.2:10",
+            "v1.0.2:4",
+            "bad.host:0",
+            "bad.host:65536",
+            "bad.host:999999",
+        ] {
+            assert!(
+                !contains_network_address_or_mac(ordinary),
+                "ordinary label falsely redacted: {ordinary}"
+            );
+        }
     }
 
     #[test]
