@@ -723,6 +723,14 @@ printf '%s\\n' '{mdns_lines}'
       "Online": true,
       "TailscaleIPs": ["100.64.99.42"]
     },
+    "nodekey:zeropad": {
+      "ID": "nZeroPadPeer",
+      "HostName": "host.example:0443",
+      "DNSName": "host.example:0443.",
+      "OS": "linux via host.example:0443",
+      "Online": true,
+      "TailscaleIPs": ["100.64.99.44"]
+    },
     "nodekey:normallabel": {
       "ID": "nOrdinaryPeer",
       "HostName": "cuda:0",
@@ -764,10 +772,12 @@ printf '%s\n' '{ts_payload}'
 
         let forbidden_endpoints = [
             "gpu-box.tailnet-example.ts.net:41641",
+            "host.example:0443",
             "ws1.local:18777",
             "node1.lan:8080",
             "api.example.com:443",
             "41641",
+            "0443",
             "18777",
             "18778",
             "8080",
@@ -778,6 +788,7 @@ printf '%s\n' '{ts_payload}'
             "192.168.55.11",
             "100.64.99.42",
             "100.64.99.43",
+            "100.64.99.44",
         ];
         for leaked in forbidden_endpoints {
             assert!(
@@ -801,7 +812,7 @@ printf '%s\n' '{ts_payload}'
         let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
         assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
         let nodes = doc["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes.len(), 5);
 
         let bad_lan = nodes
             .iter()
@@ -814,14 +825,18 @@ printf '%s\n' '{ts_payload}'
         assert!(bad_lan["arch"].is_null());
         assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
 
-        let bad_ts = nodes
+        let bad_ts_count = nodes
             .iter()
-            .find(|n| {
+            .filter(|n| {
                 n["transports"] == serde_json::json!(["tailscale"])
                     && n["display_name"] == "Unverified Tailscale peer"
+                    && n["os"].is_null()
             })
-            .expect("smuggled Tailscale node should fall back to generic name");
-        assert!(bad_ts["os"].is_null());
+            .count();
+        assert_eq!(
+            bad_ts_count, 2,
+            "smuggled Tailscale nodes should fall back to generic name with null os"
+        );
 
         let good_lan = nodes
             .iter()

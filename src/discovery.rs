@@ -878,14 +878,18 @@ fn contains_dns_host_port(text: &str) -> bool {
             continue;
         }
 
-        // Parse canonical numeric port `1..=65535` right of `:`.
+        // Parse bounded numeric port `1..=65535` right of `:` (allowing zero-padding).
+        const MAX_PORT_RAW_DIGITS: usize = 16;
         let p_start = colon_idx + 1;
         let mut p_end = p_start;
-        while p_end < bytes.len() && bytes[p_end].is_ascii_digit() && p_end - p_start < 6 {
+        while p_end < bytes.len()
+            && bytes[p_end].is_ascii_digit()
+            && p_end - p_start <= MAX_PORT_RAW_DIGITS
+        {
             p_end += 1;
         }
-        let port_len = p_end - p_start;
-        if !(1..=5).contains(&port_len) || bytes[p_start] == b'0' {
+        let raw_port_len = p_end - p_start;
+        if !(1..=MAX_PORT_RAW_DIGITS).contains(&raw_port_len) {
             continue;
         }
         if let Some(&next) = bytes.get(p_end) {
@@ -896,7 +900,14 @@ fn contains_dns_host_port(text: &str) -> bool {
                 continue;
             }
         }
-        if text[p_start..p_end].parse::<u16>().is_err() {
+        let trimmed_port = text[p_start..p_end].trim_start_matches('0');
+        if trimmed_port.is_empty() || trimmed_port.len() > 5 {
+            continue;
+        }
+        let Ok(port) = trimmed_port.parse::<u16>() else {
+            continue;
+        };
+        if port == 0 {
             continue;
         }
 
@@ -1472,6 +1483,9 @@ mod tests {
             "node-1.lan:8080",
             "api.example.com:443.",
             "endpoint=my.host.internal:65535",
+            "host.example:0443",
+            "host.example:00443",
+            "host.example:065535",
         ] {
             let mut bad_ep = valid.clone();
             bad_ep.nodes[0].display_name = dns_endpoint.to_string();
@@ -1492,8 +1506,14 @@ mod tests {
             "step-1.2:10",
             "v1.0.2:4",
             "bad.host:0",
+            "bad.host:00",
+            "bad.host:000",
             "bad.host:65536",
+            "bad.host:065536",
             "bad.host:999999",
+            "bad.host:0443abc",
+            "bad.host:0443.1",
+            "bad.host:0443:1",
         ] {
             assert!(
                 !contains_network_address_or_mac(ordinary),
