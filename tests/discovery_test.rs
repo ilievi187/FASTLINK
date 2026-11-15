@@ -877,6 +877,183 @@ printf '%s\n' '{ts_payload}'
     }
 
     #[test]
+    fn unicode_and_idn_host_port_endpoints_are_stripped_from_json_and_human_output() {
+        let _guard = serial();
+        let bin = env!("CARGO_BIN_EXE_fastlink");
+        let bin_dir = temp_dir("unicode-idn-endpoints");
+
+        let mdns_lines = "\
+=;eth0;IPv4;büro:41641;_fastlink._tcp;local;buero.local;192.168.55.20;18777;\"os=linux büro.local:41641\" \"arch=x86_64 пример.рф:8080\" \"gpu0_name=RX via bu\u{0308}ro:41641\"\n\
+=;eth0;IPv4;Büro Workstation;_fastlink._tcp;local;buero2.local;192.168.55.21;18778;\"os=linux service:port\" \"arch=x86_64\" \"gpu0_name=Radeon RX 7900 XT\"";
+        write_executable(
+            &bin_dir,
+            "avahi-browse",
+            &format!(
+                "#!/bin/sh
+printf '%s\\n' '{mdns_lines}'
+"
+            ),
+        );
+
+        let ts_payload = concat!(
+            r#"{"BackendState":"Running","Peer":{"#,
+            r#""nodekey:unicodesingle":{"ID":"nUniSingle","HostName":"büro:41641","DNSName":"büro.local:41641.","OS":"linux via büro:41641","Online":true,"TailscaleIPs":["100.64.99.51"]},"#,
+            r#""nodekey:nfd":{"ID":"nUniNfd","HostName":"bu"#,
+            "\u{0308}",
+            r#"ro:41641","DNSName":"gpu.bu"#,
+            "\u{0308}",
+            r#"ro.ts.net:18777.","OS":"linux cafe"#,
+            "\u{0301}",
+            r#":0443","Online":true,"TailscaleIPs":["100.64.99.52"]},"#,
+            r#""nodekey:idn":{"ID":"nUniIdn","HostName":"пример.рф:8080","DNSName":"пример.рф:8080.","OS":"linux пример.рф:8080","Online":true,"TailscaleIPs":["100.64.99.53"]},"#,
+            r#""nodekey:safeunicode":{"ID":"nSafeUni","HostName":"München Node","DNSName":"muenchen.tailnet-example.ts.net.","OS":"linux Qwen2.5:72b","Online":true,"TailscaleIPs":["100.64.99.54"]}"#,
+            r#"}}"#
+        );
+        write_executable(
+            &bin_dir,
+            "tailscale",
+            &format!(
+                "#!/bin/sh
+printf '%s\\n' '{ts_payload}'
+"
+            ),
+        );
+
+        let json_out = Command::new(bin)
+            .args(["discover", "--json"])
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover --json");
+        let text_out = Command::new(bin)
+            .arg("discover")
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover");
+
+        assert!(json_out.status.success());
+        assert!(text_out.status.success());
+        let json_stdout = String::from_utf8(json_out.stdout).expect("utf8 json stdout");
+        let json_stderr = String::from_utf8(json_out.stderr).expect("utf8 json stderr");
+        let text_stdout = String::from_utf8(text_out.stdout).expect("utf8 text stdout");
+        let text_stderr = String::from_utf8(text_out.stderr).expect("utf8 text stderr");
+
+        let forbidden_endpoints = [
+            "büro:41641",
+            "bu\u{0308}ro:41641",
+            "büro.local:41641",
+            "gpu.bu\u{0308}ro.ts.net:18777",
+            "cafe\u{0301}:0443",
+            "пример.рф:8080",
+            "41641",
+            "18777",
+            "18778",
+            "0443",
+            "8080",
+            "buero.local",
+            "buero2.local",
+            "192.168.55.20",
+            "192.168.55.21",
+            "100.64.99.51",
+            "100.64.99.52",
+            "100.64.99.53",
+            "100.64.99.54",
+        ];
+        for leaked in forbidden_endpoints {
+            assert!(
+                !json_stdout.contains(leaked),
+                "leaked endpoint '{leaked}' in JSON stdout: {json_stdout}"
+            );
+            assert!(
+                !json_stderr.contains(leaked),
+                "leaked endpoint '{leaked}' in JSON stderr: {json_stderr}"
+            );
+            assert!(
+                !text_stdout.contains(leaked),
+                "leaked endpoint '{leaked}' in human stdout: {text_stdout}"
+            );
+            assert!(
+                !text_stderr.contains(leaked),
+                "leaked endpoint '{leaked}' in human stderr: {text_stderr}"
+            );
+        }
+
+        let doc: Value = serde_json::from_str(&json_stdout).expect("valid JSON");
+        assert_json_has_no_forbidden_keys_or_addresses(&doc, &forbidden_endpoints);
+        let nodes = doc["nodes"].as_array().expect("nodes array");
+        assert_eq!(nodes.len(), 6);
+
+        let bad_lan = nodes
+            .iter()
+            .find(|n| {
+                n["transports"] == serde_json::json!(["lan"])
+                    && n["display_name"] == "Unverified LAN peer"
+            })
+            .expect("smuggled Unicode LAN node should fall back to generic name");
+        assert!(bad_lan["os"].is_null());
+        assert!(bad_lan["arch"].is_null());
+        assert_eq!(bad_lan["gpus"].as_array().unwrap().len(), 0);
+
+        let bad_ts_count = nodes
+            .iter()
+            .filter(|n| {
+                n["transports"] == serde_json::json!(["tailscale"])
+                    && n["display_name"] == "Unverified Tailscale peer"
+                    && n["os"].is_null()
+            })
+            .count();
+        assert_eq!(
+            bad_ts_count, 3,
+            "smuggled Unicode/IDN Tailscale nodes should fall back to generic name with null os"
+        );
+
+        let good_lan = nodes
+            .iter()
+            .find(|n| n["display_name"] == "Büro Workstation")
+            .expect("ordinary Unicode LAN node should not be over-redacted");
+        assert_eq!(good_lan["os"], "linux service:port");
+        assert_eq!(good_lan["arch"], "x86_64");
+        assert_eq!(good_lan["gpus"][0]["name"], "Radeon RX 7900 XT");
+        assert!(text_stdout.contains("Büro Workstation"));
+
+        let good_ts = nodes
+            .iter()
+            .find(|n| n["display_name"] == "München Node")
+            .expect("ordinary Unicode Tailscale node should not be over-redacted");
+        assert_eq!(good_ts["os"], "linux Qwen2.5:72b");
+        assert!(text_stdout.contains("München Node"));
+
+        // Failing provider stderr containing raw Unicode/IDN endpoints must also never leak.
+        write_executable(
+            &bin_dir,
+            "avahi-browse",
+            "#!/bin/sh
+echo 'dial büro:41641 bu\u{0308}ro.local:18777 пример.рф:8080' >&2
+exit 2
+",
+        );
+        let err_json = Command::new(bin)
+            .args(["discover", "--json"])
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover --json on failing provider");
+        let err_text = Command::new(bin)
+            .arg("discover")
+            .env("PATH", &bin_dir)
+            .output()
+            .expect("run fastlink discover on failing provider");
+        let _ = fs::remove_dir_all(&bin_dir);
+
+        assert!(err_json.status.success());
+        assert!(err_text.status.success());
+        let err_json_out = String::from_utf8(err_json.stdout).expect("utf8 err json");
+        let err_text_out = String::from_utf8(err_text.stdout).expect("utf8 err text");
+        for leaked in ["büro:41641", "bu\u{0308}ro.local:18777", "пример.рф:8080"] {
+            assert!(!err_json_out.contains(leaked));
+            assert!(!err_text_out.contains(leaked));
+        }
+    }
+
+    #[test]
     fn malformed_provider_output_reports_error_safely_without_crashing_valid_peer() {
         let _guard = serial();
         let bin = env!("CARGO_BIN_EXE_fastlink");
