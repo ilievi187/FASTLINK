@@ -120,6 +120,7 @@ values with the same types.
 
 - Linux with X11 or Wayland and an OpenGL driver.
 - Rust 1.95 or newer (required by eframe/egui 0.36).
+- A writable system temporary directory for bounded CLI output capture.
 - No Node, Python, web view or display-server wrapper is needed for the native
   binary.
 
@@ -181,7 +182,9 @@ cargo build -p fastlink-gui
 The workspace's `default-members` include the GUI, so the standard commands
 above cover both the core crate and the shell. Unix-only command-runner tests
 use temporary fake CLI scripts to verify argument passing, error reporting and
-the invocation timeout.
+the invocation timeout. They also cover output larger than the OS pipe capacity,
+oversized-stream diagnostics, retained/truncated stderr, timeout child cleanup,
+and a grandchild that inherits the output handles.
 
 ### Actual-binary contract check
 
@@ -210,6 +213,17 @@ the hostname, machine id or hash.
 - **Bounded invocation.** The CLI process is killed after 20 seconds so a hung
   command cannot freeze the UI. The window remains responsive while the worker
   thread waits.
+- **Bounded output capture.** stdout and stderr are redirected to private
+  temporary files rather than pipes. This removes pipe-capacity deadlocks and
+  EOF waits: a valid large inventory still parses, and a grandchild holding the
+  inherited handles cannot block the worker. Each stream is capped at 1 MiB;
+  stderr diagnostics retain 64 KiB with an explicit truncation marker. Capture
+  files are removed after the invocation.
+- **Process cleanup.** On timeout, capture-limit or wait errors the owned CLI
+  child is killed and reaped before the worker returns. Only the direct child is
+  terminated; inherited descendants are not killed cross-platform, but the
+  file-based capture means they cannot keep the GUI worker waiting past its
+  deadline.
 - **Stale snapshots are labelled.** If a refresh fails, the last successful
   snapshot stays visible with a warning banner instead of being replaced by
   fabricated or cleared data.
@@ -233,6 +247,7 @@ the hostname, machine id or hash.
 | `could not start ... No such file or directory` | The CLI path is wrong. Pass `--fastlink-bin` or set `FASTLINK_BIN`. |
 | `failed (exit status: 1)` with a CLI error | The selected FASTLINK build failed. Run `fastlink devices --json` in a terminal. |
 | `did not return a fastlink.devices.v1 inventory` | The CLI emitted JSON that does not match the implemented contract above. |
+| `exceeded the ... capture limit` | The CLI wrote more than 1 MiB to stdout or stderr. Run it directly to find the noise. |
 | `unsupported inventory scope` | This milestone only supports `local_only`; use a matching CLI/GUI pair. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |
