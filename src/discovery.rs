@@ -135,7 +135,7 @@ pub fn parse_discover_args(args: &[String]) -> Result<DiscoverArgs, String> {
                 }
                 json = true;
             }
-            flag => return Err(format!("unknown discover argument '{flag}'")),
+            _ => return Err("unknown discover argument".to_string()),
         }
     }
     Ok(DiscoverArgs { json })
@@ -1634,5 +1634,24 @@ mod tests {
         assert_eq!(cancelled.providers[0].status, "cancelled");
         assert_eq!(cancelled.providers[1].status, "cancelled");
         assert!(cancelled.nodes.is_empty());
+    }
+
+    #[test]
+    fn parse_discover_args_never_echoes_unknown_tokens() {
+        assert_eq!(parse_discover_args(&[]), Ok(DiscoverArgs { json: false }));
+        assert_eq!(
+            parse_discover_args(&["--json".to_string()]),
+            Ok(DiscoverArgs { json: true })
+        );
+        assert_eq!(
+            parse_discover_args(&["--json".to_string(), "--json".to_string()]),
+            Err("duplicate '--json' flag".to_string())
+        );
+
+        for bad in ["192.0.2.50", "gpu-box:18777", "--bad-flag"] {
+            let err = parse_discover_args(&[bad.to_string()]).unwrap_err();
+            assert_eq!(err, "unknown discover argument");
+            assert!(!err.contains(bad));
+        }
     }
 }

@@ -53,6 +53,37 @@ fn cli_rejects_unknown_or_duplicate_discover_flags() {
 }
 
 #[test]
+fn cli_rejects_unknown_discover_argument_without_echoing_input() {
+    let _guard = serial();
+    let bin = env!("CARGO_BIN_EXE_fastlink");
+    let empty_bin_dir = temp_dir("unknown-arg-empty-path");
+
+    let out = Command::new(bin)
+        .args(["discover", "192.0.2.50"])
+        .env("PATH", &empty_bin_dir)
+        .output()
+        .expect("run fastlink discover 192.0.2.50");
+    let _ = fs::remove_dir_all(&empty_bin_dir);
+
+    assert!(!out.status.success());
+    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stdout.is_empty(), "unexpected stdout: {stdout}");
+    assert!(
+        stderr.contains("FASTLINK error: unknown discover argument"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("192.0.2.50"),
+        "stdout echoed caller argument: {stdout}"
+    );
+    assert!(
+        !stderr.contains("192.0.2.50"),
+        "stderr echoed caller argument: {stderr}"
+    );
+}
+
+#[test]
 fn cli_discover_json_with_missing_providers_reports_unavailable_truthfully() {
     let _guard = serial();
     let bin = env!("CARGO_BIN_EXE_fastlink");
