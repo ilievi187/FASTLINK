@@ -1,3 +1,8 @@
+[workspace]
+members = ["crates/fastlink-gui"]
+default-members = [".", "crates/fastlink-gui"]
+resolver = "2"
+
 [package]
 name = "fastlink"
 version = "0.1.0"
@@ -12,3 +17,6 @@ publish = false
 
 [dependencies]
 blake3 = "1.8"
+
+[dev-dependencies]
+tempfile = "3"
