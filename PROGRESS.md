@@ -123,3 +123,10 @@
 - GUI zombie-test branch `b89b830` is locally verified with full workspace gates and Windows GNU cross-check; independent review is pending. It remains unpushed/unmerged.
 - CPU MLP branch `2af90f7` is rebased on current integration, pushed, and feature-CI green (`43868198001`, Ubuntu/Windows). Strict RED/GREEN fixed NaN masking through ReLU and authenticated-stage error propagation; full local gates and Semgrep pass. Independent review is pending. This proves only CPU authenticated loopback dense-MLP correctness—not LLM inference, multi-machine generation, or throughput.
 - `main` remains untouched. No real network discovery, GPU/model load, or inference workload was started, and protected services were left untouched.
+
+## 2026-11-16 — Linux GUI cancellation reliability integrated; CPU thread leak fixed pending re-review
+
+- Integrated the Linux-only GUI zombie-state test fix at `9d4f3dd`; independent review found no findings, feature CI `43870224018` and exact integration CI `43870664756` passed Ubuntu/Windows. The change is test-only; the separate live-child assertion remains strict.
+- Fresh CPU review of `2af90f7` found that a non-final CPU-stage error could detach downstream threads blocked in listener `accept()`. Strict TDD RED showed `NonFiniteActivation` with thread count rising 2→4. Commit `05d7fe8` relays a private nonempty error sentinel so all stages finish/join before the safe error is returned; the isolated regression passed 10/10.
+- Rebased CPU candidate `05d7fe8` passed commander-run workspace tests, fmt, Linux Clippy, Windows GNU check/Clippy, targeted Semgrep (0 findings), and feature CI `43871521672` on Ubuntu/Windows. Independent review of this final head remains pending, so it is not integrated.
+- Secure-worker residual risks remain tracked: unaudited `snow` 0.10, extra PairingRegistry secret copy, incomplete secure pairing UX/network exchange, 0600 file storage rather than OS keyring, and Noise internal zeroization. No production-security claim; no GPU/model/network work; `main` untouched.
