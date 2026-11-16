@@ -173,3 +173,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Commander reran workspace/all-target tests, fmt, Linux Clippy, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings) at the rebased code head. `RegistrySecret::drop` explicitly zeroizes its backing array; constructor-local copies are zeroized as well.
 - Scope is limited to the retained PairingRegistry copy. Residual: caller-owned/temporary copies and compiler/register remnants are not guaranteed erased; OS-keyring storage, no-echo pairing UX/network exchange, Noise internal-state zeroization and `snow` supply-chain review remain open. This is not a production-security declaration.
 - Remote `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no main merge. No model/GPU inference or live discovery was performed.
+
+## Checkpoint 17 — 2026-11-16 (PR #8 follow-up coverage gap)
+
+- Independent review of PR #8 head `24a39d637a59d913d4e0e722142700ebc7a4fb6c` found a P2 test-coverage gap: the robust tiled fixture now exercises adaptive selection, while the original tensor-like fixture is only round-tripped. The finding was posted and read back as PR comment `6919477540`.
+- AGY is restoring a separate selector exercise for the original fixture in isolated branch `fix/pr8-original-tensor-coverage`; the robust fixture's strict LZ4/ZSTD assertions must remain unchanged. The original fixture may legitimately choose RAW under runtime-measured CPU costs.
+- PR #8 remains open and unmerged pending follow-up, independent re-review, and exact-head CI. `main` remains unchanged; no GPU/model/server/network work was started.

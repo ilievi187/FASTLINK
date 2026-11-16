@@ -157,3 +157,8 @@
 
 - Rebased `feat/pairing-secret-hardening` at `c9698f2` onto integration after a clean independent review of the code diff. `RegistrySecret::drop` zeroizes its retained key; local test gates, targeted Semgrep, exact feature CI `43885822332`, and exact integration CI `43886390304` passed on Linux/Windows.
 - Fast-forwarded the validated narrow fix into `integrate/fastlink-team`. The remaining keyring, pairing UX/exchange, Noise-state and `snow` audit risks remain open; no production-security claim and no `main` merge.
+
+## 2026-11-16 — PR #8 independent-review follow-up
+
+- Independent review of `24a39d6` found the original tensor-like workload no longer passes through adaptive selection; the finding is recorded on PR #8 in comment `6919477540`.
+- AGY is adding selector coverage for the original fixture on a fresh branch while preserving the robust fixture and its strict codec assertions. PR #8 is not being merged until the follow-up is reviewed and exact-head CI is green.
