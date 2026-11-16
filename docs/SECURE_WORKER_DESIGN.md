@@ -250,8 +250,13 @@ Reconnect never silently re-pairs.
 - Suite: exactly `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`.
 - `snow::Builder`: fixed protocol params, local static private key, and
   `.psk(3, session_key)`. No alternative suite or fallback.
-- Handshake messages are length-prefixed and capped (suggest 64 KiB) with a
-  bounded handshake deadline (suggest 5 seconds).
+- Handshake messages are length-prefixed and capped at the Noise hard limit of
+  **65,535 bytes total per message, including the 16-byte AEAD tag where
+  present**. Do not describe this as a 64 KiB application payload: application
+  handshake payload is smaller by handshake tokens/tag bytes. Reject any
+  handshake message above 65,535 before allocation. Use a bounded handshake
+  deadline (suggest 5 seconds). `snow` exposes the same `MAXMSGLEN = 65,535`
+  limit.
 - One handshake per TCP connection. No resumption, 0-RTT, renegotiation, or
   session tickets.
 - A failed handshake closes the socket; no plaintext error detail containing
@@ -273,17 +278,47 @@ Reconnect never silently re-pairs.
 
 ### 6.3 Bounded application framing
 
+Noise messages have a hard maximum of **65,535 bytes including the 16-byte
+AEAD tag** (Noise message format; `snow` `MAXMSGLEN = 65,535`). The secure
+transport must enforce that exact limit; it must **not** use the existing
+256 KiB `MAX_FRAME_WIRE_BYTES` value as a single Noise ciphertext cap.
+
+Derived limits:
+
+```text
+MAX_NOISE_MESSAGE_BYTES        = 65_535   (ciphertext incl. AEAD tag)
+MAX_TRANSPORT_PLAINTEXT_BYTES  = 65_519   (65_535 - 16-byte tag)
+INNER_HEADER_BYTES             = 4        (version u8, frame_type u8, flags u16)
+MAX_SINGLE_FRAME_PAYLOAD_BYTES = 65_515   (65_519 - 4-byte inner header)
+CHUNK_HEADER_BYTES             = 12       (transfer_id u32, total_len u32, offset u32)
+MAX_CHUNK_PAYLOAD_BYTES        = 65_503   (65_519 - 4 - 12)
+MAX_LOGICAL_FRAME_BYTES        = 262_144  (existing 256 KiB upper-layer bound)
+```
+
 Use an encrypted inner application frame with:
 
 ```text
-u32 ciphertext_len (little-endian)
+u32 ciphertext_len (little-endian; 16..=65_535 for transport messages)
 ciphertext = Noise transport encrypt(inner_header || payload)
 ```
 
-- `1 <= ciphertext_len <= 256 KiB`; reject zero/oversized lengths before
-  allocation, matching the existing `MAX_FRAME_WIRE_BYTES` bound.
-- Decrypt/authenticate first; only then parse a versioned inner frame:
+- Reject zero, truncated (less than the 16-byte tag), or
+  `ciphertext_len > 65_535` before allocation.
+- Decrypt/authenticate first; only then parse the versioned inner header:
   `version:u8`, `frame_type:u8`, `flags:u16`, `payload`.
+- Simple control frames carry at most 65,515 application payload bytes, after
+  the 4-byte inner header.
+- Logical frames larger than 65,515 bytes (up to the existing 256 KiB
+  upper-layer bound) use explicit multi-message chunking. Each chunk is a
+  separate Noise transport message with the 4-byte inner header plus a 12-byte
+  chunk header (`transfer_id:u32`, `total_len:u32`, `offset:u32`) and at most
+  65,503 payload bytes. At the current 256 KiB logical cap, this is at most five
+  Noise messages.
+- Reassembly is bounded: reject `total_len > 262_144`, duplicate/overlapping/
+  out-of-order/missing chunks, mismatched transfer IDs, or a chunk that exceeds
+  the declared total. Close the session on any violation.
+- Handshake messages are capped at the same 65,535-byte Noise message limit and
+  are never application-chunked.
 - Reject unknown frame versions/types/flags unless explicitly negotiated.
 - Apply read/write deadlines, a maximum frame count per session and a bounded
   queue/backpressure policy. On AEAD failure, nonce exhaustion, truncation, or
@@ -379,11 +414,21 @@ listener, or network scan.
 - Wrong PSK, wrong static key pin, wrong prologue/node ID, tampered handshake
   message, invalid suite/fallback, handshake timeout and replayed handshake
   fail closed.
+- Handshake messages at the 65,535-byte Noise limit are accepted only if valid;
+  65,536 is rejected before allocation. Application handshake payload limits
+  account for handshake tokens/tag bytes.
 - Capture loopback bytes: no plaintext model/prompt/activation/control payload
   is observable; only Noise ciphertext/framing.
 - AEAD tamper, truncation, wrong direction, replayed ciphertext, zero length,
-  oversized frame, invalid inner version/type and nonce-limit behavior close the
-  session safely.
+  invalid inner version/type and nonce-limit behavior close the session safely.
+- Transport ciphertext of 65,535 bytes including its 16-byte tag is the maximum;
+  65,536 is rejected before allocation. A single normal frame carries at most
+  65,515 application payload bytes after the 4-byte inner header; 65,516 is
+  rejected.
+- A 256 KiB logical activation frame is reassembled from at most five Noise
+  messages with chunk headers; duplicate, overlapping, out-of-order, missing,
+  mismatched-transfer and over-total chunks are rejected. No test may construct
+  a single 256 KiB Noise message/ciphertext.
 - Frame read/write timeouts and cancellation terminate promptly; no thread or
   socket leak.
 - Sentinel `MODEL`/`PROMPT`/`KV` bytes sent before authentication are never
@@ -427,8 +472,10 @@ listener, or network scan.
    acceptance.
 5. **Durable replay policy:** persist last accepted epoch vs a bounded nonce
    ledger; crash consistency between challenge issuance and trust update.
-6. **Transport limits:** exact frame cap (256 KiB proposed), session message cap
-   (1,000,000 proposed), rekey vs close-on-exhaustion, and backpressure policy.
+6. **Transport limits:** Noise per-message cap is fixed at 65,535 bytes including
+   the 16-byte tag; the logical frame cap is 256 KiB and requires the explicit
+   chunking above. Confirm session message cap (1,000,000 proposed), rekey vs
+   close-on-exhaustion, and backpressure policy.
 7. **Endpoint refactor:** remove `addr` from public `PeerIdentity`/`PairingSession`
    and keep a transient endpoint type; migration of existing tests/CLI.
 8. **Listener policy:** loopback-only first implementation vs explicit private
@@ -442,9 +489,12 @@ listener, or network scan.
 ## 12. Sources
 
 - Noise Protocol Framework specification:
-  <https://noiseprotocol.org/noise.html>
+  <https://noiseprotocol.org/noise.html> (message format and 65,535-byte
+  maximum message size)
 - `snow` 0.10 `Builder` API:
   <https://docs.rs/snow/0.10.0/snow/struct.Builder.html>
+- `snow` 0.10 crate/transport API and `MAXMSGLEN = 65,535`:
+  <https://docs.rs/snow/0.10.0/snow/>
 - Project constraints and claims: local `AGENTS.md`, `docs/PROTOCOL.md`,
   `docs/ROADMAP.md`, `docs/M2_DISCOVERY_CONTRACT.md`,
   `docs/MULTI_DEVICE_NORTH_STAR.md`.
