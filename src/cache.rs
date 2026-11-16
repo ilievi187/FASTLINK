@@ -19,6 +19,25 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+/// File modification time in nanoseconds since the epoch, for eviction ordering.
+fn mtime_nanos(meta: &fs::Metadata) -> u128 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// Extract a 64-character hex digest filename, ignoring `.partial` and non-digest files.
+fn chunk_digest_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
 /// A content-addressed on-disk cache for verified 64 KiB tensor chunks.
 #[derive(Debug, Clone)]
 pub struct ChunkCache {
@@ -43,6 +62,92 @@ impl ChunkCache {
         self
     }
 
+    /// Maximum storage quota in bytes, if one is configured.
+    pub fn max_bytes(&self) -> Option<u64> {
+        self.max_bytes
+    }
+
+    /// Collect valid chunk digest files (`chunks/<xx>/<64-hex>`) with mtime and byte length.
+    fn collect_chunk_entries(&self) -> io::Result<Vec<(PathBuf, u128, String, u64)>> {
+        let chunks_dir = self.root.join("chunks");
+        if !chunks_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&chunks_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            for sub in fs::read_dir(entry.path())? {
+                let sub = sub?;
+                let path = sub.path();
+                if !sub.file_type()?.is_file() {
+                    continue;
+                }
+                let Some(name) = chunk_digest_name(&path) else {
+                    continue;
+                };
+                match sub.metadata() {
+                    Ok(meta) => entries.push((path, mtime_nanos(&meta), name, meta.len())),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn evict_to_quota_internal(&self, keep_last: Option<&Path>) -> io::Result<usize> {
+        let Some(max) = self.max_bytes else {
+            return Ok(0);
+        };
+        let mut chunks = self.collect_chunk_entries()?;
+        let mut total: u64 = chunks.iter().map(|(_, _, _, len)| *len).sum();
+        if total <= max {
+            return Ok(0);
+        }
+        // Evict oldest chunks first (ties broken by digest hex). During `store()`,
+        // keep the just-written chunk last so identical filesystem mtime ticks do
+        // not evict it prematurely; manual eviction can evict even the last chunk.
+        chunks.sort_by(|a, b| {
+            let a_keep = keep_last.is_some_and(|p| a.0 == p);
+            let b_keep = keep_last.is_some_and(|p| b.0 == p);
+            a_keep
+                .cmp(&b_keep)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        let mut evicted = 0;
+        for (path, _, _, size) in chunks {
+            if total <= max {
+                break;
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    evicted += 1;
+                    total = total.saturating_sub(size);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    total = total.saturating_sub(size);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(evicted)
+    }
+
+    /// Enforce the configured storage quota by evicting the oldest chunk files.
+    ///
+    /// Chunks are ordered by modification time (oldest first, ties broken by
+    /// digest hex) and removed until stored valid chunk bytes are at or below
+    /// `max_bytes`, including the newest/final chunk if needed when a quota is
+    /// smaller than that chunk. Non-digest files such as `.partial` temporary
+    /// files are ignored here (`purge_invalid` owns their lifecycle).
+    pub fn evict_to_quota(&self) -> io::Result<usize> {
+        self.evict_to_quota_internal(None)
+    }
+
     /// Root directory of the cache.
     pub fn root(&self) -> &Path {
         &self.root
@@ -65,8 +170,11 @@ impl ChunkCache {
 
     /// Store a chunk in the cache atomically.
     ///
-    /// Verifies that `bytes.len() <= CHUNK_BYTES` and that `digest(bytes) == *hash`.
-    /// Writes first to a `.partial` sibling file, flushes to disk, and renames.
+    /// Verifies that `bytes.len() <= CHUNK_BYTES`, `digest(bytes) == *hash`,
+    /// and (when a quota is configured) `bytes.len() <= max_bytes` before
+    /// creating directories or files. Writes first to a `.partial` sibling
+    /// file, flushes to disk, and renames, then evicts older chunks if needed so
+    /// stored valid chunk bytes remain at or below `max_bytes`.
     pub fn store(&self, hash: &Digest, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > CHUNK_BYTES {
             return Err(invalid("chunk exceeds CHUNK_BYTES limit"));
@@ -74,11 +182,19 @@ impl ChunkCache {
         if digest(bytes) != *hash {
             return Err(invalid("chunk content does not match expected digest"));
         }
+        if let Some(max) = self.max_bytes {
+            if (bytes.len() as u64) > max {
+                return Err(invalid("chunk exceeds configured max_bytes quota"));
+            }
+        }
         let path = self.digest_path(hash);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         if self.is_valid(hash) {
+            if self.max_bytes.is_some() {
+                self.evict_to_quota_internal(Some(&path))?;
+            }
             return Ok(());
         }
 
@@ -88,6 +204,9 @@ impl ChunkCache {
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp, &path)?;
+        if self.max_bytes.is_some() {
+            self.evict_to_quota_internal(Some(&path))?;
+        }
         Ok(())
     }
 

@@ -88,3 +88,13 @@ end-to-end RPC transfer or a GPU performance claim.
 **Measured (canonical optimized loopback snapshot `rpc-latency-linux-2026-11-10-232742-db55920`):** raw/framed 64 KiB RTT min/median/mean 0.017/0.020/0.021 and 0.093/0.101/0.106 ms; patterned 8 MiB raw TCP 8,103.0 MB/s vs FASTLINK RAW 601.6 MB/s raw-equivalent / 601.6 MB/s wire (+652 B); uniform raw TCP 8,014.9 MB/s vs FASTLINK RLE 1,960.6 MB/s raw-equivalent / 15.6 MB/s wire; connection setup 0.039 ms. Raw TCP was 13.5× faster on patterned throughput in this single run. No speed guarantee or GPU/inference claim. Full provenance and methodology in `benches/results_rpc_latency.json` and `docs/BENCHMARKS.md`.
 
 **Explicit limitation:** loopback only, unauthenticated, unencrypted; single TCP connection per scenario. Transport measurement, not end-to-end RPC or GPU result. Batched `Pool` numbers pending.
+
+## 2026-11-17 — PR #4 follow-up: Enforceable `ChunkCache` `max_bytes` quota
+
+- Added `ChunkCache::max_bytes()` and `ChunkCache::evict_to_quota()` in `src/cache.rs`, enforcing `max_bytes` across sequential single-instance `ChunkCache` operations.
+- `ChunkCache::store()` rejects any chunk whose byte length exceeds a configured `max_bytes` quota (`ErrorKind::InvalidData`) before creating shard directories, `.partial` staging files, or final chunk files (zero-length chunks remain allowed under any `max_bytes`, including `0`).
+- After storing a within-quota chunk (and on duplicate `store()` calls within quota), `ChunkCache::store()` evicts oldest valid chunks first (`mtime` nanoseconds, digest hex tie-break) while keeping the just-stored chunk last across same-tick mtime ties until valid stored chunk bytes are `<= max_bytes`.
+- Standalone `ChunkCache::evict_to_quota()` evicts oldest-first without exempting the newest/final chunk, so shrinking `max_bytes` over an existing cache removes even a lone oversize chunk until valid chunk bytes are `<= max_bytes`.
+- Integration coverage in `tests/cache_quota_test.rs` (7 tests) covers pre-write oversize rejection, shrunk-quota eviction (single oversize and multi-chunk caches), oldest-first eviction with newest retention when it fits, no-quota no-op, duplicate storage, and zero-length chunks.
+
+**Residual limits:** Single-instance sequential chunk-file byte bound only — not a process-wide or concurrent quota lock. Concurrent writers targeting the same cache directory can race on `store()` / eviction, transient `.partial` staging files coexist during atomic writes, and `evict_to_quota()` ignores stale non-digest/leftover `.partial` files (`purge_invalid()` removes those, while `total_bytes()` counts all files under shard directories). Measurements/tests are CPU-only local checks, not disk-block or throughput claims.
