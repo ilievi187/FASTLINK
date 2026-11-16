@@ -1,15 +1,22 @@
-//! High-performance GPU tensor transfer benchmark:
-//! Memory-Mapped (mmap / POSIX shm) vs Raw TCP vs FASTLINK-RPC/1 Transport.
+//! CPU-only POSIX shared-memory (mmap/shm) vs Raw TCP vs FASTLINK-RPC/1 transport benchmark.
 //!
 //! Measures:
 //! 1. Single-chunk (64 KiB) round-trip latency (min, p50, p95, p99, mean)
 //! 2. 8 MiB tensor transfer throughput (Patterned incompressible vs Uniform compressible)
-//! 3. Wire / memory overhead and zero-copy bandwidth
+//! 3. Wire / memory overhead and CPU copy bandwidth
+//!
+//! The shared-memory branch is POSIX-only (`shm_open`/`mmap`); it copies bytes
+//! through a CPU mapping and does not exercise a GPU. On Windows this benchmark
+//! is unsupported: the entrypoint prints an explicit message and exits without
+//! running or reporting mmap, TCP, or FASTLINK performance.
 //!
 //! Run with:
 //! ```text
 //! cargo bench --bench mmap_transfer
 //! ```
+
+// Windows exits before the POSIX benchmark helpers are reachable.
+#![cfg_attr(windows, allow(dead_code))]
 
 use fastlink::transport::{receive_tensor, send_tensor};
 use fastlink::CHUNK_BYTES;
@@ -127,26 +134,18 @@ impl MmapShm {
 
 #[cfg(windows)]
 impl MmapShm {
-    fn create(_name_str: &str, len: usize) -> std::io::Result<Self> {
-        let arr = vec![0u8; len];
-        let ptr = Box::leak(Box::new(arr)).as_mut_ptr();
-        Ok(Self {
-            name: CString::new("").unwrap(),
-            ptr,
-            len,
-            fd: 0,
-        })
+    fn create(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "POSIX shared memory is unavailable on Windows",
+        ))
     }
 
-    fn open(_name_str: &str, len: usize) -> std::io::Result<Self> {
-        let arr = vec![0u8; len];
-        let ptr = Box::leak(Box::new(arr)).as_mut_ptr();
-        Ok(Self {
-            name: CString::new("").unwrap(),
-            ptr,
-            len,
-            fd: 0,
-        })
+    fn open(_name_str: &str, _len: usize) -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "POSIX shared memory is unavailable on Windows",
+        ))
     }
 }
 
@@ -208,7 +207,7 @@ fn bench_mmap_latency() -> LatencyPercentiles {
     let ack_c = ack_flag.clone();
     let stop_c = stop_flag.clone();
 
-    // Consumer thread simulates GPU worker ingesting tensor from mmap region
+    // Consumer thread copies bytes from the mmap region into a CPU heap buffer.
     let consumer = thread::spawn(move || {
         let consumer_shm = MmapShm::open(shm_name, CHUNK_BYTES).expect("open shm in consumer");
         let mut dest_buf = vec![0u8; CHUNK_BYTES];
@@ -530,9 +529,22 @@ fn bench_fastlink_throughput(label: &str, tensor: &[u8]) -> (f64, f64, u64, i64)
     (raw_tp, wire_tp, per_tensor_wire, delta_bytes)
 }
 
+#[cfg(windows)]
+const WINDOWS_UNSUPPORTED_MESSAGE: &str =
+    "FASTLINK mmap_transfer is unsupported on Windows: POSIX shared memory \
+     (shm_open/mmap) is required; no mmap, TCP, or FASTLINK performance \
+     measurements were run.";
+
+#[cfg(windows)]
+fn main() {
+    eprintln!("{WINDOWS_UNSUPPORTED_MESSAGE}");
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 fn main() {
     println!("================================================================================");
-    println!("FASTLINK A-3: GPU Tensor Transfer Harness (mmap vs Raw TCP vs FASTLINK-RPC/1)");
+    println!("FASTLINK A-3: CPU Tensor Transfer Harness (POSIX shm vs Raw TCP vs FASTLINK-RPC/1)");
     println!("chunk_bytes={CHUNK_BYTES} tensor_bytes={TENSOR_BYTES}");
     println!("================================================================================");
 

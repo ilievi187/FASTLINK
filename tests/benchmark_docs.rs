@@ -99,3 +99,36 @@ fn results_do_not_mislabel_cpu_shared_memory_copy_as_gpu_zero_copy() {
     assert!(!results.contains("zero-copy GPU tensor staging"));
     assert!(!results.contains("FLR1 frame verification"));
 }
+
+#[test]
+fn mmap_benchmark_is_explicitly_unavailable_on_windows() {
+    let harness = include_str!("../benches/mmap_transfer.rs");
+
+    // Top-level documentation describes the real CPU/POSIX measurement, not
+    // GPU or zero-copy staging.
+    assert!(harness.contains("CPU-only"));
+    assert!(harness.contains("POSIX shared-memory"));
+    assert!(harness.contains("does not exercise a GPU"));
+    assert!(!harness.contains("GPU Tensor Transfer"));
+    assert!(!harness.contains("zero-copy bandwidth"));
+    assert!(!harness.contains("simulates GPU worker"));
+
+    // Windows has an explicit unsupported entrypoint rather than fake mmap
+    // producers/consumers or performance output.
+    assert!(harness.contains("WINDOWS_UNSUPPORTED_MESSAGE"));
+    assert!(harness.contains("unsupported on Windows"));
+    assert!(harness.contains("no mmap, TCP, or FASTLINK"));
+    assert!(harness.contains("std::process::exit(1)"));
+    assert!(harness.contains("#[cfg(windows)]\nfn main()"));
+    assert!(harness.contains("#[cfg(unix)]\nfn main()"));
+
+    // The real benchmark is POSIX-only, and Windows create/open must fail
+    // without allocating a fake independent buffer.
+    assert!(harness.contains("fn bench_mmap_latency"));
+    assert_eq!(
+        harness.matches("std::io::ErrorKind::Unsupported").count(),
+        2,
+        "Windows create/open must both return ErrorKind::Unsupported"
+    );
+    assert!(!harness.contains("Box::leak"));
+}
