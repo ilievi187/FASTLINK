@@ -179,3 +179,10 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Independent review of PR #8 head `24a39d637a59d913d4e0e722142700ebc7a4fb6c` found a P2 test-coverage gap: the robust tiled fixture now exercises adaptive selection, while the original tensor-like fixture is only round-tripped. The finding was posted and read back as PR comment `6919477540`.
 - AGY is restoring a separate selector exercise for the original fixture in isolated branch `fix/pr8-original-tensor-coverage`; the robust fixture's strict LZ4/ZSTD assertions must remain unchanged. The original fixture may legitimately choose RAW under runtime-measured CPU costs.
 - PR #8 remains open and unmerged pending follow-up, independent re-review, and exact-head CI. `main` remains unchanged; no GPU/model/server/network work was started.
+
+## Checkpoint 18 — 2026-11-16 (release-safe Linux M1 candidate prepared)
+
+- Created a clean release branch from current `main` (`8cd1b281a545f1bb0806904c8ae97902d6b62f9b`) and selectively ported only passive local inventory, the pre-alpha Linux desktop shell, and desktop packaging. Candidate head: `f4154ab7e01189a40a9c668968b1d1711b097f91`.
+- The candidate excludes LAN/Tailscale discovery, secure worker, distributed inference, llama.cpp/GPU execution, and V4 experimental code. Local Linux workspace tests, fmt, Clippy, GUI build, Windows GNU check/Clippy, and diff-check passed; no GUI window or GPU workload was launched.
+- Draft PR #12 targets `main`; exact-head GitHub CI `43891839756` passed Ubuntu/Windows. PR #12 remains draft pending independent review and Semgrep triage (six candidate matches in Unix pipe syscalls, non-Unix temp-file fallback, and CLI argument parsing).
+- No changes have been merged to `main`; do not promote PR #12 until the independent review confirms release safety and all scan findings are resolved or substantiated as false positives.

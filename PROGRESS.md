@@ -162,3 +162,8 @@
 
 - Independent review of `24a39d6` found the original tensor-like workload no longer passes through adaptive selection; the finding is recorded on PR #8 in comment `6919477540`.
 - AGY is adding selector coverage for the original fixture on a fresh branch while preserving the robust fixture and its strict codec assertions. PR #8 is not being merged until the follow-up is reviewed and exact-head CI is green.
+
+## 2026-11-16 — Main-based Linux M1 release candidate
+
+- Built `release/linux-local-device-ui` from `main` with only passive local inventory, Linux desktop shell, and desktop-entry packaging; no network discovery, secure-worker, model or GPU code was ported. Candidate `f4154ab` passed local Linux workspace tests/fmt/Clippy/build and Windows GNU compile/Clippy.
+- Draft PR #12 targets `main`; exact-head CI `43891839756` passed Ubuntu/Windows. Independent review is in progress; Semgrep flagged six candidate matches requiring triage, so the PR is not ready to merge yet.
