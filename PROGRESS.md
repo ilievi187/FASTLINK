@@ -144,3 +144,11 @@
 - PRs #3 and #4 have no submitted reviews; #5 is draft/unreviewed; #8 is conflicting and its Windows CI failed in the adaptive codec test. OpenCode is fixing #8 in its existing dedicated PR worktree. Re-evaluate it for the integration branch only after conflict resolution, independent review, and green exact-head CI; keep `main` separately gated.
 - AGY is hardening `PairingRegistry` secret lifetime on a fresh isolated branch with strict TDD. Separate no-echo pairing UX/OS keyring and `snow` audit work remains queued; secure worker is still experimental.
 - Independent review work is underway for the open PRs and generic runtime error paths. Existing local generation/inference work was observed and left untouched; no GPU/model/network work was started.
+
+## 2026-11-16 — Independent PR audit blockers and runtime fix
+
+- Exact integration checkpoint `a2a5b27` passed Linux/Windows CI `43882412272`. `main` remains unchanged at `8cd1b28`.
+- Read-only review findings are now posted and verified on PRs #3/#4/#5: #3 has a P1 privacy disclosure in docs; #4 has a P1 peer-sized allocation plus quota/async/ACK/keep-alive/benchmark/Windows shared-memory defects; #5 has a P1 worker-scoped residency error and P2 retry-deadline/ZSTD interoperability defects. No unsafe PR was merged.
+- OpenCode started isolated TDD work on generic runtime cancellation/join leaks (`fix/runtime-failure-join`). AGY's PairingRegistry zeroize change is pushed at `77f5bec`, with commander-run local Linux/Windows compile gates and Semgrep green; exact CI and independent review remain pending.
+- PR #8's Windows CI/conflict repair is pushed at `24a39d6` with two exact-head Linux/Windows CI runs green; independent review is pending.
+- Preserve the GPU/model and live-discovery approval gate; no inference or network scan was run.
