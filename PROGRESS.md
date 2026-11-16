@@ -115,3 +115,11 @@
 - No real LAN/Tailscale discovery action, model load, inference, or GPU work has been started. M2 backend+GUI and MoE are integrated remotely into `integrate/fastlink-team` at `3042ac6`; Tasks 5, 6, 8 and 11 are complete. Pairing/removal and secure worker remain experimental/pending; `main` is untouched.
 
 **Next:** get the independent review of the partial-frame test delta; if clean, fast-forward rebased `f4e63d0` into `integrate/fastlink-team`, push and verify exact integration CI. Keep `snow` experimental and track the pairing-secret copy, no-echo/network-exchange UX, key storage and audit gaps; no live discovery or GPU/model/inference until their gates are met.
+
+## 2026-11-16 — Experimental secure-worker slice integrated; GUI and CPU branches advancing
+
+- Fast-forwarded secure-worker branch `feat/secure-linux-worker` into `integrate/fastlink-team` at `3e2137e3357b6960a37921baea4a3bac464864e6`. The rebased feature CI (`43866507647`) and exact integration CI (`43867116852`) passed Ubuntu and Windows; independent full security and partial-frame test reviews found no actionable issues.
+- Task 15 partial-frame timeout regression is confirmed RED on `40c95ce` and GREEN on the absolute-deadline fix, 10/10 repetitions. The integrated worker remains experimental and loopback-only. `snow` audit, PairingRegistry temporary secret copies, incomplete no-echo/network pairing UX, 0600 file storage instead of OS keyring, and Noise internal zeroization remain unresolved risks.
+- GUI zombie-test branch `b89b830` is locally verified with full workspace gates and Windows GNU cross-check; independent review is pending. It remains unpushed/unmerged.
+- CPU MLP branch `2af90f7` is rebased on current integration, pushed, and feature-CI green (`43868198001`, Ubuntu/Windows). Strict RED/GREEN fixed NaN masking through ReLU and authenticated-stage error propagation; full local gates and Semgrep pass. Independent review is pending. This proves only CPU authenticated loopback dense-MLP correctness—not LLM inference, multi-machine generation, or throughput.
+- `main` remains untouched. No real network discovery, GPU/model load, or inference workload was started, and protected services were left untouched.
