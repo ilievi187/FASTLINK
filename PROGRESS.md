@@ -195,4 +195,10 @@
 ## 2026-11-16 — M1 temp-file and marker-copy follow-up
 
 - OpenCode pushed isolated candidate `1aab6d5`; it fixes stale opt-in/consent wording and all three temp-directory heuristics, including a real Linux ETXTBSY test race (20 focused repeats passed after serialization). Exact CI `43906258084` is green; commander reran the full Linux/Windows-target gate chain and full changed-Rust Semgrep.
-- Five remaining Semgrep matches are limited to audited `unsafe` pipe reads/fcntl and CLI argument dispatch. A final independent review is running; PR #12 remains draft and unmodified until that review is clean.
+- Five remaining Semgrep matches are limited to audited `unsafe` pipe reads/fcntl and CLI argument dispatch. Independent final review found no actionable findings; PR #12 was updated and merged into main.
+
+## 2026-11-16 — M1 Linux device GUI merged to main
+
+- PR #12 final candidate `1aab6d5a079052d62be50a6acda131f428d81df4` passed exact Ubuntu/Windows PR checks `43907795006` and `43907803373`, commander local full gates, and independent defect-first review (no findings). Semgrep's five remaining heuristics were triaged as scoped pipe-syscall/CLI-argument false positives; no temp-dir or secrets findings remained.
+- Merged PR #12 into `main` at `3606637ca41d07f60562d536a8b9559f751c1f24` on 2026-11-16 16:33:27 UTC. Exact merge-commit CI `43908805208` is still running; main's release gate is not fully green until it succeeds.
+- The release slice contains passive Linux local inventory, a pre-alpha local-device GUI and desktop packaging only. No live discovery, pairing, model/inference, GPU workload or service interruption.
