@@ -32,6 +32,13 @@ pub const MAX_CPU_PARAMETERS: usize = 4_000_000;
 /// Width of one serialized activation value.
 pub const CPU_FLOAT_BYTES: usize = 4;
 
+/// Private non-empty failure marker relayed through downstream CPU stages.
+///
+/// Three bytes can never be a valid serialized f32 tensor (all activation
+/// bytes are a multiple of [`CPU_FLOAT_BYTES`]), and it is not returned as a
+/// successful activation because the stored layer error is surfaced first.
+const CPU_STAGE_ERROR_SENTINEL: &[u8; 3] = b"\xFF\xFF\xFF";
+
 /// Declared activation applied after a dense layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CpuActivation {
@@ -500,6 +507,9 @@ pub fn run_authenticated_cpu_mlp_pipeline(
     let stage_slot = Arc::clone(&error_slot);
 
     let stage_fn = move |stage_index: usize, raw: &[u8]| -> Vec<u8> {
+        if raw == CPU_STAGE_ERROR_SENTINEL.as_slice() {
+            return CPU_STAGE_ERROR_SENTINEL.to_vec();
+        }
         let result = (|| -> Result<Vec<u8>, CpuInferenceError> {
             let (start, end) = *ranges_ref.get(stage_index).ok_or_else(|| {
                 CpuInferenceError::StageLayout(format!(
@@ -520,7 +530,7 @@ pub fn run_authenticated_cpu_mlp_pipeline(
                         *slot = Some(error);
                     }
                 }
-                Vec::new()
+                CPU_STAGE_ERROR_SENTINEL.to_vec()
             }
         }
     };
@@ -548,6 +558,11 @@ pub fn run_authenticated_cpu_mlp_pipeline(
         .ok_or(CpuInferenceError::EmptyModel)?;
     let mut outputs = Vec::with_capacity(raw_outputs.len());
     for raw in raw_outputs {
+        if raw == CPU_STAGE_ERROR_SENTINEL.as_slice() {
+            return Err(CpuInferenceError::Internal(
+                "CPU stage error sentinel escaped without a stored error".into(),
+            ));
+        }
         outputs.push(decode_f32_le(&raw, expected_output)?);
     }
     if outputs.len() != inputs.len() {

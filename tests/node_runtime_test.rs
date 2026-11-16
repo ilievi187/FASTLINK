@@ -332,3 +332,108 @@ fn authenticated_cpu_mlp_surfaces_nonfinite_activation() {
         "the authenticated wrapper must surface the layer failure; got {result:?}"
     );
 }
+
+#[cfg(target_os = "linux")]
+fn linux_thread_count() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .expect("read /proc/self/task")
+        .count()
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_thread_count_at_most(limit: usize) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        if linux_thread_count() <= limit {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn nonfinal_cpu_error_case() {
+    use fastlink::cpu_inference::{
+        run_authenticated_cpu_mlp_pipeline, CpuActivation, CpuDenseLayer, CpuInferenceError,
+        CpuMlpSpec,
+    };
+
+    let layer0 = CpuDenseLayer::new(2, 1, vec![2.0, -2.0], vec![0.0], CpuActivation::Relu)
+        .expect("overflowing layer 0");
+    let layer1 =
+        CpuDenseLayer::new(1, 1, vec![1.0], vec![0.0], CpuActivation::Identity).expect("layer 1");
+    let layer2 =
+        CpuDenseLayer::new(1, 1, vec![1.0], vec![0.0], CpuActivation::Identity).expect("layer 2");
+    let spec = CpuMlpSpec::new(2, vec![layer0, layer1, layer2]).expect("three-layer spec");
+    let manifest = PartitionManifest::build(
+        7,
+        spec.digest(),
+        16,
+        3,
+        &[
+            StageSpec {
+                node_id: "cpu-stage-0".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 0,
+                layer_end: 1,
+            },
+            StageSpec {
+                node_id: "cpu-stage-1".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 1,
+                layer_end: 2,
+            },
+            StageSpec {
+                node_id: "cpu-stage-2".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 2,
+                layer_end: 3,
+            },
+        ],
+    )
+    .expect("three-stage manifest");
+
+    let baseline = linux_thread_count();
+    let result = run_authenticated_cpu_mlp_pipeline(
+        &spec,
+        &manifest,
+        &[0x42u8; 32],
+        &[vec![f32::MAX, f32::MAX]],
+    );
+    let after = linux_thread_count();
+    let no_leak = wait_for_thread_count_at_most(baseline);
+    let safe_error = matches!(result, Err(CpuInferenceError::NonFiniteActivation));
+    assert!(
+        safe_error && no_leak,
+        "expected NonFiniteActivation and no leaked stage threads; \
+         result={result:?}, baseline={baseline}, after={after}, no_leak={no_leak}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn cpu_nonfinal_stage_error_does_not_leak_downstream_threads() {
+    if std::env::var_os("FASTLINK_CPU_LEAK_CHILD").is_some() {
+        nonfinal_cpu_error_case();
+        return;
+    }
+
+    // Linux-only test: re-exec the current test binary in an isolated process
+    // so unrelated harness threads cannot affect the /proc/self/task check.
+    let output = std::process::Command::new("/proc/self/exe")
+        .arg("--exact")
+        .arg("cpu_nonfinal_stage_error_does_not_leak_downstream_threads")
+        .arg("--nocapture")
+        .env("FASTLINK_CPU_LEAK_CHILD", "1")
+        .output()
+        .expect("spawn isolated thread-leak test");
+    assert!(
+        output.status.success(),
+        "isolated leak test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
