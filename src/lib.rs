@@ -15,7 +15,6 @@ pub mod pairing;
 pub mod pipeline;
 pub mod residency;
 pub mod scheduler;
-#[cfg(target_os = "linux")]
 pub mod secure_worker;
 pub mod stage_auth;
 pub mod topology;
