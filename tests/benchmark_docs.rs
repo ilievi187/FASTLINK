@@ -100,9 +100,9 @@ fn results_do_not_mislabel_cpu_shared_memory_copy_as_gpu_zero_copy() {
     assert!(!results.contains("FLR1 frame verification"));
 }
 
-#[test]
-fn mmap_benchmark_is_explicitly_unavailable_on_windows() {
-    let harness = include_str!("../benches/mmap_transfer.rs");
+fn assert_mmap_benchmark_contract(harness: &str) {
+    // Normalize CRLF checkouts on Windows before matching multi-line snippets.
+    let harness = harness.replace("\r\n", "\n");
 
     // Top-level documentation describes the real CPU/POSIX measurement, not
     // GPU or zero-copy staging.
@@ -135,4 +135,18 @@ fn mmap_benchmark_is_explicitly_unavailable_on_windows() {
         "Windows create/open must both return ErrorKind::Unsupported"
     );
     assert!(!harness.contains("Box::leak"));
+}
+
+#[test]
+fn mmap_benchmark_is_explicitly_unavailable_on_windows() {
+    let harness = include_str!("../benches/mmap_transfer.rs");
+    assert_mmap_benchmark_contract(harness);
+}
+
+#[test]
+fn mmap_benchmark_contract_handles_windows_crlf_line_endings() {
+    let crlf = include_str!("../benches/mmap_transfer.rs")
+        .replace("\r\n", "\n")
+        .replace('\n', "\r\n");
+    assert_mmap_benchmark_contract(&crlf);
 }
