@@ -235,3 +235,35 @@ fn narrow_window_and_long_values_do_not_panic() {
     render(&ctx, &mut state, size);
     render(&ctx, &mut state, size);
 }
+
+#[test]
+fn session_intent_copy_is_explicitly_non_operational() {
+    let label = fastlink_gui::view::OPT_IN_LABEL.to_ascii_lowercase();
+    let detail = fastlink_gui::view::OPT_IN_DETAIL.to_ascii_lowercase();
+
+    assert!(
+        !label.contains("participate"),
+        "the visible marker must not promise compute participation: {label}"
+    );
+    assert!(
+        label.contains("session-only") && label.contains("no effect"),
+        "the label must identify a session-only, no-effect intent: {label}"
+    );
+    for required in [
+        "does not enable compute",
+        "pair devices",
+        "open connections",
+        "send data",
+    ] {
+        assert!(
+            detail.contains(required),
+            "detail must explicitly state '{required}': {detail}"
+        );
+    }
+
+    let badge = fastlink_gui::view::OPT_IN_BADGE.to_ascii_lowercase();
+    assert!(
+        badge.contains("no effect") && !badge.contains("session opt-in"),
+        "the post-toggle badge must not imply operational opt-in: {badge}"
+    );
+}

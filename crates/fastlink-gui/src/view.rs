@@ -13,9 +13,10 @@ pub const UNKNOWN: &str = "Unknown";
 /// Text used when a reported array contains no entries.
 pub const NONE_REPORTED: &str = "None reported";
 
-pub const OPT_IN_LABEL: &str = "Allow this device to participate in FASTLINK compute";
+pub const OPT_IN_LABEL: &str = "Session-only visual intent (no effect)";
 pub const OPT_IN_DETAIL: &str =
-    "Session-only opt-in. It creates no pairing, opens no socket and sends no data in this milestone.";
+    "No operational effect: this does not enable compute, pair devices, open connections, or send data. It is discarded when the window closes.";
+pub const OPT_IN_BADGE: &str = "Visual intent only (no effect)";
 
 /// One label/value row rendered by the node, GPU and capability tables.
 #[derive(Debug, Clone, PartialEq, Eq)]

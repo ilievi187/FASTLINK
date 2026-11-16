@@ -28,7 +28,7 @@ cargo run --release -- serve 127.0.0.1:18777 ./.fastlink-data
 # Terminal B
 cargo run --release -- send ./examples/hello.txt 127.0.0.1:18777
 cargo run --release -- send ./examples/hello.txt 127.0.0.1:18777
-# Inspect local host capability inventory (local-only, passive host evidence)
+# Inspect local host capability inventory (Linux-only, local-only, passive host evidence)
 cargo run --release -- devices
 cargo run --release -- devices --json
 ```
@@ -54,9 +54,12 @@ milestone. It invokes `fastlink devices --json` (schema
 `fastlink.devices.v1`, scope `local_only`), treats the sole local-only node as
 the local device, and preserves the backend's opaque hashed `node_id`. It renders
 only reported host, GPU and capability fields; unknown or null values remain
-`Unknown`, and network speed/connectivity is never inferred. Opt-in is
-session-only and local-node-only, with honest empty states for peers, models and
-chat. It performs no discovery, downloads, inference or GPU compute.
+`Unknown`, and network speed/connectivity is never inferred. The session-only
+visual-intent marker is local-node-only and has **no operational effect**: it
+does not enable compute, pair devices, open connections, or send data. Honest
+empty states are shown for peers, models and chat. It performs no discovery,
+downloads, inference or GPU compute. The live inventory command is Linux-only;
+non-Linux platforms receive `Unsupported` instead of an invented success.
 
 ```bash
 cargo build -p fastlink-gui

@@ -1,5 +1,9 @@
 //! Local-only Linux device inventory (`fastlink devices [--json]`).
 //!
+//! The live command is Linux-only: `/proc` and `/sys` are required, and other
+//! platforms return `io::ErrorKind::Unsupported` instead of a mostly-unknown
+//! successful inventory. Fixture-based parsing remains platform-independent.
+//!
 //! Collects passive host evidence for the local node only:
 //! - stable local node ID (hashed from `/etc/machine-id` or hostname fallback)
 //! - hostname, OS, kernel release, architecture
@@ -150,16 +154,33 @@ pub fn parse_devices_args(args: &[String]) -> Result<DevicesArgs, String> {
     Ok(DevicesArgs { json })
 }
 
-pub fn collect_local_inventory() -> DeviceInventory {
+/// Collects live local inventory on Linux.
+///
+/// Returns `io::ErrorKind::Unsupported` on non-Linux platforms rather than
+/// reporting a successful inventory of mostly-unknown values.
+pub fn collect_local_inventory() -> io::Result<DeviceInventory> {
+    collect_local_inventory_for_platform(std::env::consts::OS)
+}
+
+/// Platform-coherent inventory seam used by tests and the public command.
+///
+/// Only a real Linux runtime with `os == "linux"` may probe `/proc` and `/sys`.
+pub fn collect_local_inventory_for_platform(os: &str) -> io::Result<DeviceInventory> {
+    if os != "linux" || !cfg!(target_os = "linux") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "local device inventory requires Linux /proc and /sys",
+        ));
+    }
     let logical_cpus = std::thread::available_parallelism()
         .ok()
         .map(|count| count.get());
-    collect_local_inventory_with_paths(
+    Ok(collect_local_inventory_with_paths(
         &LinuxProbePaths::system(),
         logical_cpus,
-        std::env::consts::OS,
+        os,
         std::env::consts::ARCH,
-    )
+    ))
 }
 
 pub fn collect_local_inventory_with_paths(
@@ -644,7 +665,7 @@ pub fn render_inventory_text(inventory: &DeviceInventory) -> String {
 pub fn run_devices(args: &[String]) -> io::Result<String> {
     let parsed = parse_devices_args(args)
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
-    let inventory = collect_local_inventory();
+    let inventory = collect_local_inventory()?;
     if parsed.json {
         Ok(render_inventory_json(&inventory))
     } else {

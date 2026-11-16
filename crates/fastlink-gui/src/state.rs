@@ -2,10 +2,11 @@
 //!
 //! The loader runs the CLI on a worker thread so the window stays responsive.
 //! The local device is the sole node in `scope:"local_only"`; its opaque hashed
-//! `node_id` is the only identity used for selection and opt-in.
+//! `node_id` is the only identity used for selection and the session-only marker.
 //!
-//! Opt-in state is intentionally session-only: this milestone creates no
-//! pairing, listener or persisted consent.
+//! The marker is intentionally session-only and has no operational effect:
+//! this milestone creates no pairing, listener, compute permission or
+//! persisted consent.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -245,7 +246,7 @@ impl AppState {
         let local_id = inventory.local_node_id().map(str::to_owned);
 
         // Consent is local-device-only. A changed local node id invalidates the
-        // previous session opt-in rather than silently transferring consent.
+        // previous session marker rather than silently transferring intent.
         self.opted_in
             .retain(|id| local_id.as_deref() == Some(id.as_str()));
 
@@ -283,14 +284,15 @@ impl AppState {
         known
     }
 
-    /// Toggle explicit, session-only opt-in for the local node.
+    /// Toggle the session-only visual-intent marker for the local node.
     pub fn toggle_opt_in(&mut self, id: &str) -> bool {
         let next = !self.is_opted_in(id);
         self.set_opt_in(id, next)
     }
 
-    /// Set opt-in for the local node only. Unknown and non-local ids are
-    /// rejected: there are no remote controls in this milestone.
+    /// Set the session-only visual-intent marker for the local node only.
+    /// Unknown and non-local ids are rejected, and the marker has no
+    /// operational effect.
     pub fn set_opt_in(&mut self, id: &str, opted_in: bool) -> bool {
         if !self.is_local_node(id) {
             return false;

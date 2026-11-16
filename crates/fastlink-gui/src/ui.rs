@@ -159,8 +159,9 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     ui.add_space(6.0);
     ui.label(
         RichText::new(
-            "Opt-in is session-only, applies to the local node, and is never persisted. \
-             Closing the window discards it; no pairing or consent is stored.",
+            "The session intent marker is local-node-only and never persisted. It has no \
+             operational effect: it does not enable compute, pair devices, open connections, \
+             or send data. Closing the window discards it.",
         )
         .small()
         .color(ui.visuals().weak_text_color()),
@@ -325,7 +326,7 @@ fn devices_view(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(8.0);
     }
 
-    // Clone the small node list so cards can mutate selection/opt-in while the
+    // Clone the small node list so cards can mutate selection/session intent while the
     // rest of the snapshot is read-only.
     let (nodes, schema, schema_version, scope, discovery_mode, local_index) = {
         let inventory = state
@@ -499,7 +500,7 @@ fn node_card(
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(
-                        "The CLI did not derive a node_id. Selection and opt-in stay unavailable; no identifier is invented.",
+                        "The CLI did not derive a node_id. Selection and the session intent marker stay unavailable; no identifier is invented.",
                     )
                     .small()
                     .color(ui.visuals().warn_fg_color),
@@ -572,7 +573,7 @@ fn node_card(
                     }
                 }
                 if opted_in {
-                    badge(ui, "Session opt-in", ok_color(ui));
+                    badge(ui, view::OPT_IN_BADGE, ok_color(ui));
                 }
                 ui.label(
                     RichText::new(view::OPT_IN_DETAIL)

@@ -1,8 +1,9 @@
 //! FASTLINK Linux desktop shell (pre-alpha).
 //!
 //! Milestone scope: read the versioned `fastlink devices --json` contract and
-//! present the local device honestly, with explicit session-only opt-in and
-//! honest empty states for peers, models and chat.
+//! present the local device honestly, with a session-only visual-intent marker
+//! that has no operational effect, and honest empty states for peers, models
+//! and chat.
 //!
 //! This crate contains no network code, model download, inference or GPU use.
 

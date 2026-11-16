@@ -1,9 +1,11 @@
 use fastlink::devices::{
-    collect_local_inventory, collect_local_inventory_with_paths, parse_devices_args,
-    render_inventory_json, render_inventory_text, DevicesArgs, LinuxProbePaths, DEVICES_SCHEMA,
+    collect_local_inventory, collect_local_inventory_for_platform,
+    collect_local_inventory_with_paths, parse_devices_args, render_inventory_json,
+    render_inventory_text, run_devices, DevicesArgs, LinuxProbePaths, DEVICES_SCHEMA,
     DEVICES_SCHEMA_VERSION,
 };
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -271,33 +273,71 @@ fn corrupt_meminfo_and_underflowing_vram_do_not_panic_or_fabricate() {
 }
 
 #[test]
-fn live_host_inventory_and_cli_binary_report_single_local_node() {
-    let inv = collect_local_inventory();
-    assert_eq!(inv.nodes.len(), 1);
-    assert_eq!(inv.nodes[0].os, std::env::consts::OS);
-    assert_eq!(inv.nodes[0].arch, std::env::consts::ARCH);
-    assert!(inv.nodes[0].capabilities.remote_peers.is_empty());
+fn inventory_platform_seam_accepts_linux_and_rejects_other_platforms() {
+    for os in ["windows", "macos", "freebsd"] {
+        let error = collect_local_inventory_for_platform(os)
+            .expect_err("non-Linux inventory must be unsupported");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("Linux"));
+    }
 
+    #[cfg(target_os = "linux")]
+    assert!(collect_local_inventory_for_platform("linux").is_ok());
+
+    #[cfg(not(target_os = "linux"))]
+    assert!(collect_local_inventory_for_platform("linux").is_err());
+}
+
+#[test]
+fn live_host_inventory_and_cli_respect_platform_support() {
     let bin = env!("CARGO_BIN_EXE_fastlink");
 
-    let json_out = Command::new(bin)
-        .args(["devices", "--json"])
-        .output()
-        .expect("run fastlink devices --json");
-    assert!(json_out.status.success());
-    let stdout = String::from_utf8(json_out.stdout).expect("utf8 stdout");
-    assert!(stdout.contains("\"schema\":\"fastlink.devices.v1\""));
-    assert!(stdout.contains("\"schema_version\":1"));
-    assert!(stdout.contains("\"node_count\":1"));
-    assert!(stdout.contains("\"remote_peers\":[]"));
+    #[cfg(target_os = "linux")]
+    {
+        let inv = collect_local_inventory().expect("Linux inventory");
+        assert_eq!(inv.nodes.len(), 1);
+        assert_eq!(inv.nodes[0].os, std::env::consts::OS);
+        assert_eq!(inv.nodes[0].arch, std::env::consts::ARCH);
+        assert!(inv.nodes[0].capabilities.remote_peers.is_empty());
 
-    let text_out = Command::new(bin)
-        .args(["devices"])
-        .output()
-        .expect("run fastlink devices");
-    assert!(text_out.status.success());
-    let text_stdout = String::from_utf8(text_out.stdout).expect("utf8 stdout");
-    assert!(text_stdout.contains("node_count: 1"));
+        let json_out = Command::new(bin)
+            .args(["devices", "--json"])
+            .output()
+            .expect("run fastlink devices --json");
+        assert!(json_out.status.success());
+        let stdout = String::from_utf8(json_out.stdout).expect("utf8 stdout");
+        assert!(stdout.contains("\"schema\":\"fastlink.devices.v1\""));
+        assert!(stdout.contains("\"schema_version\":1"));
+        assert!(stdout.contains("\"node_count\":1"));
+        assert!(stdout.contains("\"remote_peers\":[]"));
+
+        let text_out = Command::new(bin)
+            .args(["devices"])
+            .output()
+            .expect("run fastlink devices");
+        assert!(text_out.status.success());
+        let text_stdout = String::from_utf8(text_out.stdout).expect("utf8 stdout");
+        assert!(text_stdout.contains("node_count: 1"));
+
+        let api_text = run_devices(&[]).expect("run_devices API on Linux");
+        assert!(api_text.contains("node_count: 1"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let error = collect_local_inventory().expect_err("non-Linux inventory must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(run_devices(&[]).is_err());
+
+        let json_out = Command::new(bin)
+            .args(["devices", "--json"])
+            .output()
+            .expect("run fastlink devices --json");
+        assert!(!json_out.status.success());
+        let stderr = String::from_utf8(json_out.stderr).expect("utf8 stderr");
+        assert!(stderr.contains("FASTLINK error:"));
+        assert!(stderr.to_ascii_lowercase().contains("linux"));
+    }
 
     let bad_out = Command::new(bin)
         .args(["devices", "--bad-flag"])

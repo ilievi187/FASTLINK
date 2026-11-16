@@ -1,8 +1,8 @@
 # FASTLINK desktop shell (Linux, pre-alpha)
 
 This document describes the first real Linux desktop shell for FASTLINK. Its
-milestone scope is deliberately narrow: **local device overview and explicit
-local-device opt-in**. It is a native desktop binary (`fastlink-gui`) built with
+milestone scope is deliberately narrow: **local device overview and a
+session-only, non-operational visual-intent marker**. It is a native desktop binary (`fastlink-gui`) built with
 Rust, [egui](https://github.com/emilk/egui) and eframe.
 
 **Status: pre-alpha.** The shell is aligned with the implemented
@@ -25,7 +25,9 @@ Rust, [egui](https://github.com/emilk/egui) and eframe.
   reports `null` or the documented `"unknown"` sentinel. Network speed and
   connectivity are never inferred.
 - Provides manual **Refresh**, local-node **selection**, and a session-only
-  **opt-in** toggle for the local node only.
+  **visual-intent marker** for the local node only. The marker has **no
+  operational effect**: it does not enable compute, pair devices, open
+  connections, or send data.
 - Shows honest empty states for peers, models and chat because those features
   do not exist in this milestone.
 
@@ -33,10 +35,12 @@ Rust, [egui](https://github.com/emilk/egui) and eframe.
 
 - No network scanning, discovery, listening sockets or pairing.
 - No model catalog, model download, inference or chat.
-- No remote-device controls. Opt-in exists only for the local node.
+- No remote-device controls. The marker exists only for the local node and
+  changes only in-memory presentation state.
 - No CUDA/ROCm compute or GPU benchmark work. The integration tests are
   CPU/software headless tests and do not launch a GUI window.
-- No persistence: selection and opt-in are discarded when the window closes.
+- No persistence: selection and the visual-intent marker are discarded when the
+  window closes.
 
 Window rendering uses the normal OpenGL driver through eframe's glow backend;
 that is UI rendering, not FASTLINK compute.
@@ -100,7 +104,8 @@ Rules applied by the shell:
 - `local_only` describes at most one node. When exactly one node is present it
   is the local device.
 - `node_id` is an opaque backend identifier. A missing id shows `Unknown` and
-  disables selection/opt-in for that node rather than inventing an id.
+  disables selection and the visual-intent marker for that node rather than
+  inventing an id.
 - Empty or duplicate non-null `node_id` values are rejected.
 - Optional/unknown values may be `null`; they render as `Unknown`.
 - GPU entries and capability fields have the backend-defined structure above;
@@ -119,6 +124,9 @@ values with the same types.
 ## Requirements
 
 - Linux with X11 or Wayland and an OpenGL driver.
+- The live `fastlink devices` inventory is Linux-only and returns
+  `Unsupported` elsewhere. Fixture parsing remains platform-independent for
+  tests.
 - Rust 1.95 or newer (required by eframe/egui 0.36).
 - No Node, Python, web view or display-server wrapper is needed for the native
   binary.

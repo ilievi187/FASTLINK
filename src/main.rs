@@ -282,7 +282,7 @@ fn serve(address: &str, root: &Path) -> io::Result<()> {
 }
 
 fn usage() {
-    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]\nNo remote GPU scheduling yet.");
+    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\nNo remote GPU scheduling yet.");
 }
 
 fn main() {
