@@ -211,3 +211,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Experimental keyring candidate `e41e88e96ddaa72336c75ca25ca0d79b9e16514b` was pushed on `feat/secure-keyring-storage`; commander verified full Linux workspace tests/FASTLINK_BIN, fmt, Clippy, GUI build, Windows GNU check/Clippy, diff-check, and targeted Semgrep (0 findings). Exact feature CI `43904715725` passed.
 - Independent security review found two P2s: when the legacy identity file is absent, a keyring private key is not checked against persisted `identity_public`; and `remove_peer` ignores failure to persist `trusted=false`, with an early-return path before keyring deletion. AGY is fixing both with deterministic TDD on isolated branch `fix/secure-keyring-p2`; do not integrate until re-review and exact CI.
 - Tests use injected in-memory keyring backends; no live OS keyring, network discovery, model, GPU, or service activity occurred. The candidate remains experimental and makes no production-security claim. `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`.
+
+## Checkpoint 23 — 2026-11-16 (keyring test-seam API gate)
+
+- Commander code inspection found a third keyring-slice issue against the task's explicit API constraint: `KeyringBackend`, `KeyringLocator`, and `TrustStore::open_with_keyring_backend` are `pub` (only `#[doc(hidden)]`), so production callers can select an arbitrary alternate backend. This must not be a default-build public escape hatch for tests.
+- AGY has been instructed to restrict the injection API to a non-default test-support feature or private test seam, keep the in-memory integration tests executing in CI, and fold this into isolated branch `fix/secure-keyring-p2` with the two independent-review P2 fixes. Do not integrate until all findings, fresh review, and exact CI pass.
+- `main` remains unchanged; no live keyring, network, model/inference, GPU, or service activity.

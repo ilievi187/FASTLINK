@@ -187,3 +187,7 @@
 
 - Experimental keyring storage `e41e88e` passed commander-run Linux/Windows gates and exact feature CI `43904715725`. Independent review found two P2s: identity secret/public-key consistency on reopen and ignored metadata-revocation write failure.
 - AGY is addressing the findings on isolated branch `fix/secure-keyring-p2`; no integration or production-security claim until TDD, independent re-review and exact CI pass. No real keyring, live network, model or GPU work was performed.
+
+## 2026-11-16 — Keyring test seam must not be public by default
+
+- Commander inspection found that `KeyringBackend`, `KeyringLocator`, and `TrustStore::open_with_keyring_backend` remain public despite `#[doc(hidden)]`, contrary to the task constraint against a production-default alternate-storage escape hatch. AGY is restricting this seam while preserving injected tests and addressing the two reviewed P2s on `fix/secure-keyring-p2`.
