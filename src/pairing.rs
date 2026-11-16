@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{digest, Digest};
 
@@ -220,17 +220,69 @@ pub fn sign_challenge(
     }
 }
 
+/// Backing holder for [`PairingRegistry`]'s shared pairing secret with
+/// zeroize-on-drop and redacted `Debug`.
+struct RegistrySecret([u8; 32]);
+
+impl RegistrySecret {
+    fn from_bytes(mut bytes: [u8; 32]) -> Self {
+        let holder = Self(bytes);
+        bytes.zeroize();
+        holder
+    }
+
+    fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Zeroize for RegistrySecret {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for RegistrySecret {}
+
+impl Drop for RegistrySecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl fmt::Debug for RegistrySecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RegistrySecret([REDACTED])")
+    }
+}
+
 /// Validates peer eligibility, prevents replay, and verifies the pairing proof.
+///
+/// `Debug` is implemented manually so the shared pairing secret is never printed.
 pub struct PairingRegistry {
-    shared_secret: [u8; 32],
+    shared_secret: RegistrySecret,
     min_epoch: u64,
     used_nonces: HashSet<[u8; 32]>,
 }
 
+impl ZeroizeOnDrop for PairingRegistry {}
+
+impl fmt::Debug for PairingRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PairingRegistry")
+            .field("shared_secret", &self.shared_secret)
+            .field("min_epoch", &self.min_epoch)
+            .field("used_nonces_len", &self.used_nonces.len())
+            .finish()
+    }
+}
+
 impl PairingRegistry {
-    pub fn new(shared_secret: [u8; 32], min_epoch: u64) -> Self {
+    pub fn new(mut shared_secret: [u8; 32], min_epoch: u64) -> Self {
+        let holder = RegistrySecret::from_bytes(shared_secret);
+        shared_secret.zeroize();
         Self {
-            shared_secret,
+            shared_secret: holder,
             min_epoch,
             used_nonces: HashSet::new(),
         }
@@ -289,13 +341,14 @@ impl PairingRegistry {
         if proof.static_public == [0u8; 32] {
             return Err(PairingError::InvalidProof);
         }
-        let expected = challenge_mac(&self.shared_secret, challenge, &proof.static_public);
+        let expected = challenge_mac(self.shared_secret.expose(), challenge, &proof.static_public);
         if !constant_time_eq(&expected, &proof.mac) {
             return Err(PairingError::InvalidProof);
         }
 
         self.used_nonces.insert(challenge.nonce);
-        let session_key = derive_session_key(&self.shared_secret, challenge, &proof.static_public);
+        let session_key =
+            derive_session_key(self.shared_secret.expose(), challenge, &proof.static_public);
         let mut sid_input = Vec::with_capacity(peer.peer_id.len() + 40);
         sid_input.extend_from_slice(peer.peer_id.as_bytes());
         sid_input.extend_from_slice(&challenge.nonce);
@@ -320,7 +373,13 @@ impl PairingRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeroize::Zeroize;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    fn assert_zeroize_on_drop<T: Zeroize + ZeroizeOnDrop>(_holder: &T) {}
+    fn assert_registry_zeroize_on_drop<T: ZeroizeOnDrop>(_registry: &T) {}
+    fn needs_drop_of<T>(_value: &T) -> bool {
+        std::mem::needs_drop::<T>()
+    }
 
     #[test]
     fn session_key_is_redacted_and_explicitly_zeroizable() {
@@ -333,6 +392,65 @@ mod tests {
         assert_eq!(
             key.fingerprint_hex(),
             SessionKey::from_bytes([0u8; 32]).fingerprint_hex()
+        );
+    }
+
+    #[test]
+    fn pairing_registry_backing_secret_is_zeroize_on_drop_and_preserves_pairing() {
+        let secret = [0xA5u8; 32];
+        let mut registry = PairingRegistry::new(secret, 7);
+
+        assert_zeroize_on_drop(&registry.shared_secret);
+        assert_registry_zeroize_on_drop(&registry);
+        assert!(needs_drop_of(&registry.shared_secret));
+
+        let holder_debug = format!("{:?}", registry.shared_secret);
+        assert!(holder_debug.contains("REDACTED"));
+        assert!(!holder_debug.contains("165"));
+        assert!(!holder_debug.to_ascii_lowercase().contains("a5"));
+
+        let registry_debug = format!("{registry:?}");
+        assert!(registry_debug.contains("REDACTED"));
+        assert!(!registry_debug.contains("165"));
+        assert!(!registry_debug.to_ascii_lowercase().contains("a5"));
+
+        let peer = PeerIdentity {
+            peer_id: "node-alpha".to_string(),
+            os: "linux".to_string(),
+            runtime: "fastlink".to_string(),
+            trust: NetworkTrust::Tailscale,
+            opted_in: true,
+        };
+        let challenge = registry
+            .issue_challenge(&peer, [0x11u8; 32], 7)
+            .expect("eligible peer should receive challenge");
+
+        let mut bad_proof = sign_challenge(&secret, &challenge, [0x22u8; 32]);
+        bad_proof.mac[0] ^= 0xFF;
+        assert_eq!(
+            registry
+                .verify_and_admit(&peer, &challenge, &bad_proof)
+                .unwrap_err(),
+            PairingError::InvalidProof
+        );
+
+        let valid_proof = sign_challenge(&secret, &challenge, [0x22u8; 32]);
+        let session = registry
+            .verify_and_admit(&peer, &challenge, &valid_proof)
+            .expect("valid proof should establish pairing session");
+        assert_eq!(session.peer_id, "node-alpha");
+        assert_eq!(session.epoch, 7);
+
+        let challenge_after = registry
+            .issue_challenge(&peer, [0x33u8; 32], 8)
+            .expect("follow-up challenge should issue");
+        let valid_proof_after = sign_challenge(&secret, &challenge_after, [0x44u8; 32]);
+        registry.shared_secret.zeroize();
+        assert_eq!(
+            registry
+                .verify_and_admit(&peer, &challenge_after, &valid_proof_after)
+                .unwrap_err(),
+            PairingError::InvalidProof
         );
     }
 }
