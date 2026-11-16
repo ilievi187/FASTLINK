@@ -1,0 +1,16 @@
+FL3-E4 Step 3 — cross-branch suite run (Run 3)
+Timestamp: 2026-11-07T21:31:00+02:00 (approx)
+Operator: Antigravity (OpenCode agent), CPU-only, loopback-only, no GPU, no SSH
+Exact command sequence per Rust checkout: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --all-targets`
+Network-sim extra (WP-C gate): `cd qa && python3 -m unittest test_sim_placement test_sim_pipeline test_sim_faults` (57 tests, 21+17+19)
+
+| Checkout | SHA | fmt | clippy | test summary | result | notes |
+|---|---|---|---|---|---|---|
+| <CHECKOUT_05> (qa/fastlink-v3-mission-qa) | ccec225 | PASS (exit 0) | PASS (exit 0) | lib 5/0/0, bin 0/0/0 | PASS | main/QA branch |
+| <CHECKOUT_09> [feat/fastlink-v3-cpu-baseline] | 5b41ff1 | PASS (exit 0) | PASS (exit 0) | lib 8/0/0, bin 0/0/0, wire_roundtrip 1/0/0, codec_adaptive 3/0/0 (total 12) | PASS | Run 2 fmt failure resolved at current SHA |
+| <CHECKOUT_10> [feat/fastlink-v3-network-sim] | a50ecd8 | PASS (exit 0) | PASS (exit 0) | lib 5/0/0, bin 0/0/0; python sim 57/0 (OK) | PASS | includes FL3-E4 harness commit |
+| <CHECKOUT_06> | c3a89b7 | PASS (exit 0) | PASS (exit 0) | integration tests 15/0/0 (per captured tail; full suite passed exit 0) | PASS | Run 2 compile issue resolved at current SHA |
+
+Adapter: <CHECKOUT_01> (CMake <MODEL_ID> fork, no Cargo.toml) — no Cargo test suite run; CMake/adapter build tests not executed (CPU-only QA scope, no GPU build environment exercised). Factual: not run.
+
+Source files in other worktrees were NOT edited (read/execute only). Result files appended in QA worktree only.
