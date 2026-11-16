@@ -180,6 +180,68 @@ fn adaptive_selector_picks_lower_total_cost_codec_per_workload() {
 }
 
 #[test]
+fn adaptive_selector_preserves_cost_and_roundtrip_on_original_tensor_fixture() {
+    let policy = CodecCostPolicy {
+        bandwidth_mbps: if cfg!(debug_assertions) { 100.0 } else { 250.0 },
+        min_byte_savings: 32,
+    };
+
+    let tensor = synthetic_tensor_like_chunk();
+    let rle_tensor = encode_rle(&tensor);
+    assert!(
+        rle_tensor.len() > tensor.len(),
+        "RLE cannot compress original strided 16-bit tensor data"
+    );
+
+    let choice = select_codec_measured(&tensor, policy, 10);
+    let raw_metrics = choice
+        .candidates
+        .iter()
+        .find(|candidate| candidate.codec == RAW)
+        .expect("RAW candidate must be evaluated");
+
+    let matching_candidates: Vec<_> = choice
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.codec == choice.codec)
+        .collect();
+    assert_eq!(
+        matching_candidates.len(),
+        1,
+        "expected exactly one candidate entry for selected codec {}",
+        codec_name(choice.codec)
+    );
+    assert_eq!(matching_candidates[0], &choice.selected_metrics);
+    assert_eq!(choice.selected_metrics.encoded_bytes, choice.encoded.len());
+
+    // CPU cost is runtime-measured, so slower CI hosts (e.g. Windows debug)
+    // may legitimately fall back to RAW even though compressed size is smaller.
+    assert!(
+        choice.selected_metrics.total_cost_ms <= raw_metrics.total_cost_ms,
+        "selector must not exceed the measured RAW transfer cost ({:.4} vs RAW {:.4})",
+        choice.selected_metrics.total_cost_ms,
+        raw_metrics.total_cost_ms
+    );
+    if choice.codec != RAW {
+        assert!(choice.encoded.len() + policy.min_byte_savings < tensor.len());
+        assert!(choice.selected_metrics.total_cost_ms < raw_metrics.total_cost_ms);
+    }
+    assert_eq!(
+        decode_chunk(choice.codec, &choice.encoded, tensor.len()).unwrap(),
+        tensor
+    );
+
+    let (fast_codec, fast_enc) = encode_chunk_adaptive(&tensor, policy);
+    if fast_codec != RAW {
+        assert!(fast_enc.len() + policy.min_byte_savings < tensor.len());
+    }
+    assert_eq!(
+        decode_chunk(fast_codec, &fast_enc, tensor.len()).unwrap(),
+        tensor
+    );
+}
+
+#[test]
 fn reject_malformed_and_overlong_lz4_and_zstd_frames() {
     // Unknown codec ID
     assert!(decode_chunk(99, &[0, 1, 2], 3).is_err());
