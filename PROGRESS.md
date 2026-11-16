@@ -152,3 +152,8 @@
 - OpenCode started isolated TDD work on generic runtime cancellation/join leaks (`fix/runtime-failure-join`). AGY's PairingRegistry zeroize change is pushed at `77f5bec`, with commander-run local Linux/Windows compile gates and Semgrep green; exact CI and independent review remain pending.
 - PR #8's Windows CI/conflict repair is pushed at `24a39d6` with two exact-head Linux/Windows CI runs green; independent review is pending.
 - Preserve the GPU/model and live-discovery approval gate; no inference or network scan was run.
+
+## 2026-11-16 — PairingRegistry secret copy integrated
+
+- Rebased `feat/pairing-secret-hardening` at `c9698f2` onto integration after a clean independent review of the code diff. `RegistrySecret::drop` zeroizes its retained key; local test gates, targeted Semgrep, exact feature CI `43885822332`, and exact integration CI `43886390304` passed on Linux/Windows.
+- Fast-forwarded the validated narrow fix into `integrate/fastlink-team`. The remaining keyring, pairing UX/exchange, Noise-state and `snow` audit risks remain open; no production-security claim and no `main` merge.

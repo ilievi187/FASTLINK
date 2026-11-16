@@ -166,3 +166,10 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - AGY's PairingRegistry zeroize-on-drop commit `77f5bec6e160cd0e83a2e14a0012d2f999186d75` is pushed; commander-run Linux workspace tests, fmt/Clippy, Windows GNU check/Clippy and targeted Semgrep passed. Its exact feature CI is still running and independent review is pending; no integration yet.
 - PR #8 Windows test fix is pushed at `24a39d637a59d913d4e0e722142700ebc7a4fb6c`; exact-head Linux/Windows CI runs `43882189493` and `43882179475` passed and GitHub reports it mergeable. Independent review remains pending; no merge to main or integration.
 - No GPU/model inference or live network discovery was started; existing protected workloads remained untouched.
+
+## Checkpoint 16 — 2026-11-16 (PairingRegistry secret copy hardened and integrated)
+
+- Feature commit `c9698f204c48306f21776a3bf4e5cd8905dedf24` rebased cleanly onto integration, was independently reviewed with no findings (reviewed code commit `77f5bec`), and fast-forwarded into `integrate/fastlink-team`. Feature CI `43885822332` and exact integration CI `43886390304` both passed Ubuntu/Windows.
+- Commander reran workspace/all-target tests, fmt, Linux Clippy, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings) at the rebased code head. `RegistrySecret::drop` explicitly zeroizes its backing array; constructor-local copies are zeroized as well.
+- Scope is limited to the retained PairingRegistry copy. Residual: caller-owned/temporary copies and compiler/register remnants are not guaranteed erased; OS-keyring storage, no-echo pairing UX/network exchange, Noise internal-state zeroization and `snow` supply-chain review remain open. This is not a production-security declaration.
+- Remote `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no main merge. No model/GPU inference or live discovery was performed.
