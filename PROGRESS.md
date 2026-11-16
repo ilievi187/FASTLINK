@@ -207,3 +207,8 @@
 
 - Exact merge-commit CI `43908805208` passed Ubuntu/Windows for `main` at `3606637ca41d07f60562d536a8b9559f751c1f24`. PR #12 is verified merged; the release branch remains available.
 - Integration checkpoint `d4b4a65` is green on exact CI `43909097463`. No GPU/model inference or live discovery was performed.
+
+## 2026-11-16 — Keyring hardening follow-up pushed
+
+- AGY's fix for the two independent keyring P2s plus the public test-seam issue is committed and pushed at `60c2fa1` on isolated `fix/secure-keyring-p2`. Commander verified workspace/unit/integration/doctests, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings).
+- Exact feature CI `43910640643` and independent security re-review are pending. The change is not integrated; no live keyring, network, model, or GPU activity was performed.

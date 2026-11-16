@@ -230,3 +230,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Exact merge-commit CI `43908805208` succeeded on Ubuntu and Windows for `main` commit `3606637ca41d07f60562d536a8b9559f751c1f24` (PR #12, merged 2026-11-16 16:33:27 UTC). PR state is verified `MERGED`; the release branch was retained.
 - Integration documentation checkpoint `d4b4a65b820c8e91d9a7e264894270aeadf9387e` passed exact Ubuntu/Windows CI `43909097463`. `main` and integration both have verified green CI at their recorded heads.
 - Remaining work is experimental keyring/pairing security and larger inference/transport tasks; none were included in this M1 merge. No GPU inference, model load, live discovery, or service interruption occurred.
+
+## Checkpoint 26 — 2026-11-16 (keyring security follow-up candidate pushed)
+
+- Follow-up commit `60c2fa149bad3f575d37f7fb83353e866c0b7b9e` is pushed on isolated branch `fix/secure-keyring-p2`, based on keyring candidate `e41e88e`. It derives/verifies the static public identity on keyring reopen, hardens removal failure ordering/propagation, and makes the injected backend seam private in production builds with compile-fail API tests.
+- Commander verified 244 workspace tests, five doctests, FASTLINK_BIN, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings). Exact feature CI `43910640643` is running; independent security re-review `deleg_371f57ab` is pending.
+- Do not integrate until re-review and exact CI are green. No live Secret Service/keyring, network discovery, model/inference, GPU work, or service interruption occurred; no production-security claim.
