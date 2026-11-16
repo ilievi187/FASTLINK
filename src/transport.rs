@@ -33,8 +33,16 @@ use std::net::TcpStream;
 
 use crate::rpc_client::frame_tensor;
 use crate::{
-    chunk_count, decode_chunk, expected_chunk_len, read_u32, read_u64, read_u8, MAX_ENCODED_BYTES,
+    chunk_count, decode_chunk, expected_chunk_len, read_u32, read_u64, read_u8, CHUNK_BYTES,
+    MAX_ENCODED_BYTES,
 };
+
+/// Maximum raw tensor size `receive_tensor` will buffer (64 MiB).
+///
+/// Reassembly currently returns a complete tensor in memory, so this receiver
+/// limit remains much smaller than the general file-transfer limit. Larger
+/// tensors require a future bounded streaming API.
+pub const MAX_TENSOR_BYTES: usize = CHUNK_BYTES * 1024;
 
 /// Bytes in the transport tensor header: `total_len` (u64) + `chunk_count` (u32).
 pub const TENSOR_HEADER_BYTES: usize = 12;
@@ -48,9 +56,16 @@ pub const TENSOR_HEADER_BYTES: usize = 12;
 ///
 /// All records are concatenated into one buffer and written with a single
 /// `write_all`; this keeps per-chunk network overhead to the adapter's own
-/// 5-byte header and avoids one syscall per chunk. An empty tensor is rejected
+/// 5-byte header and avoids one syscall per chunk. Tensors larger than
+/// [`MAX_TENSOR_BYTES`] are rejected before framing. An empty tensor is rejected
 /// by [`frame_tensor`].
 pub fn send_tensor(sock: &mut TcpStream, tensor: &[u8]) -> io::Result<usize> {
+    if tensor.len() > MAX_TENSOR_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tensor length exceeds transport limit",
+        ));
+    }
     let framed = frame_tensor(tensor)?;
     let mut wire = Vec::with_capacity(
         TENSOR_HEADER_BYTES
@@ -73,11 +88,18 @@ pub fn send_tensor(sock: &mut TcpStream, tensor: &[u8]) -> io::Result<usize> {
 /// successful decoding does not establish chunk-content integrity.
 ///
 /// Each chunk is decoded with [`decode_chunk`] against the raw length implied
-/// by the tensor header, so an out-of-bounds encoded length, an unknown codec, a
-/// truncated payload or a decoded size mismatch fails the whole read. Returns
-/// the reconstructed tensor bytes.
+/// by the tensor header. Oversized tensor declarations are rejected before any
+/// capacity reservation; oversized encoded chunks, unknown codecs, truncated
+/// payloads and decoded-size mismatches also fail the whole read. Returns the
+/// reconstructed tensor bytes.
 pub fn receive_tensor(sock: &mut TcpStream) -> io::Result<Vec<u8>> {
     let total_len = read_u64(sock)?;
+    if total_len > MAX_TENSOR_BYTES as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "tensor length exceeds transport limit",
+        ));
+    }
     let count = read_u32(sock)?;
     if total_len == 0 {
         return Err(io::Error::new(
