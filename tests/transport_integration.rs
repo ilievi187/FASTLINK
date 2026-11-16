@@ -146,6 +146,44 @@ fn roundtrip_exact_max_tensor_bytes_cap() {
 }
 
 #[test]
+fn roundtrip_exact_max_tensor_bytes_incompressible_raw() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        let received = receive_tensor(&mut sock).expect("receive exact-cap raw tensor");
+        sock.write_all(&[0]).expect("ack");
+        received
+    });
+
+    let mut client = TcpStream::connect(addr).expect("connect");
+    client.set_nodelay(true).expect("client TCP_NODELAY");
+    let tensor = patterned_tensor(MAX_TENSOR_BYTES);
+
+    // The deterministic pattern must not compress, so the encoder selects RAW.
+    let first = frame_chunk(0, &tensor[..CHUNK_BYTES]).expect("frame first chunk");
+    assert_eq!(
+        first.codec,
+        fastlink::RAW,
+        "incompressible data must use the RAW codec"
+    );
+
+    let sent = send_tensor(&mut client, &tensor).expect("send exact-cap raw tensor");
+    let chunk_count = MAX_TENSOR_BYTES / CHUNK_BYTES;
+    assert_eq!(
+        sent,
+        MAX_TENSOR_BYTES + 12 + 5 * chunk_count,
+        "raw framing must carry every chunk exactly once"
+    );
+
+    let mut ack = [0u8; 1];
+    client.read_exact(&mut ack).expect("read ack");
+    assert_eq!(ack[0], 0);
+    let received = server.join().expect("server thread");
+    assert_eq!(received.as_slice(), tensor.as_slice());
+}
+
+#[test]
 fn oversized_header_is_rejected_before_tensor_payload_read() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
@@ -292,6 +330,35 @@ fn async_client_batch_send_rejects_oversized_tensor_in_multi_item_batch_without_
         0,
         "rejected batch must write no wire bytes even for preceding small tensors"
     );
+}
+
+#[cfg(feature = "rpc-v3-transport")]
+#[test]
+fn async_client_batch_send_roundtrips_multiple_tensors_with_one_ack() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        let first = receive_tensor(&mut sock).expect("receive first batch tensor");
+        let second = receive_tensor(&mut sock).expect("receive second batch tensor");
+        sock.write_all(&[fastlink::ACK]).expect("send batch ack");
+        (first, second)
+    });
+
+    let mut client = fastlink::AsyncClient::new(addr).expect("connect");
+    let first = patterned_tensor(CHUNK_BYTES + 13);
+    let mut second = vec![0x5Au8; CHUNK_BYTES];
+    second.extend_from_slice(b"second-tensor");
+
+    let sent = client
+        .batch_send(&[&first, &second])
+        .expect("batch_send two tensors");
+    assert!(sent > 0);
+    assert_eq!(client.bytes_sent(), sent);
+
+    let (received_first, received_second) = server.join().expect("server thread");
+    assert_eq!(received_first, first);
+    assert_eq!(received_second, second);
 }
 
 #[cfg(feature = "rpc-v3-transport")]

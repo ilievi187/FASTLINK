@@ -20,6 +20,8 @@ jobs:
         run: cargo build --all-targets
       - name: Test
         run: cargo test --all-targets
+      - name: Feature-gated transport integration tests
+        run: cargo test --features rpc-v3-transport --test transport_integration
       - name: Doc coherence (M-5)
         if: runner.os == 'Linux'
         run: cargo test --all-targets

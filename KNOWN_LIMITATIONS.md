@@ -9,7 +9,8 @@
 - The file-sync CLI counts encoded payload bytes; the transport bench additionally reports wire bytes. Benchmarks use synthetic data only.
 - The experimental TCP transport is loopback-only, unauthenticated, unencrypted and single-connection; it is a measurement path, not a secure channel.
 - Windows compatibility is intended via Rust standard library but requires CI verification.
-- General file sync allows up to 1,000,000 chunks and 240-byte file names; buffered RPC tensors are separately capped at 64 MiB because receive-side reassembly allocates the complete tensor.
+- General file sync allows up to 1,000,000 chunks and 240-byte file names.
+- Each buffered RPC tensor is separately capped at 64 MiB of raw tensor payload because receive-side reassembly allocates the complete tensor. This is not an aggregate batch or process-memory cap: `batch_send` concatenates all tensors into one buffer, and sender framing copies plus concurrent receives can exceed 64 MiB.
 - Single-connection server serializes clients; untrusted clients can hold a session.
 - No production security audit; do not expose raw endpoints or send confidential files.
 
