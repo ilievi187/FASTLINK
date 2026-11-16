@@ -308,6 +308,70 @@ impl DelayProxy {
     }
 }
 
+struct DripProxy;
+
+impl DripProxy {
+    fn start(
+        server_addr: SocketAddr,
+        first_frame_delay: Duration,
+        chunk_bytes: usize,
+        chunk_interval: Duration,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("drip proxy bind");
+        let addr = listener.local_addr().expect("drip proxy addr");
+        thread::spawn(move || {
+            let (mut client, _) = listener.accept().expect("drip proxy accept");
+            let mut server = TcpStream::connect(server_addr).expect("drip proxy upstream");
+            let mut server_read = server.try_clone().expect("drip server clone");
+            let mut client_write = client.try_clone().expect("drip client clone");
+            let relay = thread::spawn(move || {
+                let mut frame_index = 0usize;
+                loop {
+                    let mut prefix = [0u8; 4];
+                    if server_read.read_exact(&mut prefix).is_err() {
+                        break;
+                    }
+                    let len = u32::from_le_bytes(prefix) as usize;
+                    if len > 70_000 {
+                        break;
+                    }
+                    let mut body = vec![0u8; len];
+                    if server_read.read_exact(&mut body).is_err() {
+                        break;
+                    }
+                    let mut frame = prefix.to_vec();
+                    frame.extend_from_slice(&body);
+                    if frame_index == 0 {
+                        thread::sleep(first_frame_delay);
+                        if client_write.write_all(&frame).is_err() {
+                            break;
+                        }
+                    } else if frame_index == 1 {
+                        // Drip exactly one handshake frame in small chunks. Each
+                        // chunk arrives far sooner than the old per-socket read
+                        // timeout, but the frame completes beyond the absolute
+                        // handshake deadline once the first frame delay is added.
+                        for chunk in frame.chunks(chunk_bytes.max(1)) {
+                            thread::sleep(chunk_interval);
+                            if client_write.write_all(chunk).is_err() {
+                                return;
+                            }
+                        }
+                    } else if client_write.write_all(&frame).is_err() {
+                        break;
+                    }
+                    frame_index += 1;
+                }
+            });
+            let _ = io::copy(&mut client, &mut server);
+            let _ = server.shutdown(Shutdown::Both);
+            let _ = client.shutdown(Shutdown::Both);
+            let _ = relay.join();
+        });
+        addr
+    }
+}
+
 struct WorkerFixture {
     worker: WorkerServer,
     store: Arc<Mutex<TrustStore>>,
@@ -920,6 +984,35 @@ fn handshake_uses_one_absolute_deadline_across_all_messages() {
     let (server_addr, server_handle) = spawn_server_handshake(server_config);
     let client = connect_and_handshake(server_addr, &client_config);
     assert!(client.is_ok(), "normal handshake failed: {client:?}");
+    let _ = server_handle.join();
+}
+
+#[test]
+fn partial_byte_handshake_frame_cannot_extend_absolute_deadline() {
+    let config = paired("peer-a");
+    let mut server_config = server_noise(&config);
+    server_config.timeout = Duration::from_secs(3);
+    let (server_addr, server_handle) = spawn_server_handshake(server_config);
+    let proxy_addr = DripProxy::start(
+        server_addr,
+        Duration::from_millis(500),
+        3,
+        Duration::from_millis(60),
+    );
+    let mut client_config = client_noise(&config);
+    client_config.timeout = Duration::from_millis(1_200);
+
+    let started = Instant::now();
+    let result = connect_and_handshake(proxy_addr, &client_config);
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "a partial handshake frame must not extend the handshake past the absolute deadline; got {result:?} after {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(2_500),
+        "handshake did not fail closed within a bounded ceiling: {elapsed:?}"
+    );
     let _ = server_handle.join();
 }
 
