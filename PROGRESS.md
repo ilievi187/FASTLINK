@@ -191,3 +191,8 @@
 ## 2026-11-16 — Keyring test seam must not be public by default
 
 - Commander inspection found that `KeyringBackend`, `KeyringLocator`, and `TrustStore::open_with_keyring_backend` remain public despite `#[doc(hidden)]`, contrary to the task constraint against a production-default alternate-storage escape hatch. AGY is restricting this seam while preserving injected tests and addressing the two reviewed P2s on `fix/secure-keyring-p2`.
+
+## 2026-11-16 — M1 temp-file and marker-copy follow-up
+
+- OpenCode pushed isolated candidate `1aab6d5`; it fixes stale opt-in/consent wording and all three temp-directory heuristics, including a real Linux ETXTBSY test race (20 focused repeats passed after serialization). Exact CI `43906258084` is green; commander reran the full Linux/Windows-target gate chain and full changed-Rust Semgrep.
+- Five remaining Semgrep matches are limited to audited `unsafe` pipe reads/fcntl and CLI argument dispatch. A final independent review is running; PR #12 remains draft and unmodified until that review is clean.
