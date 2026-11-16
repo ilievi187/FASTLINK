@@ -3,6 +3,7 @@
 
 pub mod cli_plan;
 pub mod cluster_orchestrator;
+pub mod cpu_inference;
 pub mod devices;
 pub mod discovery;
 pub mod kv_delta;

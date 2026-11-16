@@ -46,3 +46,238 @@ fn three_stage_loopback_pipeline_forwards_p2p_and_accounts_bytes() {
     assert_eq!(summary.total_tokens, 3);
     assert!(summary.total_wire_bytes > 0);
 }
+
+fn tiny_cpu_mlp() -> fastlink::cpu_inference::CpuMlpSpec {
+    use fastlink::cpu_inference::{CpuActivation, CpuDenseLayer, CpuMlpSpec};
+
+    let layer0 = CpuDenseLayer::new(
+        3,
+        4,
+        vec![
+            0.2, -0.1, 0.3, -0.4, 0.5, 0.1, 0.25, 0.25, -0.5, 0.1, 0.2, 0.15,
+        ],
+        vec![0.05, -0.1, 0.0, 0.2],
+        CpuActivation::Relu,
+    )
+    .expect("layer 0");
+    let layer1 = CpuDenseLayer::new(
+        4,
+        2,
+        vec![0.3, -0.2, 0.4, 0.1, -0.5, 0.6, 0.2, -0.1],
+        vec![0.1, -0.05],
+        CpuActivation::Relu,
+    )
+    .expect("layer 1");
+    let layer2 = CpuDenseLayer::new(
+        2,
+        2,
+        vec![0.7, -0.3, 0.2, 0.9],
+        vec![0.05, 0.0],
+        CpuActivation::Identity,
+    )
+    .expect("layer 2");
+    CpuMlpSpec::new(3, vec![layer0, layer1, layer2]).expect("tiny MLP")
+}
+
+fn tiny_cpu_manifest(spec: &fastlink::cpu_inference::CpuMlpSpec) -> PartitionManifest {
+    let specs = vec![
+        StageSpec {
+            node_id: "cpu-stage-0".into(),
+            addr: "127.0.0.1:0".into(),
+            layer_start: 0,
+            layer_end: 1,
+        },
+        StageSpec {
+            node_id: "cpu-stage-1".into(),
+            addr: "127.0.0.1:0".into(),
+            layer_start: 1,
+            layer_end: 2,
+        },
+        StageSpec {
+            node_id: "cpu-stage-2".into(),
+            addr: "127.0.0.1:0".into(),
+            layer_start: 2,
+            layer_end: 3,
+        },
+    ];
+    PartitionManifest::build(7, spec.digest(), 16, 3, &specs).expect("cpu manifest")
+}
+
+#[test]
+fn cpu_mlp_partitioned_authenticated_loopback_matches_monolithic_reference() {
+    use fastlink::cpu_inference::run_authenticated_cpu_mlp_pipeline;
+    use fastlink::pipeline::TelemetrySource;
+
+    let spec = tiny_cpu_mlp();
+    let manifest = tiny_cpu_manifest(&spec);
+    let secret = [0x42u8; 32];
+    let inputs = vec![
+        vec![0.5, -0.25, 1.0],
+        vec![-0.1, 0.4, 0.2],
+        vec![0.0, 0.75, -0.5],
+    ];
+    let expected: Vec<Vec<f32>> = inputs
+        .iter()
+        .map(|input| spec.forward(input).expect("reference forward"))
+        .collect();
+
+    // Independent hand-computed values for the first token, so the test
+    // checks dense math rather than only partitioned/reference consistency.
+    let first_reference = spec.forward(&inputs[0]).expect("first reference");
+    assert!((first_reference[0] - 0.24425).abs() <= 1e-6);
+    assert!((first_reference[1] - 0.0555).abs() <= 1e-6);
+
+    let (outputs, summary) = run_authenticated_cpu_mlp_pipeline(&spec, &manifest, &secret, &inputs)
+        .expect("authenticated CPU MLP pipeline");
+
+    assert_eq!(outputs.len(), expected.len());
+    for (actual, reference) in outputs.iter().zip(&expected) {
+        assert_eq!(actual.len(), reference.len());
+        for (a, b) in actual.iter().zip(reference) {
+            assert!(
+                (a - b).abs() <= 1e-5,
+                "partitioned output {a} differs from monolithic {b}"
+            );
+        }
+    }
+    assert_eq!(summary.source, TelemetrySource::Measured);
+    assert_eq!(summary.total_tokens, inputs.len() as u64);
+    assert!(summary.total_wire_bytes > 0);
+}
+
+#[test]
+fn cpu_mlp_rejects_malformed_shapes_and_partitioning() {
+    use fastlink::cpu_inference::{
+        decode_f32_le, encode_f32_le, run_authenticated_cpu_mlp_pipeline, CpuDenseLayer,
+        CpuInferenceError, CpuMlpSpec,
+    };
+
+    assert_eq!(
+        encode_f32_le(&[1.0, -2.5]),
+        vec![0, 0, 128, 63, 0, 0, 32, 192]
+    );
+    assert!(matches!(
+        decode_f32_le(&[0, 0, 0], 1),
+        Err(CpuInferenceError::InvalidActivationEncoding {
+            expected: 1,
+            got: 3
+        })
+    ));
+    assert!(matches!(
+        CpuDenseLayer::new(
+            1,
+            1,
+            vec![f32::NAN],
+            vec![0.0],
+            fastlink::cpu_inference::CpuActivation::Identity
+        ),
+        Err(CpuInferenceError::NonFiniteParameter { .. })
+    ));
+    assert!(matches!(
+        CpuDenseLayer::new(
+            3,
+            4,
+            vec![0.0; 11],
+            vec![0.0; 4],
+            fastlink::cpu_inference::CpuActivation::Identity
+        ),
+        Err(CpuInferenceError::WeightLength { .. })
+    ));
+    assert!(matches!(
+        CpuDenseLayer::new(
+            3,
+            4,
+            vec![0.0; 12],
+            vec![0.0; 3],
+            fastlink::cpu_inference::CpuActivation::Identity
+        ),
+        Err(CpuInferenceError::BiasLength { .. })
+    ));
+    assert!(matches!(
+        CpuMlpSpec::new(
+            3,
+            vec![CpuDenseLayer::new(
+                4,
+                2,
+                vec![0.0; 8],
+                vec![0.0; 2],
+                fastlink::cpu_inference::CpuActivation::Identity,
+            )
+            .expect("valid layer")]
+        ),
+        Err(CpuInferenceError::LayerInputMismatch { .. })
+    ));
+
+    let spec = tiny_cpu_mlp();
+    let secret = [0x42u8; 32];
+    let manifest = tiny_cpu_manifest(&spec);
+    let inputs = vec![vec![0.5, -0.25, 1.0]];
+
+    let bad_input = vec![vec![0.5, -0.25]];
+    assert!(matches!(
+        run_authenticated_cpu_mlp_pipeline(&spec, &manifest, &secret, &bad_input),
+        Err(CpuInferenceError::InputLength { .. })
+    ));
+    assert!(matches!(
+        run_authenticated_cpu_mlp_pipeline(&spec, &manifest, &secret, &[]),
+        Err(CpuInferenceError::EmptyInput)
+    ));
+
+    let wrong_digest = PartitionManifest::build(
+        7,
+        digest(b"not-the-cpu-mlp"),
+        16,
+        3,
+        &[
+            StageSpec {
+                node_id: "cpu-stage-0".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 0,
+                layer_end: 1,
+            },
+            StageSpec {
+                node_id: "cpu-stage-1".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 1,
+                layer_end: 2,
+            },
+            StageSpec {
+                node_id: "cpu-stage-2".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 2,
+                layer_end: 3,
+            },
+        ],
+    )
+    .expect("wrong digest manifest");
+    assert!(matches!(
+        run_authenticated_cpu_mlp_pipeline(&spec, &wrong_digest, &secret, &inputs),
+        Err(CpuInferenceError::ManifestMismatch(_))
+    ));
+
+    let wrong_layer_count = PartitionManifest::build(
+        7,
+        spec.digest(),
+        16,
+        4,
+        &[
+            StageSpec {
+                node_id: "cpu-stage-0".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 0,
+                layer_end: 2,
+            },
+            StageSpec {
+                node_id: "cpu-stage-1".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 2,
+                layer_end: 4,
+            },
+        ],
+    )
+    .expect("wrong layer count manifest");
+    assert!(matches!(
+        run_authenticated_cpu_mlp_pipeline(&spec, &wrong_layer_count, &secret, &inputs),
+        Err(CpuInferenceError::ManifestMismatch(_))
+    ));
+}
