@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use fastlink_gui::inventory::{
     InventoryCommand, LOCAL_ONLY_SCOPE, PROGRAM_ENV, SUPPORTED_SCHEMA, SUPPORTED_SCHEMA_VERSION,
@@ -32,31 +32,12 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock must be after the epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "fastlink-gui-{tag}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("temp dir");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn temp_dir(tag: &str) -> tempfile::TempDir {
+    let prefix = format!("fastlink-gui-{tag}-");
+    tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempdir()
+        .expect("secure temp dir")
 }
 
 fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -84,7 +65,7 @@ cat <<'JSON'
 #[test]
 fn runs_the_contract_command_and_parses_backend_shape() {
     let _guard = serial();
-    let dir = TempDir::new("valid");
+    let dir = temp_dir("valid");
     let script = write_script(dir.path(), "fastlink", &valid_script());
 
     let inventory = InventoryCommand::new(&script)
@@ -127,7 +108,7 @@ fn runs_the_contract_command_and_parses_backend_shape() {
 #[test]
 fn nonzero_exit_reports_stderr_and_an_actionable_hint() {
     let _guard = serial();
-    let dir = TempDir::new("failure");
+    let dir = temp_dir("failure");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -153,7 +134,7 @@ fn nonzero_exit_reports_stderr_and_an_actionable_hint() {
 #[test]
 fn empty_stdout_is_an_explicit_error() {
     let _guard = serial();
-    let dir = TempDir::new("empty");
+    let dir = temp_dir("empty");
     let script = write_script(dir.path(), "fastlink", "#!/bin/sh\nexit 0\n");
 
     let error = InventoryCommand::new(&script).run().expect_err("must fail");
@@ -163,7 +144,7 @@ fn empty_stdout_is_an_explicit_error() {
 #[test]
 fn wrong_schema_version_is_reported_with_detail() {
     let _guard = serial();
-    let dir = TempDir::new("schema");
+    let dir = temp_dir("schema");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -185,7 +166,7 @@ fn wrong_schema_version_is_reported_with_detail() {
 #[test]
 fn missing_program_explains_how_to_configure_the_path() {
     let _guard = serial();
-    let dir = TempDir::new("missing");
+    let dir = temp_dir("missing");
     let missing = dir.path().join("not-a-real-fastlink");
 
     let error = InventoryCommand::new(&missing)
@@ -200,7 +181,7 @@ fn missing_program_explains_how_to_configure_the_path() {
 #[test]
 fn hanging_inventory_is_bounded_by_the_timeout() {
     let _guard = serial();
-    let dir = TempDir::new("timeout");
+    let dir = temp_dir("timeout");
     let script = write_script(dir.path(), "fastlink", "#!/bin/sh\nexec sleep 5\n");
 
     let started = Instant::now();
@@ -217,7 +198,7 @@ fn hanging_inventory_is_bounded_by_the_timeout() {
 #[test]
 fn large_stdout_and_stderr_above_pipe_capacity_are_drained_and_parsed() {
     let _guard = serial();
-    let dir = TempDir::new("large-streams");
+    let dir = temp_dir("large-streams");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -253,7 +234,7 @@ cat <<'JSON'
 #[test]
 fn oversized_stdout_is_rejected_deterministically() {
     let _guard = serial();
-    let dir = TempDir::new("oversized-stdout");
+    let dir = temp_dir("oversized-stdout");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -281,7 +262,7 @@ cat <<'JSON'
 #[test]
 fn oversized_stderr_is_rejected_deterministically() {
     let _guard = serial();
-    let dir = TempDir::new("oversized-stderr");
+    let dir = temp_dir("oversized-stderr");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -309,7 +290,7 @@ cat <<'JSON'
 #[test]
 fn fast_oversized_writer_is_rejected_promptly() {
     let _guard = serial();
-    let dir = TempDir::new("fast-oversized");
+    let dir = temp_dir("fast-oversized");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -337,7 +318,7 @@ cat <<'JSON'
 #[test]
 fn exit_stderr_detail_reports_capture_retention_and_ui_cap() {
     let _guard = serial();
-    let dir = TempDir::new("stderr-truncated");
+    let dir = temp_dir("stderr-truncated");
     let script = write_script(
         dir.path(),
         "fastlink",
@@ -376,7 +357,7 @@ exit 3
 #[test]
 fn timeout_kills_the_owned_child_process() {
     let _guard = serial();
-    let dir = TempDir::new("timeout-kill");
+    let dir = temp_dir("timeout-kill");
     let pidfile = dir.path().join("child.pid");
     let script = write_script(
         dir.path(),
@@ -411,7 +392,7 @@ exec sleep 5
 #[test]
 fn fast_writer_progress_is_capped_near_the_limit() {
     let _guard = serial();
-    let dir = TempDir::new("fast-writer-progress");
+    let dir = temp_dir("fast-writer-progress");
     let counter_path = dir.path().join("writer-progress");
     let script = write_script(
         dir.path(),
@@ -445,7 +426,7 @@ done
 #[test]
 fn inherited_writer_stops_when_the_capture_is_closed() {
     let _guard = serial();
-    let dir = TempDir::new("inherited-writer");
+    let dir = temp_dir("inherited-writer");
     let counter_path = dir.path().join("writer-progress");
     let stop_path = dir.path().join("writer-stop");
     let script = write_script(
@@ -502,7 +483,7 @@ fn read_counter(path: &Path) -> u64 {
 #[test]
 fn inherited_stream_holder_does_not_block_after_child_exit() {
     let _guard = serial();
-    let dir = TempDir::new("grandchild");
+    let dir = temp_dir("grandchild");
     let pidfile = dir.path().join("grandchild.pid");
     let script = write_script(
         dir.path(),
@@ -546,6 +527,7 @@ cat <<'JSON'
 /// accepts its live output. It never launches a GUI window.
 #[test]
 fn actual_fastlink_binary_from_environment_satisfies_parser() {
+    let _guard = serial();
     let Some(program) = std::env::var_os(PROGRAM_ENV) else {
         eprintln!("{PROGRAM_ENV} is not set; skipping actual-binary contract check");
         return;
