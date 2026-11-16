@@ -112,6 +112,14 @@ impl Secret32 {
         Self(bytes)
     }
 
+    /// Copies a completed pairing session key into the Noise PSK owner.
+    ///
+    /// One copy is unavoidable because `SessionKey` owns and zeroizes its
+    /// buffer independently; both owners zeroize on drop.
+    pub fn from_session_key(key: &crate::pairing::SessionKey) -> Self {
+        Self(*key.expose())
+    }
+
     fn expose(&self) -> &[u8; 32] {
         &self.0
     }
@@ -289,13 +297,16 @@ impl PairingOffer {
 
     /// Simulation helper for the remote side of the pairing ceremony.
     ///
+    /// The peer static public key is bound into the keyed proof so the trust
+    /// store can commit exactly the key that the peer authenticated.
+    ///
     /// **This is not a substitute for the no-echo interactive transfer.** A
     /// production UI must display the one-time secret and obtain the peer's
     /// proof after local no-echo entry; this helper exists so loopback tests can
     /// exercise the trust-store path without a TTY.
     #[doc(hidden)]
-    pub fn proof(&self) -> PairingProof {
-        sign_challenge(self.secret.expose(), &self.challenge)
+    pub fn proof_for(&self, peer_static_public: [u8; 32]) -> PairingProof {
+        sign_challenge(self.secret.expose(), &self.challenge, peer_static_public)
     }
 }
 
@@ -475,28 +486,26 @@ fn write_all_before(
     Ok(())
 }
 
-fn write_frame(
+fn write_frame_before(
     stream: &mut TcpStream,
     ciphertext: &[u8],
     min_len: usize,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<(), SecureWorkerError> {
     if ciphertext.len() < min_len || ciphertext.len() > MAX_NOISE_MESSAGE_BYTES {
         return Err(SecureWorkerError::FrameTooLarge);
     }
-    let deadline = Instant::now() + timeout;
     let len = u32::try_from(ciphertext.len()).map_err(|_| SecureWorkerError::FrameTooLarge)?;
     write_all_before(stream, &len.to_le_bytes(), deadline)?;
     write_all_before(stream, ciphertext, deadline)?;
     Ok(())
 }
 
-fn read_frame(
+fn read_frame_before(
     stream: &mut TcpStream,
     min_len: usize,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<Vec<u8>, SecureWorkerError> {
-    let deadline = Instant::now() + timeout;
     let mut prefix = [0u8; 4];
     read_exact_before(stream, &mut prefix, deadline)?;
     let len = u32::from_le_bytes(prefix) as usize;
@@ -531,6 +540,7 @@ impl NoiseSession {
         mut stream: TcpStream,
         config: &NoiseConfig,
     ) -> Result<Self, SecureWorkerError> {
+        let deadline = Instant::now() + config.timeout;
         set_stream_timeouts(&stream, config.timeout)?;
         let mut handshake = build_handshake(config, true)?;
         let mut out = vec![0u8; MAX_NOISE_MESSAGE_BYTES];
@@ -538,9 +548,9 @@ impl NoiseSession {
         let written = handshake
             .write_message(&[], &mut out)
             .map_err(|_| SecureWorkerError::HandshakeFailed)?;
-        write_frame(&mut stream, &out[..written], 1, config.timeout)?;
+        write_frame_before(&mut stream, &out[..written], 1, deadline)?;
 
-        let message = read_frame(&mut stream, 1, config.timeout)?;
+        let message = read_frame_before(&mut stream, 1, deadline)?;
         let mut payload = Zeroizing::new(vec![0u8; MAX_NOISE_MESSAGE_BYTES]);
         handshake
             .read_message(&message, &mut payload)
@@ -550,14 +560,14 @@ impl NoiseSession {
         let written = handshake
             .write_message(&[], &mut out)
             .map_err(|_| SecureWorkerError::HandshakeFailed)?;
-        write_frame(&mut stream, &out[..written], 1, config.timeout)?;
+        write_frame_before(&mut stream, &out[..written], 1, deadline)?;
 
         let remote_static = copy_remote_static(handshake.get_remote_static())?;
         let transport = handshake
             .into_transport_mode()
             .map_err(|_| SecureWorkerError::HandshakeFailed)?;
         let session = Self::new(stream, transport, remote_static, config.timeout);
-        complete_confirmation(session, true)
+        complete_confirmation(session, true, deadline)
     }
 
     /// Runs the responder side of the handshake on an already-accepted stream.
@@ -565,11 +575,12 @@ impl NoiseSession {
         mut stream: TcpStream,
         config: &NoiseConfig,
     ) -> Result<Self, SecureWorkerError> {
+        let deadline = Instant::now() + config.timeout;
         set_stream_timeouts(&stream, config.timeout)?;
         let mut handshake = build_handshake(config, false)?;
         let mut out = vec![0u8; MAX_NOISE_MESSAGE_BYTES];
 
-        let message = read_frame(&mut stream, 1, config.timeout)?;
+        let message = read_frame_before(&mut stream, 1, deadline)?;
         let mut payload = Zeroizing::new(vec![0u8; MAX_NOISE_MESSAGE_BYTES]);
         handshake
             .read_message(&message, &mut payload)
@@ -578,9 +589,9 @@ impl NoiseSession {
         let written = handshake
             .write_message(&[], &mut out)
             .map_err(|_| SecureWorkerError::HandshakeFailed)?;
-        write_frame(&mut stream, &out[..written], 1, config.timeout)?;
+        write_frame_before(&mut stream, &out[..written], 1, deadline)?;
 
-        let message = read_frame(&mut stream, 1, config.timeout)?;
+        let message = read_frame_before(&mut stream, 1, deadline)?;
         let mut payload = Zeroizing::new(vec![0u8; MAX_NOISE_MESSAGE_BYTES]);
         handshake
             .read_message(&message, &mut payload)
@@ -592,7 +603,7 @@ impl NoiseSession {
             .into_transport_mode()
             .map_err(|_| SecureWorkerError::HandshakeFailed)?;
         let session = Self::new(stream, transport, remote_static, config.timeout);
-        complete_confirmation(session, false)
+        complete_confirmation(session, false, deadline)
     }
 
     fn new(
@@ -751,6 +762,23 @@ impl NoiseSession {
         flags: u16,
         payload: &[u8],
     ) -> Result<(), SecureWorkerError> {
+        self.send_inner_frame_before(
+            version,
+            frame_type,
+            flags,
+            payload,
+            Instant::now() + self.frame_timeout,
+        )
+    }
+
+    fn send_inner_frame_before(
+        &mut self,
+        version: u8,
+        frame_type: u8,
+        flags: u16,
+        payload: &[u8],
+        deadline: Instant,
+    ) -> Result<(), SecureWorkerError> {
         if payload.len() > MAX_SINGLE_FRAME_PAYLOAD_BYTES {
             return Err(SecureWorkerError::FrameTooLarge);
         }
@@ -769,21 +797,20 @@ impl NoiseSession {
             .write_message(&plaintext, &mut ciphertext)
             .map_err(|_| SecureWorkerError::ProtocolViolation)?;
         ciphertext.truncate(written);
-        write_frame(
-            &mut self.stream,
-            &ciphertext,
-            NOISE_TAG_BYTES,
-            self.frame_timeout,
-        )?;
+        write_frame_before(&mut self.stream, &ciphertext, NOISE_TAG_BYTES, deadline)?;
         self.sent_messages += 1;
         Ok(())
     }
 
     fn recv_inner(&mut self) -> Result<(u8, Vec<u8>), SecureWorkerError> {
+        self.recv_inner_before(Instant::now() + self.frame_timeout)
+    }
+
+    fn recv_inner_before(&mut self, deadline: Instant) -> Result<(u8, Vec<u8>), SecureWorkerError> {
         if self.received_messages >= MAX_SESSION_MESSAGES {
             return Err(SecureWorkerError::SessionLimit);
         }
-        let ciphertext = read_frame(&mut self.stream, NOISE_TAG_BYTES, self.frame_timeout)?;
+        let ciphertext = read_frame_before(&mut self.stream, NOISE_TAG_BYTES, deadline)?;
         let mut plaintext = Zeroizing::new(vec![0u8; ciphertext.len()]);
         let read = self
             .transport
@@ -845,19 +872,32 @@ fn verify_remote_static(
 fn complete_confirmation(
     mut session: NoiseSession,
     initiator: bool,
+    deadline: Instant,
 ) -> Result<NoiseSession, SecureWorkerError> {
     if initiator {
-        session.send_inner(FRAME_CONFIRM, CONFIRM_PAYLOAD)?;
-        let (frame_type, payload) = session.recv_inner()?;
+        session.send_inner_frame_before(
+            FRAME_VERSION,
+            FRAME_CONFIRM,
+            0,
+            CONFIRM_PAYLOAD,
+            deadline,
+        )?;
+        let (frame_type, payload) = session.recv_inner_before(deadline)?;
         if frame_type != FRAME_CONFIRM || payload != CONFIRM_PAYLOAD {
             return Err(SecureWorkerError::HandshakeFailed);
         }
     } else {
-        let (frame_type, payload) = session.recv_inner()?;
+        let (frame_type, payload) = session.recv_inner_before(deadline)?;
         if frame_type != FRAME_CONFIRM || payload != CONFIRM_PAYLOAD {
             return Err(SecureWorkerError::HandshakeFailed);
         }
-        session.send_inner(FRAME_CONFIRM, CONFIRM_PAYLOAD)?;
+        session.send_inner_frame_before(
+            FRAME_VERSION,
+            FRAME_CONFIRM,
+            0,
+            CONFIRM_PAYLOAD,
+            deadline,
+        )?;
     }
     Ok(session)
 }
@@ -996,10 +1036,10 @@ impl TrustStore {
     /// Completes pairing after explicit local confirmation and a verified proof.
     ///
     /// The caller supplies the peer's X25519 static public key observed during
-    /// the authenticated pairing exchange. This method performs no network I/O;
-    /// it binds the caller-supplied pin to the consented pairing record. A
-    /// production caller must not accept this key from unauthenticated
-    /// discovery data.
+    /// the authenticated pairing exchange. The proof must authenticate that
+    /// exact key; a valid proof for a different key is rejected and the trust
+    /// record is not written. A production caller must not accept this key from
+    /// unauthenticated discovery data.
     pub fn accept_pairing(
         &mut self,
         offer: &PairingOffer,
@@ -1030,8 +1070,11 @@ impl TrustStore {
         if !consent.approved {
             return Err(SecureWorkerError::PairingApprovalRequired);
         }
-        if peer_static_public == [0u8; 32] {
+        if peer_static_public == [0u8; 32] || proof.static_public == [0u8; 32] {
             return Err(SecureWorkerError::InvalidPeerKey);
+        }
+        if !constant_time_eq_32(&proof.static_public, &peer_static_public) {
+            return Err(SecureWorkerError::Pairing(PairingError::InvalidProof));
         }
 
         let peer = PeerIdentity {
@@ -1054,7 +1097,7 @@ impl TrustStore {
         atomic_write(&secret_path, pending.secret.expose(), 0o600)?;
         let meta = PeerMeta {
             peer_id: pending.peer_id.clone(),
-            static_public: hex_encode(&peer_static_public),
+            static_public: hex_encode(&proof.static_public),
             trust: trust_label(pending.trust).to_string(),
             epoch: pending.epoch,
             trusted: true,
@@ -1071,7 +1114,7 @@ impl TrustStore {
         self.peers.insert(
             pending.peer_id.clone(),
             PeerRecord {
-                static_public: peer_static_public,
+                static_public: proof.static_public,
                 trust: pending.trust,
                 pairing_secret: pending.secret,
             },
@@ -2082,38 +2125,31 @@ mod unit_tests {
         ));
     }
 
-    struct UnitTemp(PathBuf);
+    struct UnitTemp(tempfile::TempDir);
 
     impl UnitTemp {
         fn new(label: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "fastlink_secure_worker_unit_{label}_{}_{unique}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("temp");
-            Self(path)
+            let prefix = format!("fastlink_secure_worker_unit_{label}_");
+            let dir = tempfile::Builder::new()
+                .prefix(&prefix)
+                .tempdir()
+                .expect("secure temp dir");
+            Self(dir)
         }
-    }
 
-    impl Drop for UnitTemp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+        fn path(&self) -> &Path {
+            self.0.path()
         }
     }
 
     #[test]
     fn expired_pairing_offer_is_rejected_and_consumed() {
         let dir = UnitTemp::new("expiry");
-        let mut store = TrustStore::open(&dir.0).expect("store");
+        let mut store = TrustStore::open(dir.path()).expect("store");
         let offer = store
             .begin_pairing("peer-a", NetworkTrust::Lan, true)
             .expect("offer");
-        let proof = offer.proof();
+        let proof = offer.proof_for([0x11u8; 32]);
         let pending = store
             .pending
             .get_mut(&offer.challenge.nonce)

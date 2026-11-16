@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use fastlink::hex;
 use fastlink::pairing::{NetworkTrust, PairingError, PairingSession};
@@ -17,31 +17,20 @@ use fastlink::secure_worker::{
     MAX_SINGLE_FRAME_PAYLOAD_BYTES,
 };
 
-struct TempDir(PathBuf);
+struct TempDir(tempfile::TempDir);
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "fastlink_secure_worker_{label}_{}_{unique}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("temp dir");
-        Self(path)
+        let prefix = format!("fastlink_secure_worker_{label}_");
+        let dir = tempfile::Builder::new()
+            .prefix(&prefix)
+            .tempdir()
+            .expect("secure temp dir");
+        Self(dir)
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 
@@ -63,16 +52,17 @@ fn paired(peer_id: &str) -> Paired {
     let offer = server_store
         .begin_pairing(peer_id, NetworkTrust::Lan, true)
         .expect("pairing offer");
-    let proof = offer.proof();
+    let client_static = client_store.local_static_public();
+    let proof = offer.proof_for(client_static);
     let session = server_store
         .accept_pairing(
             &offer,
             &proof,
             PairingConsent { approved: true },
-            client_store.local_static_public(),
+            client_static,
         )
         .expect("pairing accepted");
-    let psk = Secret32::from_bytes(session.session_key);
+    let psk = Secret32::from_session_key(&session.session_key);
     let prologue = make_prologue(peer_id, "server", &session.session_id, session.epoch);
     Paired {
         _server_dir: server_dir,
@@ -278,6 +268,46 @@ fn proxy_pair(config: &Paired) -> (NoiseSession, NoiseSession, Proxy) {
     (client, server, proxy)
 }
 
+struct DelayProxy;
+
+impl DelayProxy {
+    fn start(server_addr: SocketAddr, delay: Duration) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("delay proxy bind");
+        let addr = listener.local_addr().expect("delay proxy addr");
+        thread::spawn(move || {
+            let (mut client, _) = listener.accept().expect("delay proxy accept");
+            let mut server = TcpStream::connect(server_addr).expect("delay proxy upstream");
+            let mut server_read = server.try_clone().expect("delay server clone");
+            let mut client_write = client.try_clone().expect("delay client clone");
+            let relay = thread::spawn(move || loop {
+                let mut prefix = [0u8; 4];
+                if server_read.read_exact(&mut prefix).is_err() {
+                    break;
+                }
+                let len = u32::from_le_bytes(prefix) as usize;
+                if len > 70_000 {
+                    break;
+                }
+                let mut body = vec![0u8; len];
+                if server_read.read_exact(&mut body).is_err() {
+                    break;
+                }
+                thread::sleep(delay);
+                if client_write.write_all(&prefix).is_err()
+                    || client_write.write_all(&body).is_err()
+                {
+                    break;
+                }
+            });
+            let _ = io::copy(&mut client, &mut server);
+            let _ = server.shutdown(Shutdown::Both);
+            let _ = client.shutdown(Shutdown::Both);
+            let _ = relay.join();
+        });
+        addr
+    }
+}
+
 struct WorkerFixture {
     worker: WorkerServer,
     store: Arc<Mutex<TrustStore>>,
@@ -386,7 +416,7 @@ fn pairing_requires_consent_rejects_replay_and_bad_policy() {
     let declined_offer = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("offer");
-    let declined_proof = declined_offer.proof();
+    let declined_proof = declined_offer.proof_for(client_store.local_static_public());
     let no_consent = store.accept_pairing(
         &declined_offer,
         &declined_proof,
@@ -410,7 +440,7 @@ fn pairing_requires_consent_rejects_replay_and_bad_policy() {
     let offer = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("fresh offer");
-    let proof = offer.proof();
+    let proof = offer.proof_for(client_store.local_static_public());
     let session = store
         .accept_pairing(
             &offer,
@@ -439,7 +469,7 @@ fn pairing_requires_consent_rejects_replay_and_bad_policy() {
     let offer = store
         .begin_pairing("peer-c", NetworkTrust::Tailscale, true)
         .expect("fresh offer c");
-    let mut wrong_peer = offer.proof();
+    let mut wrong_peer = offer.proof_for(client_store.local_static_public());
     wrong_peer.peer_id = "peer-other".to_string();
     let rejected = store.accept_pairing(
         &offer,
@@ -455,13 +485,80 @@ fn pairing_requires_consent_rejects_replay_and_bad_policy() {
     let offer = store
         .begin_pairing("peer-c", NetworkTrust::Tailscale, true)
         .expect("fresh offer c");
-    let mut bad_mac = offer.proof();
+    let mut bad_mac = offer.proof_for(client_store.local_static_public());
     bad_mac.mac[0] ^= 1;
     let rejected = store.accept_pairing(
         &offer,
         &bad_mac,
         PairingConsent { approved: true },
         client_store.local_static_public(),
+    );
+    assert!(matches!(
+        rejected,
+        Err(SecureWorkerError::Pairing(PairingError::InvalidProof))
+    ));
+    assert!(!store.is_trusted("peer-c"));
+}
+
+#[test]
+fn pairing_pin_must_be_bound_to_the_challenge_proof() {
+    let dir = TempDir::new("pin-binding");
+    let mut store = TrustStore::open(dir.path()).expect("store");
+    let key_a = [0xAAu8; 32];
+    let key_b = [0xBBu8; 32];
+
+    let offer = store
+        .begin_pairing("peer-a", NetworkTrust::Lan, true)
+        .expect("offer");
+    let proof_a = offer.proof_for(key_a);
+    let result = store.accept_pairing(&offer, &proof_a, PairingConsent { approved: true }, key_b);
+    assert!(
+        result.is_err(),
+        "a proof that does not bind key B must not allow key B to be stored"
+    );
+    assert!(!store.is_trusted("peer-a"));
+    assert_eq!(store.peer_static("peer-a"), None);
+
+    // The matching key and proof commit successfully.
+    let offer = store
+        .begin_pairing("peer-a", NetworkTrust::Lan, true)
+        .expect("fresh offer");
+    let proof_a = offer.proof_for(key_a);
+    let session = store
+        .accept_pairing(&offer, &proof_a, PairingConsent { approved: true }, key_a)
+        .expect("matching key proof");
+    assert_eq!(session.peer_id, "peer-a");
+    assert_eq!(store.peer_static("peer-a"), Some(key_a));
+
+    // A tampered key with an otherwise valid MAC fails closed.
+    let offer = store
+        .begin_pairing("peer-b", NetworkTrust::Lan, true)
+        .expect("tampered-key offer");
+    let mut tampered_key = offer.proof_for(key_a);
+    tampered_key.static_public = key_b;
+    let rejected = store.accept_pairing(
+        &offer,
+        &tampered_key,
+        PairingConsent { approved: true },
+        key_b,
+    );
+    assert!(matches!(
+        rejected,
+        Err(SecureWorkerError::Pairing(PairingError::InvalidProof))
+    ));
+    assert!(!store.is_trusted("peer-b"));
+
+    // A tampered MAC fails closed even with the expected key.
+    let offer = store
+        .begin_pairing("peer-c", NetworkTrust::Lan, true)
+        .expect("tampered-mac offer");
+    let mut tampered_mac = offer.proof_for(key_a);
+    tampered_mac.mac[0] ^= 1;
+    let rejected = store.accept_pairing(
+        &offer,
+        &tampered_mac,
+        PairingConsent { approved: true },
+        key_a,
     );
     assert!(matches!(
         rejected,
@@ -480,7 +577,7 @@ fn stale_pending_offer_is_rejected_after_trust_epoch_advances() {
     let offer_a = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("offer a");
-    let proof_a = offer_a.proof();
+    let proof_a = offer_a.proof_for(client_store.local_static_public());
     store
         .accept_pairing(
             &offer_a,
@@ -493,7 +590,7 @@ fn stale_pending_offer_is_rejected_after_trust_epoch_advances() {
     let offer_b = store
         .begin_pairing("peer-b", NetworkTrust::Lan, true)
         .expect("offer b");
-    let proof_b = offer_b.proof();
+    let proof_b = offer_b.proof_for(client_store.local_static_public());
 
     // Removal advances the local trust epoch, invalidating older pending offers.
     store.remove_peer("peer-a").expect("remove a");
@@ -535,7 +632,7 @@ fn trust_store_permissions_metadata_privacy_and_removal() {
     );
 
     let meta_text = fs::read_to_string(&meta_path).expect("metadata text");
-    let session_key_hex = hex(&config.session.session_key);
+    let session_key_hex = config.session.session_key.fingerprint_hex();
     assert!(!meta_text.contains("127.0.0.1"));
     assert!(!meta_text.contains("::1"));
     assert!(!meta_text.contains("addr"));
@@ -563,7 +660,7 @@ fn corrupt_records_fail_closed_and_stale_temporary_files_are_cleaned() {
     let offer = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("offer");
-    let proof = offer.proof();
+    let proof = offer.proof_for(client_store.local_static_public());
     store
         .accept_pairing(
             &offer,
@@ -796,6 +893,37 @@ fn tampered_and_oversized_handshake_messages_fail_closed() {
 }
 
 #[test]
+fn handshake_uses_one_absolute_deadline_across_all_messages() {
+    let config = paired("peer-a");
+    let mut server_config = server_noise(&config);
+    server_config.timeout = Duration::from_secs(2);
+    let (server_addr, server_handle) = spawn_server_handshake(server_config);
+    let proxy_addr = DelayProxy::start(server_addr, Duration::from_millis(350));
+    let mut client_config = client_noise(&config);
+    client_config.timeout = Duration::from_millis(500);
+
+    let started = Instant::now();
+    let result = connect_and_handshake(proxy_addr, &client_config);
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "slow-drip handshake must exhaust one absolute deadline, got {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "handshake exceeded the absolute deadline: {elapsed:?}"
+    );
+    let _ = server_handle.join();
+
+    // A normal loopback handshake with the same short deadline still succeeds.
+    let server_config = server_noise(&config);
+    let (server_addr, server_handle) = spawn_server_handshake(server_config);
+    let client = connect_and_handshake(server_addr, &client_config);
+    assert!(client.is_ok(), "normal handshake failed: {client:?}");
+    let _ = server_handle.join();
+}
+
+#[test]
 fn worker_rejects_preauth_and_truncated_payloads_without_retaining_controls() {
     let fixture = WorkerFixture::start(
         paired("peer-a"),
@@ -922,7 +1050,7 @@ fn worker_frame_timeout_closes_an_idle_authenticated_session() {
 #[test]
 fn debug_output_and_errors_do_not_expose_secrets_or_endpoints() {
     let config = paired("peer-a");
-    let key_hex = hex(&config.session.session_key);
+    let key_hex = config.session.session_key.fingerprint_hex();
     let session_debug = format!("{:?}", config.session);
     assert!(session_debug.contains("REDACTED"));
     assert!(!session_debug.contains(&key_hex));
@@ -936,7 +1064,7 @@ fn debug_output_and_errors_do_not_expose_secrets_or_endpoints() {
     assert!(offer_debug.contains("REDACTED"));
     assert!(!offer_debug.contains("secret="));
     assert!(!offer_debug.contains("127.0.0.1"));
-    let proof = offer.proof();
+    let proof = offer.proof_for([0x42u8; 32]);
     let proof_debug = format!("{proof:?}");
     assert!(proof_debug.contains("REDACTED"));
     assert!(!proof_debug.contains(&hex(&proof.mac)));

@@ -26,18 +26,18 @@ fn pairing_admits_opted_in_tailscale_peer_and_rejects_replay() {
     let challenge = registry
         .issue_challenge(&peer, nonce, 1)
         .expect("challenge");
-    let proof = sign_challenge(&secret, &challenge);
+    let proof = sign_challenge(&secret, &challenge, [0x77u8; 32]);
     let session = registry
         .verify_and_admit(&peer, &challenge, &proof)
         .expect("admit");
 
     assert_eq!(session.peer_id, "node-7900xt");
     assert_eq!(session.trust, NetworkTrust::Tailscale);
-    assert_ne!(session.session_key, [0u8; 32]);
+    assert_eq!(session.session_key.fingerprint_hex().len(), 64);
 
     // Replay with the same nonce must be rejected.
     let replay = registry.verify_and_admit(&peer, &challenge, &proof);
-    assert_eq!(replay, Err(PairingError::StaleOrReplayedEpoch));
+    assert!(matches!(replay, Err(PairingError::StaleOrReplayedEpoch)));
 }
 
 #[test]
@@ -61,11 +61,11 @@ fn pairing_rejects_untrusted_network_non_opt_in_and_bad_mac() {
     let challenge = registry
         .issue_challenge(&valid_peer, [3u8; 32], 1)
         .expect("challenge");
-    let wrong_proof = sign_challenge(&[0x99u8; 32], &challenge);
-    assert_eq!(
+    let wrong_proof = sign_challenge(&[0x99u8; 32], &challenge, [0x77u8; 32]);
+    assert!(matches!(
         registry.verify_and_admit(&valid_peer, &challenge, &wrong_proof),
         Err(PairingError::InvalidProof)
-    );
+    ));
 }
 
 #[test]

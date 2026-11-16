@@ -1,9 +1,10 @@
 # Secure Linux Worker Design (Task 7)
 
-**Status: design artifact only.** This document contains no implementation
-evidence, benchmark results, or claim that secure pairing or encrypted
-transport already works. No Rust code, manifests, GUI, `PROGRESS.md`, or
-`CHECKPOINTS.md` are changed by this task.
+**Status: design plus an experimental Linux-only backend slice.** The backend
+exists on `feat/secure-linux-worker` and is backed by loopback tests, but it has
+not received an independent audit. This document makes no production,
+benchmark, or secure-UX claim. The no-echo pairing UI and OS-keyring storage
+remain unimplemented.
 
 The design targets the M1 security gate and the M2 discovery/pairing boundary:
 
@@ -20,8 +21,9 @@ The design targets the M1 security gate and the M2 discovery/pairing boundary:
 Verified from this worktree:
 
 - `src/pairing.rs` performs keyed-BLAKE3 challenge authentication and derives a
-  32-byte `PairingSession::session_key`. It also carries a raw `addr` string in
-  the public peer/session structs, which is not acceptable for persistence.
+  32-byte session key, now held in a redacted zeroize-on-drop `SessionKey`
+  wrapper. `PeerIdentity` and `PairingSession` no longer carry raw `addr`
+  fields; routing remains transient socket state.
 - `src/stage_auth.rs` is an epoch/hop-scoped keyed-BLAKE3 **MAC**. It provides
   integrity/authentication of activation frames, not confidentiality.
 - `src/node_runtime.rs` moves activation frames over loopback TCP and checks the
@@ -29,8 +31,11 @@ Verified from this worktree:
   boundary.
 - `docs/PROTOCOL.md` explicitly says the v0.1 transfer protocol is neither
   encrypted nor authenticated and permits only loopback listeners.
-- `Cargo.lock` has no Noise, TLS, or other secure-transport crate.
-- There is no durable peer-removal/trust store and no real distributed inference.
+- `Cargo.lock` includes `snow` 0.10.0 with a minimal feature set for the
+  experimental Linux-only `src/secure_worker.rs` slice; no TLS or production
+  secure-transport claim is made.
+- The experimental slice adds a durable trust/removal store. There is still no
+  real distributed inference.
 - Discovery output/candidates remain unpaired and untrusted. A Tailscale peer is
   not a FASTLINK worker and candidate metadata must not enter scheduling.
 
@@ -148,11 +153,15 @@ check:
 - exchange a fresh 32-byte challenge nonce and monotonically increasing epoch;
 - exchange the keyed-BLAKE3 challenge proof;
 - reject missing opt-in/trust, invalid proof, stale epoch and reused nonce;
+- bind the peer's X25519 static public key into the keyed proof transcript and
+  the session-key KDF (domain-separated V2 transcript);
 - derive `session_key` with the existing KDF.
 
 The resulting 32-byte `session_key` is passed to Noise as the PSK for this
 session. It is not used directly for any data encryption or MAC. The PSK is not
-logged.
+logged. `PairingSession` carries it in a `SessionKey` wrapper with redacted
+`Debug` and zeroize-on-drop; the Noise adapter makes one explicit copy because
+the Noise builder needs a stable 32-byte buffer, and both owners zeroize.
 
 The Noise `XXpsk3` handshake then proves possession of the secret, exchanges
 fresh ephemeral keys and authenticated static public keys, and binds the
@@ -175,6 +184,8 @@ stores the private key only in a mode-0600 file. During the first authenticated
 pairing:
 
 - the Noise handshake exchanges both static public keys;
+- the keyed pairing proof authenticates the peer static public key, and the
+  trust-commit path rejects a pin that does not match the proof;
 - both sides record the peer's static public key fingerprint in the trust store;
 - the `peer_id`/opaque node ID is included in the authenticated Noise prologue
   and in the post-handshake control payload.
@@ -223,8 +234,9 @@ automatic trust.
 
 **Residual:** file permissions do not protect against root, a same-user
 attacker, backups, or a compromised host. A future OS-keyring or encrypted
-store is desirable but is not silently required by v1. Secret zeroization is an
-open decision because the repository has no `zeroize` dependency yet.
+store is desirable but is not required by v1. Local secret wrappers and
+plaintext buffers use `zeroize`; `snow`'s internal handshake/transport key state
+is not explicitly zeroized by this module.
 
 ### 5.2 Removal and re-pairing
 
@@ -254,9 +266,11 @@ Reconnect never silently re-pairs.
   **65,535 bytes total per message, including the 16-byte AEAD tag where
   present**. Do not describe this as a 64 KiB application payload: application
   handshake payload is smaller by handshake tokens/tag bytes. Reject any
-  handshake message above 65,535 before allocation. Use a bounded handshake
-  deadline (suggest 5 seconds). `snow` exposes the same `MAXMSGLEN = 65,535`
-  limit.
+  handshake message above 65,535 before allocation. Use one **absolute
+  handshake deadline** (suggest 5 seconds) shared by all XXpsk3 messages and the
+  encrypted confirmation; each read/write derives its timeout from the
+  remaining time so slow-drip peers cannot reset the budget. `snow` exposes the
+  same `MAXMSGLEN = 65,535` limit.
 - One handshake per TCP connection. No resumption, 0-RTT, renegotiation, or
   session tickets.
 - A failed handshake closes the socket; no plaintext error detail containing
@@ -414,6 +428,13 @@ listener, or network scan.
 - Wrong PSK, wrong static key pin, wrong prologue/node ID, tampered handshake
   message, invalid suite/fallback, handshake timeout and replayed handshake
   fail closed.
+- A valid challenge proof bound to static key A cannot commit key B; matching
+  key+proof succeeds; tampered key or MAC fails closed.
+- A slow-drip peer that stays inside each per-message timeout but exceeds the
+  absolute handshake deadline fails closed within that total budget; a normal
+  handshake with the same deadline succeeds.
+- `SessionKey`/PSK wrappers redact debug output and zeroize on drop/explicit
+  zeroization; the single Noise-adapter copy is documented.
 - Handshake messages at the 65,535-byte Noise limit are accepted only if valid;
   65,536 is rejected before allocation. Application handshake payload limits
   account for handshake tokens/tag bytes.
@@ -459,25 +480,27 @@ listener, or network scan.
 
 ## 11. Unresolved decisions
 
-1. **`snow` acceptance:** version pin, feature set, transitive dependency review,
-   and the project's "not formally audited" notice must be accepted by the
-   security owner before implementation.
+1. **`snow` acceptance:** version pin, minimal feature set and transitive
+   dependency/license review are recorded, but the project's "not formally
+   audited" notice still requires security-owner acceptance before any
+   production claim.
 2. **Static identity lifecycle:** whether the installation static key is global
    or per-peer; rotation/reset UX; behavior when a peer reinstalls but reuses a
    pairing code (new pin must require explicit confirmation).
 3. **Pairing UX:** one-time code format, TTY no-echo implementation, SAS/fingerprint
    comparison, and cancellation/timeout behaviour in GUI and headless CLI.
-4. **Secret storage at rest:** 0600 files vs OS keyring; whether `zeroize` or an
-   equivalent is added; backup/crash semantics; root/same-user disclosure
-   acceptance.
+4. **Secret storage at rest:** 0600 files vs OS keyring; `zeroize` is now used
+   for local secret wrappers, but at-rest encryption/keyring storage, backup and
+   crash semantics, and root/same-user disclosure acceptance remain open.
 5. **Durable replay policy:** persist last accepted epoch vs a bounded nonce
    ledger; crash consistency between challenge issuance and trust update.
 6. **Transport limits:** Noise per-message cap is fixed at 65,535 bytes including
    the 16-byte tag; the logical frame cap is 256 KiB and requires the explicit
    chunking above. Confirm session message cap (1,000,000 proposed), rekey vs
    close-on-exhaustion, and backpressure policy.
-7. **Endpoint refactor:** remove `addr` from public `PeerIdentity`/`PairingSession`
-   and keep a transient endpoint type; migration of existing tests/CLI.
+7. **Endpoint refactor:** `addr` is removed from public `PeerIdentity` and
+   `PairingSession`; remaining discovery/CLI endpoint migration still needs a
+   separate review.
 8. **Listener policy:** loopback-only first implementation vs explicit private
    bind; discovery-to-connect flow without storing addresses; Tailscale/LAN
    scope enforcement.
