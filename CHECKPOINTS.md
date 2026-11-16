@@ -242,3 +242,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Exact feature CI `43910640643` succeeded on `fix/secure-keyring-p2` head `60c2fa149bad3f575d37f7fb83353e866c0b7b9e` (Ubuntu and Windows compile/test gates). The independent security re-review has completed execution; its result is awaited before integration.
 - Local gates remain green (244 workspace tests, five doctests, formatting, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check, targeted Semgrep 0). Keep this candidate isolated pending clean re-review; then rebase onto current integration and rerun validation before integrating.
 - No real Secret Service/keyring, network discovery, model/inference, GPU, or service interruption occurred.
+
+## Checkpoint 28 — 2026-11-16 (rebased keyring candidate validated locally)
+
+- Integration head `abe47dd973b5fb40c43817b0ad6fe03b7314b3b8` passed exact CI `43911743846`. A clean candidate was created without rewriting the original branch: commits `e41e88e` and `60c2fa1` were replayed onto the integration head as `58545949e37cb93cd4feaec1a112710a5dcb0c4c` and pushed to `fix/secure-keyring-p2-integration`.
+- On the rebased candidate, commander reran FASTLINK_BIN workspace tests (244 passed), doctests (5 passed), fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check, and targeted Semgrep (0 findings). Exact candidate CI `43912572730` is running; full-diff independent security review `deleg_ca61d838` is in progress.
+- Preserve original `fix/secure-keyring-p2` and all unrelated dirty root-worktree files. Do not integrate until full review and exact candidate CI are green. No real OS keyring, live network discovery, model, GPU, or service interruption occurred.

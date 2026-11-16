@@ -217,3 +217,9 @@
 
 - Exact Ubuntu/Windows feature CI `43910640643` passed on `60c2fa1`; the independent security re-review has completed but its result is awaited. Candidate remains isolated and must not be integrated before a clean re-review.
 - The next safe step is to review the re-review result, then rebase onto the latest `integrate/fastlink-team` and rerun full local/exact CI gates. No real keyring, network, model, or GPU activity occurred.
+
+## 2026-11-16 — Keyring candidate rebased and revalidated
+
+- Integration `abe47dd` passed exact CI `43911743846`. Replayed the two keyring commits onto it in a separate worktree/branch, preserving the original `fix/secure-keyring-p2` branch; candidate `58545949e37cb93cd4feaec1a112710a5dcb0c4c` is pushed separately.
+- Full local Linux/Windows-target gates and targeted Semgrep passed on the rebased candidate. Exact CI `43912572730` and a fresh independent full-diff security review are in progress; do not integrate before both complete cleanly.
+- Existing unrelated dirty files in the repository root worktree remain untouched. No real keyring, network discovery, model, or GPU activity occurred.
