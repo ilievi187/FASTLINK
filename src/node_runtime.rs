@@ -7,6 +7,8 @@
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +26,7 @@ const MAX_FRAME_WIRE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug)]
 pub enum RuntimeError {
+    EmptyInput,
     Io(io::Error),
     Activation(ActivationError),
     StageAuth(StageAuthError),
@@ -89,6 +92,7 @@ where
     samples: Arc<Mutex<Vec<BoundarySample>>>,
     outputs: Arc<Mutex<Vec<Vec<u8>>>>,
     cluster_secret: Option<[u8; 32]>,
+    running: Arc<AtomicBool>,
 }
 
 impl<F> StageLoopContext<F>
@@ -112,7 +116,13 @@ where
         )?;
 
         for step in 0..self.token_count {
+            if !self.running.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             let (mut stream, _) = self.listener.accept()?;
+            if !self.running.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             stream.set_read_timeout(Some(Duration::from_secs(5)))?;
             let packet = read_framed_packet(&mut stream)?;
 
@@ -187,6 +197,41 @@ where
     }
 }
 
+fn wake_stage_listeners(addrs: &[SocketAddr]) {
+    for addr in addrs {
+        // A successful wake connection unblocks a stage parked in accept().
+        // Failures are expected when that stage has already exited.
+        let _ = TcpStream::connect_timeout(addr, Duration::from_millis(50));
+    }
+}
+
+type StageHandle = thread::JoinHandle<Result<(), RuntimeError>>;
+
+/// Joins every spawned stage handle, preserving the first observed error.
+fn join_stage_handles(
+    handles: Vec<StageHandle>,
+    mut first_error: Option<RuntimeError>,
+) -> Option<RuntimeError> {
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if first_error.is_none() {
+                    first_error = Some(RuntimeError::InvalidManifest(
+                        "stage thread panicked".into(),
+                    ));
+                }
+            }
+        }
+    }
+    first_error
+}
+
 fn receive_hop(stage_index: usize) -> (u16, u16) {
     if stage_index == 0 {
         (0, 1)
@@ -240,6 +285,9 @@ where
     manifest
         .verify()
         .map_err(|e| RuntimeError::InvalidManifest(e.to_string()))?;
+    if tokens.is_empty() {
+        return Err(RuntimeError::EmptyInput);
+    }
 
     let stage_count = manifest.stages.len();
     let listeners: Vec<TcpListener> = (0..stage_count)
@@ -263,57 +311,91 @@ where
     let samples = Arc::new(Mutex::new(Vec::<BoundarySample>::new()));
     let final_outputs = Arc::new(Mutex::new(Vec::<Vec<u8>>::with_capacity(token_count)));
 
+    let running = Arc::new(AtomicBool::new(true));
+    let wake_addrs = Arc::new(addrs.clone());
     let mut handles = Vec::with_capacity(stage_count);
     for (idx, listener) in listeners.into_iter().enumerate() {
         let stage = bound_stages[idx].clone();
         let fn_ref = Arc::clone(&shared_fn);
         let samples_ref = Arc::clone(&samples);
         let outputs_ref = Arc::clone(&final_outputs);
+        let stage_running = Arc::clone(&running);
+        let stage_wake_addrs = Arc::clone(&wake_addrs);
 
-        let handle = thread::spawn(move || -> Result<(), RuntimeError> {
-            StageLoopContext {
-                listener,
-                stage,
-                epoch,
-                model_digest,
-                token_count,
-                shared_fn: fn_ref,
-                samples: samples_ref,
-                outputs: outputs_ref,
-                cluster_secret,
-            }
-            .run()
-        });
-        handles.push(handle);
-    }
-
-    // Drive each token into stage 0.
-    let entry_addr = bound_stages[0].addr.clone();
-    for (step, token) in tokens.iter().enumerate() {
-        let frame = match cluster_secret {
-            Some(secret) => {
-                let hop_key = stage_auth::derive_hop_key(&secret, epoch, 0, 1);
-                stage_auth::seal_stage_frame(
-                    &hop_key,
+        let spawned = thread::Builder::new()
+            .name(format!("fastlink-stage-{idx}"))
+            .spawn(move || -> Result<(), RuntimeError> {
+                let context = StageLoopContext {
+                    listener,
+                    stage,
                     epoch,
-                    step as u64,
-                    step as u32,
-                    0,
-                    1,
-                    token,
-                )?
+                    model_digest,
+                    token_count,
+                    shared_fn: fn_ref,
+                    samples: samples_ref,
+                    outputs: outputs_ref,
+                    cluster_secret,
+                    running: Arc::clone(&stage_running),
+                };
+                let result = match catch_unwind(AssertUnwindSafe(|| context.run())) {
+                    Ok(result) => result,
+                    Err(_) => Err(RuntimeError::InvalidManifest(
+                        "stage thread panicked".into(),
+                    )),
+                };
+                if result.is_err() {
+                    stage_running.store(false, Ordering::SeqCst);
+                    wake_stage_listeners(&stage_wake_addrs);
+                }
+                result
+            });
+        match spawned {
+            Ok(handle) => handles.push(handle),
+            Err(error) => {
+                running.store(false, Ordering::SeqCst);
+                wake_stage_listeners(&wake_addrs);
+                let first_error = join_stage_handles(handles, Some(RuntimeError::Io(error)));
+                return Err(first_error.expect("spawn error"));
             }
-            None => encode_activation_frame(epoch, step as u64, step as u32, 0, 1, token)?,
-        };
-        let mut stream = TcpStream::connect(&entry_addr)?;
-        stream.set_nodelay(true)?;
-        write_framed_packet(&mut stream, &frame)?;
+        }
     }
 
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| RuntimeError::InvalidManifest("stage thread panicked".into()))??;
+    // Drive each token into stage 0. Any driver-side failure must shut down and
+    // join the already-spawned stages before returning.
+    let drive_result = (|| -> Result<(), RuntimeError> {
+        let entry_addr = bound_stages[0].addr.clone();
+        for (step, token) in tokens.iter().enumerate() {
+            let frame = match cluster_secret {
+                Some(secret) => {
+                    let hop_key = stage_auth::derive_hop_key(&secret, epoch, 0, 1);
+                    stage_auth::seal_stage_frame(
+                        &hop_key,
+                        epoch,
+                        step as u64,
+                        step as u32,
+                        0,
+                        1,
+                        token,
+                    )?
+                }
+                None => encode_activation_frame(epoch, step as u64, step as u32, 0, 1, token)?,
+            };
+            let mut stream = TcpStream::connect(&entry_addr)?;
+            stream.set_nodelay(true)?;
+            write_framed_packet(&mut stream, &frame)?;
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = drive_result {
+        running.store(false, Ordering::SeqCst);
+        wake_stage_listeners(&wake_addrs);
+        let first_error = join_stage_handles(handles, Some(error));
+        return Err(first_error.expect("driver error"));
+    }
+
+    if let Some(error) = join_stage_handles(handles, None) {
+        return Err(error);
     }
 
     let collected_samples = samples.lock().unwrap().clone();

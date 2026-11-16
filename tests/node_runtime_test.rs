@@ -1,7 +1,10 @@
 use fastlink::digest;
 use fastlink::manifest::{PartitionManifest, StageSpec};
-use fastlink::node_runtime::run_loopback_pipeline;
+use fastlink::node_runtime::{run_loopback_pipeline, RuntimeError};
 use fastlink::pipeline::TelemetrySource;
+
+#[cfg(target_os = "linux")]
+use fastlink::pipeline::ActivationError;
 
 #[test]
 fn three_stage_loopback_pipeline_forwards_p2p_and_accounts_bytes() {
@@ -436,4 +439,153 @@ fn cpu_nonfinal_stage_error_does_not_leak_downstream_threads() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn runtime_three_stage_manifest() -> PartitionManifest {
+    PartitionManifest::build(
+        1,
+        digest(b"runtime-failure-join-model"),
+        4096,
+        30,
+        &[
+            StageSpec {
+                node_id: "stage-0".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 0,
+                layer_end: 10,
+            },
+            StageSpec {
+                node_id: "stage-1".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 10,
+                layer_end: 20,
+            },
+            StageSpec {
+                node_id: "stage-2".into(),
+                addr: "127.0.0.1:0".into(),
+                layer_start: 20,
+                layer_end: 30,
+            },
+        ],
+    )
+    .expect("runtime manifest")
+}
+
+#[test]
+fn empty_token_batch_fails_closed_before_workers_can_block() {
+    let manifest = runtime_three_stage_manifest();
+    let result = run_loopback_pipeline(&manifest, &[], |_, input| input.to_vec());
+    assert!(
+        matches!(result, Err(RuntimeError::EmptyInput)),
+        "empty token batch must fail closed instead of spawning idle workers; got {result:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_thread_count() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .expect("read /proc/self/task")
+        .count()
+}
+
+#[cfg(target_os = "linux")]
+fn run_isolated_runtime_child(test_name: &str) {
+    let output = std::process::Command::new("/proc/self/exe")
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env("FASTLINK_RUNTIME_JOIN_CHILD", "1")
+        .output()
+        .expect("spawn isolated runtime test");
+    assert!(
+        output.status.success(),
+        "isolated runtime test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_runtime_case_joined(
+    result: Result<(Vec<Vec<u8>>, fastlink::pipeline::PipelineSummary), RuntimeError>,
+    baseline: usize,
+    expected: bool,
+) {
+    // join() guarantees termination, but /proc can expose a task entry for a
+    // few scheduler ticks after the join returns. Yield until the count settles;
+    // genuinely detached workers never fall back to the baseline.
+    let mut after = runtime_thread_count();
+    for _ in 0..10_000 {
+        if after <= baseline {
+            break;
+        }
+        std::thread::yield_now();
+        after = runtime_thread_count();
+    }
+    assert!(
+        expected && after <= baseline,
+        "runtime error path must join every stage thread; result={result:?}, \
+         baseline={baseline}, after={after}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn driver_frame_error_after_spawn_joins_all_stage_threads() {
+    if std::env::var_os("FASTLINK_RUNTIME_JOIN_CHILD").is_some() {
+        let manifest = runtime_three_stage_manifest();
+        let baseline = runtime_thread_count();
+        let result = run_loopback_pipeline(&manifest, &[Vec::new()], |_, _| vec![1]);
+        let expected = matches!(
+            result,
+            Err(RuntimeError::Activation(ActivationError::EmptyPayload))
+        );
+        assert_runtime_case_joined(result, baseline, expected);
+        return;
+    }
+    run_isolated_runtime_child("driver_frame_error_after_spawn_joins_all_stage_threads");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn early_stage_error_joins_downstream_listeners() {
+    if std::env::var_os("FASTLINK_RUNTIME_JOIN_CHILD").is_some() {
+        let manifest = runtime_three_stage_manifest();
+        let baseline = runtime_thread_count();
+        let tokens = vec![vec![7u8; 64]];
+        let result = run_loopback_pipeline(&manifest, &tokens, |stage_index, input| {
+            if stage_index == 0 {
+                Vec::new()
+            } else {
+                input.to_vec()
+            }
+        });
+        let expected = matches!(
+            result,
+            Err(RuntimeError::Activation(ActivationError::EmptyPayload))
+        );
+        assert_runtime_case_joined(result, baseline, expected);
+        return;
+    }
+    run_isolated_runtime_child("early_stage_error_joins_downstream_listeners");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn panicking_stage_joins_every_spawned_thread() {
+    if std::env::var_os("FASTLINK_RUNTIME_JOIN_CHILD").is_some() {
+        let manifest = runtime_three_stage_manifest();
+        let baseline = runtime_thread_count();
+        let tokens = vec![vec![7u8; 64]];
+        let result = run_loopback_pipeline(&manifest, &tokens, |stage_index, _| {
+            if stage_index == 0 {
+                panic!("intentional stage panic");
+            }
+            vec![1]
+        });
+        let expected = matches!(result, Err(RuntimeError::InvalidManifest(_)));
+        assert_runtime_case_joined(result, baseline, expected);
+        return;
+    }
+    run_isolated_runtime_child("panicking_stage_joins_every_spawned_thread");
 }
