@@ -11,7 +11,6 @@ fn test_peer(id: &str, trust: NetworkTrust, opted_in: bool) -> PeerIdentity {
         peer_id: id.to_string(),
         os: "linux".to_string(),
         runtime: "rocm".to_string(),
-        addr: format!("100.64.0.{}:9400", id.len() + 10),
         trust,
         opted_in,
     }

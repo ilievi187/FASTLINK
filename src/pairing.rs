@@ -25,13 +25,14 @@ impl NetworkTrust {
     }
 }
 
-/// Advertised peer identity prior to or during pairing.
+/// Advertised peer identity prior to or during pairing. Routing addresses are
+/// intentionally excluded: endpoints are transient local state and must never
+/// enter pairing/persistence/debug output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerIdentity {
     pub peer_id: String,
     pub os: String,
     pub runtime: String,
-    pub addr: String,
     pub trust: NetworkTrust,
     pub opted_in: bool,
 }
@@ -45,22 +46,47 @@ pub struct PairingChallenge {
 }
 
 /// Client proof computed with the shared pairing secret.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Debug` is implemented manually so the keyed proof is never printed.
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairingProof {
     pub peer_id: String,
     pub epoch: u64,
     pub mac: Digest,
 }
 
+impl fmt::Debug for PairingProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PairingProof")
+            .field("peer_id", &self.peer_id)
+            .field("epoch", &self.epoch)
+            .field("mac", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Authenticated session established after pairing succeeds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Debug` is implemented manually so the PSK/session key is never printed.
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairingSession {
     pub session_id: Digest,
     pub peer_id: String,
-    pub addr: String,
     pub trust: NetworkTrust,
     pub epoch: u64,
     pub session_key: [u8; 32],
+}
+
+impl fmt::Debug for PairingSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PairingSession")
+            .field("session_id", &self.session_id)
+            .field("peer_id", &self.peer_id)
+            .field("trust", &self.trust)
+            .field("epoch", &self.epoch)
+            .field("session_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,7 +231,6 @@ impl PairingRegistry {
         Ok(PairingSession {
             session_id: digest(&sid_input),
             peer_id: peer.peer_id.clone(),
-            addr: peer.addr.clone(),
             trust: peer.trust,
             epoch: challenge.epoch,
             session_key,
