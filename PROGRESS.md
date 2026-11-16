@@ -212,3 +212,8 @@
 
 - AGY's fix for the two independent keyring P2s plus the public test-seam issue is committed and pushed at `60c2fa1` on isolated `fix/secure-keyring-p2`. Commander verified workspace/unit/integration/doctests, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings).
 - Exact feature CI `43910640643` and independent security re-review are pending. The change is not integrated; no live keyring, network, model, or GPU activity was performed.
+
+## 2026-11-16 — Keyring follow-up exact feature CI passed
+
+- Exact Ubuntu/Windows feature CI `43910640643` passed on `60c2fa1`; the independent security re-review has completed but its result is awaited. Candidate remains isolated and must not be integrated before a clean re-review.
+- The next safe step is to review the re-review result, then rebase onto the latest `integrate/fastlink-team` and rerun full local/exact CI gates. No real keyring, network, model, or GPU activity occurred.

@@ -236,3 +236,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Follow-up commit `60c2fa149bad3f575d37f7fb83353e866c0b7b9e` is pushed on isolated branch `fix/secure-keyring-p2`, based on keyring candidate `e41e88e`. It derives/verifies the static public identity on keyring reopen, hardens removal failure ordering/propagation, and makes the injected backend seam private in production builds with compile-fail API tests.
 - Commander verified 244 workspace tests, five doctests, FASTLINK_BIN, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check and targeted Semgrep (0 findings). Exact feature CI `43910640643` is running; independent security re-review `deleg_371f57ab` is pending.
 - Do not integrate until re-review and exact CI are green. No live Secret Service/keyring, network discovery, model/inference, GPU work, or service interruption occurred; no production-security claim.
+
+## Checkpoint 27 — 2026-11-16 (keyring follow-up exact feature CI green)
+
+- Exact feature CI `43910640643` succeeded on `fix/secure-keyring-p2` head `60c2fa149bad3f575d37f7fb83353e866c0b7b9e` (Ubuntu and Windows compile/test gates). The independent security re-review has completed execution; its result is awaited before integration.
+- Local gates remain green (244 workspace tests, five doctests, formatting, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check, targeted Semgrep 0). Keep this candidate isolated pending clean re-review; then rebase onto current integration and rerun validation before integrating.
+- No real Secret Service/keyring, network discovery, model/inference, GPU, or service interruption occurred.
