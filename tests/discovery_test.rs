@@ -1532,20 +1532,15 @@ exit 0
     fn inherited_stdout_descendant_does_not_hang_discovery() {
         let _guard = serial();
         let dir = temp_dir("inherited-stdout");
-        let holder_pid_file = dir.join("holder.pid");
         let mdns = write_executable(
-        &dir,
-        "mdns-with-holder",
-        &format!(
+            &dir,
+            "mdns-with-holder",
             "#!/bin/sh
 printf '%s\n' '=;eth0;IPv4;FastNode;_fastlink._tcp;local;fast.local;192.168.44.10;18777;\"os=linux\"'
 (sleep 4) &
-printf '%s\n' \"$!\" > '{}'
 exit 0
 ",
-            holder_pid_file.display()
-        ),
-    );
+        );
         let missing_ts = dir.join("missing-tailscale");
 
         let config = DiscoveryConfig {
@@ -1559,11 +1554,6 @@ exit 0
         let report = discover_with_config(&config, None);
         let elapsed = started.elapsed();
 
-        if let Ok(pid_str) = fs::read_to_string(&holder_pid_file) {
-            let _ = Command::new("/bin/kill")
-                .args(["-9", pid_str.trim()])
-                .status();
-        }
         let _ = fs::remove_dir_all(&dir);
 
         assert!(
