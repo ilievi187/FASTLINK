@@ -37,6 +37,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::rpc_client::frame_tensor;
+use crate::transport::MAX_TENSOR_BYTES;
 
 /// Server acknowledgment byte sent after a successful `batch_send`.
 pub const ACK: u8 = 0;
@@ -70,12 +71,23 @@ impl AsyncClient {
     /// every chunk's `adapter_payload` (codec:u8 + encoded_len:u32 + encoded bytes).
     /// All tensors are concatenated into one buffer so the cost of the 12-byte
     /// tensor header and 5-byte per-chunk header is amortised across all tensors.
+    /// Tensors larger than [`MAX_TENSOR_BYTES`] are rejected per tensor with
+    /// `InvalidInput` before framing or transmission; aggregate batch memory
+    /// across multiple tensors is not separately capped here.
     ///
     /// Returns the number of bytes written (including all headers).
     ///
     /// **Telemetry**: this function records the elapsed time (ms) into
     /// `Self::latency_samples` and accumulates `wire.len()` into `Self::bytes_sent`.
     pub fn batch_send(&mut self, tensors: &[&[u8]]) -> io::Result<usize> {
+        for tensor in tensors {
+            if tensor.len() > MAX_TENSOR_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "tensor length exceeds transport limit",
+                ));
+            }
+        }
         let start = Instant::now();
         let mut wire = Vec::new();
         for tensor in tensors {
