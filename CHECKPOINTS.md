@@ -224,3 +224,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Exact feature CI `43906258084` passed. Commander reran FASTLINK_BIN-backed workspace tests, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check and Semgrep over all 13 Rust files changed from main. Semgrep now reports only three audited Unix pipe syscall sites and two CLI argv-parsing heuristics; no temp-dir or secret findings remain. Independent final review is pending.
 - PR #12 was fast-forwarded to the reviewed candidate, marked ready, and merged without deleting the release branch. PR exact-head CI runs `43907795006` and `43907803373` passed on head `1aab6d5a079052d62be50a6acda131f428d81df4`; the independent full-diff review found no findings. Merge commit is `3606637ca41d07f60562d536a8b9559f751c1f24` (merged 2026-11-16 16:33:27 UTC). Exact merge-commit CI `43908805208` is still in progress; await its result before calling the main release gate fully green.
 - `main` now points to `3606637ca41d07f60562d536a8b9559f751c1f24`. No GUI window, live discovery/network scan, model/inference, GPU workload, or service interruption occurred.
+
+## Checkpoint 25 — 2026-11-16 (M1 merge and exact main CI verified)
+
+- Exact merge-commit CI `43908805208` succeeded on Ubuntu and Windows for `main` commit `3606637ca41d07f60562d536a8b9559f751c1f24` (PR #12, merged 2026-11-16 16:33:27 UTC). PR state is verified `MERGED`; the release branch was retained.
+- Integration documentation checkpoint `d4b4a65b820c8e91d9a7e264894270aeadf9387e` passed exact Ubuntu/Windows CI `43909097463`. `main` and integration both have verified green CI at their recorded heads.
+- Remaining work is experimental keyring/pairing security and larger inference/transport tasks; none were included in this M1 merge. No GPU inference, model load, live discovery, or service interruption occurred.
