@@ -538,7 +538,6 @@ const WINDOWS_UNSUPPORTED_MESSAGE: &str =
 #[cfg(windows)]
 fn main() {
     eprintln!("{WINDOWS_UNSUPPORTED_MESSAGE}");
-    std::process::exit(1);
 }
 
 #[cfg(unix)]

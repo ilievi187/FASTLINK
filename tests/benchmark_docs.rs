@@ -118,7 +118,11 @@ fn mmap_benchmark_is_explicitly_unavailable_on_windows() {
     assert!(harness.contains("WINDOWS_UNSUPPORTED_MESSAGE"));
     assert!(harness.contains("unsupported on Windows"));
     assert!(harness.contains("no mmap, TCP, or FASTLINK"));
-    assert!(harness.contains("std::process::exit(1)"));
+    assert!(harness.contains("eprintln!(\"{WINDOWS_UNSUPPORTED_MESSAGE}\");"));
+    assert!(harness.contains(
+        "#[cfg(windows)]\nfn main() {\n    eprintln!(\"{WINDOWS_UNSUPPORTED_MESSAGE}\");\n}"
+    ));
+    assert!(!harness.contains("std::process::exit(1)"));
     assert!(harness.contains("#[cfg(windows)]\nfn main()"));
     assert!(harness.contains("#[cfg(unix)]\nfn main()"));
 
