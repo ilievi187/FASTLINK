@@ -281,3 +281,54 @@ fn cpu_mlp_rejects_malformed_shapes_and_partitioning() {
         Err(CpuInferenceError::ManifestMismatch(_))
     ));
 }
+
+#[test]
+fn cpu_mlp_rejects_nonfinite_accumulator_before_relu() {
+    use fastlink::cpu_inference::{CpuActivation, CpuDenseLayer, CpuInferenceError, CpuMlpSpec};
+
+    let layer = CpuDenseLayer::new(2, 1, vec![2.0, -2.0], vec![0.0], CpuActivation::Relu)
+        .expect("finite overflow layer");
+    let spec = CpuMlpSpec::new(2, vec![layer]).expect("finite overflow spec");
+
+    let result = spec.forward(&[f32::MAX, f32::MAX]);
+    assert!(
+        matches!(result, Err(CpuInferenceError::NonFiniteActivation)),
+        "NaN produced inside the dot product must not be hidden by ReLU; got {result:?}"
+    );
+}
+
+#[test]
+fn authenticated_cpu_mlp_surfaces_nonfinite_activation() {
+    use fastlink::cpu_inference::{
+        run_authenticated_cpu_mlp_pipeline, CpuActivation, CpuDenseLayer, CpuInferenceError,
+        CpuMlpSpec,
+    };
+
+    let layer = CpuDenseLayer::new(2, 1, vec![2.0, -2.0], vec![0.0], CpuActivation::Relu)
+        .expect("finite overflow layer");
+    let spec = CpuMlpSpec::new(2, vec![layer]).expect("finite overflow spec");
+    let manifest = PartitionManifest::build(
+        7,
+        spec.digest(),
+        16,
+        1,
+        &[StageSpec {
+            node_id: "cpu-stage-0".into(),
+            addr: "127.0.0.1:0".into(),
+            layer_start: 0,
+            layer_end: 1,
+        }],
+    )
+    .expect("single-stage manifest");
+
+    let result = run_authenticated_cpu_mlp_pipeline(
+        &spec,
+        &manifest,
+        &[0x42u8; 32],
+        &[vec![f32::MAX, f32::MAX]],
+    );
+    assert!(
+        matches!(result, Err(CpuInferenceError::NonFiniteActivation)),
+        "the authenticated wrapper must surface the layer failure; got {result:?}"
+    );
+}

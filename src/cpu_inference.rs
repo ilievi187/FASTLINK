@@ -275,6 +275,9 @@ impl CpuDenseLayer {
             for (input_index, input_value) in input.iter().enumerate() {
                 value += self.weights[row + input_index] * input_value;
             }
+            if !value.is_finite() {
+                return Err(CpuInferenceError::NonFiniteActivation);
+            }
             value = self.activation.apply(value);
             if !value.is_finite() {
                 return Err(CpuInferenceError::NonFiniteActivation);
@@ -531,6 +534,12 @@ pub fn run_authenticated_cpu_mlp_pipeline(
                     .and_then(|mut slot| slot.take())
                     .unwrap_or(CpuInferenceError::Transport(error))
             })?;
+
+    // A final stage has no downstream frame to reject, so its captured layer
+    // failure must be surfaced before decoding the empty/partial output.
+    if let Some(error) = error_slot.lock().ok().and_then(|mut slot| slot.take()) {
+        return Err(error);
+    }
 
     let expected_output = spec
         .layers
