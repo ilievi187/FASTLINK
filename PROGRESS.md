@@ -137,3 +137,10 @@
 - The CPU-only authenticated loopback MLP matches its monolithic reference and fixed expected values. Strict TDD caught both NaN masking through ReLU and a non-final-stage error path that leaked blocked downstream threads; the final error sentinel is relayed until every stage joins, then the stored error is returned. The focused thread-leak test passed 10/10 and full local gates passed at the rebased head.
 - Residual: this does not implement an LLM loader/tokenizer or prove multi-machine inference or throughput. Generic runtime failures before its join loop are not covered by this CPU-specific fix. No model/GPU/server/network activity was started.
 - Secure worker remains experimental: `snow` audit, extra PairingRegistry secret copy, secure pairing UX/network exchange, OS-keyring storage and explicit Noise internal zeroization remain unresolved.
+
+## 2026-11-16 — Final-push audit and parallel remediation started
+
+- Audited 44 FASTLINK worktrees/branches, all four open PRs, issues #1/#2/#7, FASTLINK checkpoint/roadmap, Herdr workspaces and protected workload state. Five pre-existing dirty worktrees were left intact. Integration is clean at `acf85df`; exact CI `43874530591` is green; remote `main` remains `8cd1b28` and untouched.
+- PRs #3 and #4 have no submitted reviews; #5 is draft/unreviewed; #8 is conflicting and its Windows CI failed in the adaptive codec test. OpenCode is fixing #8 in its existing dedicated PR worktree. Re-evaluate it for the integration branch only after conflict resolution, independent review, and green exact-head CI; keep `main` separately gated.
+- AGY is hardening `PairingRegistry` secret lifetime on a fresh isolated branch with strict TDD. Separate no-echo pairing UX/OS keyring and `snow` audit work remains queued; secure worker is still experimental.
+- Independent review work is underway for the open PRs and generic runtime error paths. Existing local generation/inference work was observed and left untouched; no GPU/model/network work was started.
