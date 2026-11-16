@@ -1,21 +1,161 @@
-#![cfg(target_os = "linux")]
-
+use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::io::{self, Read, Write};
+#[cfg(target_os = "linux")]
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::thread;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use fastlink::hex;
 use fastlink::pairing::{NetworkTrust, PairingError, PairingSession};
+#[cfg(target_os = "linux")]
 use fastlink::secure_worker::{
-    make_prologue, NoiseConfig, NoiseSession, PairingConsent, Secret32, SecureWorkerError,
-    TrustStore, WorkerConfig, WorkerServer, MAX_LOGICAL_FRAME_BYTES,
+    make_prologue, NoiseConfig, NoiseSession, WorkerConfig, WorkerServer, MAX_LOGICAL_FRAME_BYTES,
     MAX_SINGLE_FRAME_PAYLOAD_BYTES,
 };
+use fastlink::secure_worker::{
+    KeyringBackend, KeyringBackendError, KeyringLocator, PairingConsent, Secret32,
+    SecureWorkerError, TrustStore,
+};
+use zeroize::Zeroizing;
+
+type MockEntryMap = HashMap<(String, String), Zeroizing<Vec<u8>>>;
+
+#[derive(Default)]
+struct MockState {
+    entries: MockEntryMap,
+    locators: Vec<KeyringLocator>,
+    fail_get: Option<KeyringBackendError>,
+    fail_set: Option<KeyringBackendError>,
+    fail_delete: Option<KeyringBackendError>,
+    corrupt_next_readback: Option<Vec<u8>>,
+    corrupt_after_set: Option<Vec<u8>>,
+    drop_next_set: bool,
+}
+
+#[derive(Default)]
+struct MockKeyringBackend {
+    state: Mutex<MockState>,
+}
+
+impl MockKeyringBackend {
+    fn count(&self) -> usize {
+        self.state.lock().expect("mock lock").entries.len()
+    }
+
+    fn locators(&self) -> Vec<KeyringLocator> {
+        self.state.lock().expect("mock lock").locators.clone()
+    }
+
+    fn raw_entries(&self) -> Vec<(String, String, Vec<u8>)> {
+        self.state
+            .lock()
+            .expect("mock lock")
+            .entries
+            .iter()
+            .map(|((s, a), v)| (s.clone(), a.clone(), v.to_vec()))
+            .collect()
+    }
+
+    fn set_fail_get(&self, err: Option<KeyringBackendError>) {
+        self.state.lock().expect("mock lock").fail_get = err;
+    }
+
+    fn set_fail_set(&self, err: Option<KeyringBackendError>) {
+        self.state.lock().expect("mock lock").fail_set = err;
+    }
+
+    fn set_fail_delete(&self, err: Option<KeyringBackendError>) {
+        self.state.lock().expect("mock lock").fail_delete = err;
+    }
+
+    fn set_corrupt_readback_after_next_set(&self, data: Option<Vec<u8>>) {
+        self.state.lock().expect("mock lock").corrupt_after_set = data;
+    }
+
+    fn set_drop_next_set(&self, drop_write: bool) {
+        self.state.lock().expect("mock lock").drop_next_set = drop_write;
+    }
+}
+
+impl KeyringBackend for MockKeyringBackend {
+    fn get_secret(
+        &self,
+        locator: &KeyringLocator,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, KeyringBackendError> {
+        let mut state = self.state.lock().expect("mock lock");
+        state.locators.push(locator.clone());
+        if let Some(err) = state.fail_get.take() {
+            return Err(err);
+        }
+        if let Some(corrupt) = state.corrupt_next_readback.take() {
+            return Ok(Some(Zeroizing::new(corrupt)));
+        }
+        Ok(state
+            .entries
+            .get(&(locator.service.clone(), locator.account.clone()))
+            .map(|bytes| Zeroizing::new(bytes.to_vec())))
+    }
+
+    fn set_secret(
+        &self,
+        locator: &KeyringLocator,
+        secret_utf8: &str,
+    ) -> Result<(), KeyringBackendError> {
+        let mut state = self.state.lock().expect("mock lock");
+        state.locators.push(locator.clone());
+        if let Some(err) = state.fail_set.take() {
+            return Err(err);
+        }
+        if state.drop_next_set {
+            state.drop_next_set = false;
+            return Ok(());
+        }
+        if let Some(corrupt) = state.corrupt_after_set.take() {
+            state.corrupt_next_readback = Some(corrupt);
+            return Ok(());
+        }
+        state.entries.insert(
+            (locator.service.clone(), locator.account.clone()),
+            Zeroizing::new(secret_utf8.as_bytes().to_vec()),
+        );
+        Ok(())
+    }
+
+    fn delete_secret(&self, locator: &KeyringLocator) -> Result<bool, KeyringBackendError> {
+        let mut state = self.state.lock().expect("mock lock");
+        state.locators.push(locator.clone());
+        if let Some(err) = state.fail_delete.take() {
+            return Err(err);
+        }
+        Ok(state
+            .entries
+            .remove(&(locator.service.clone(), locator.account.clone()))
+            .is_some())
+    }
+}
+
+fn open_mock_store(
+    root: &Path,
+) -> Result<(TrustStore, Arc<MockKeyringBackend>), SecureWorkerError> {
+    let backend = Arc::new(MockKeyringBackend::default());
+    let store = open_mock_store_with(root, Arc::clone(&backend))?;
+    Ok((store, backend))
+}
+
+fn open_mock_store_with(
+    root: &Path,
+    backend: Arc<MockKeyringBackend>,
+) -> Result<TrustStore, SecureWorkerError> {
+    TrustStore::open_with_keyring_backend(root, backend)
+}
 
 struct TempDir(tempfile::TempDir);
 
@@ -37,18 +177,22 @@ impl TempDir {
 struct Paired {
     _server_dir: TempDir,
     _client_dir: TempDir,
+    server_backend: Arc<MockKeyringBackend>,
+    _client_backend: Arc<MockKeyringBackend>,
     server_store: TrustStore,
     client_store: TrustStore,
     session: PairingSession,
     psk: Secret32,
+    #[cfg(target_os = "linux")]
     prologue: Vec<u8>,
 }
 
 fn paired(peer_id: &str) -> Paired {
     let server_dir = TempDir::new("server");
     let client_dir = TempDir::new("client");
-    let mut server_store = TrustStore::open(server_dir.path()).expect("server store");
-    let client_store = TrustStore::open(client_dir.path()).expect("client store");
+    let (mut server_store, server_backend) =
+        open_mock_store(server_dir.path()).expect("server store");
+    let (client_store, client_backend) = open_mock_store(client_dir.path()).expect("client store");
     let offer = server_store
         .begin_pairing(peer_id, NetworkTrust::Lan, true)
         .expect("pairing offer");
@@ -63,18 +207,23 @@ fn paired(peer_id: &str) -> Paired {
         )
         .expect("pairing accepted");
     let psk = Secret32::from_session_key(&session.session_key);
+    #[cfg(target_os = "linux")]
     let prologue = make_prologue(peer_id, "server", &session.session_id, session.epoch);
     Paired {
         _server_dir: server_dir,
         _client_dir: client_dir,
+        server_backend,
+        _client_backend: client_backend,
         server_store,
         client_store,
         session,
         psk,
+        #[cfg(target_os = "linux")]
         prologue,
     }
 }
 
+#[cfg(target_os = "linux")]
 fn server_noise(config: &Paired) -> NoiseConfig {
     NoiseConfig::new(
         config.server_store.local_static_private(),
@@ -85,6 +234,7 @@ fn server_noise(config: &Paired) -> NoiseConfig {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn client_noise(config: &Paired) -> NoiseConfig {
     NoiseConfig::new(
         config.client_store.local_static_private(),
@@ -95,6 +245,7 @@ fn client_noise(config: &Paired) -> NoiseConfig {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn spawn_server_handshake(
     config: NoiseConfig,
 ) -> (
@@ -110,6 +261,7 @@ fn spawn_server_handshake(
     (addr, handle)
 }
 
+#[cfg(target_os = "linux")]
 fn connect_and_handshake(
     addr: SocketAddr,
     config: &NoiseConfig,
@@ -118,6 +270,7 @@ fn connect_and_handshake(
     NoiseSession::handshake_initiator(stream, config)
 }
 
+#[cfg(target_os = "linux")]
 fn expect_handshake_failure(config: &Paired, mutate: impl FnOnce(&mut NoiseConfig)) {
     let server = server_noise(config);
     let (addr, server_handle) = spawn_server_handshake(server);
@@ -127,6 +280,7 @@ fn expect_handshake_failure(config: &Paired, mutate: impl FnOnce(&mut NoiseConfi
     let _ = server_handle.join().expect("server join");
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProxyMode {
     Pass,
@@ -138,16 +292,19 @@ enum ProxyMode {
     Reflect,
 }
 
+#[cfg(target_os = "linux")]
 struct ProxyState {
     mode: Mutex<ProxyMode>,
     captured: Mutex<Option<Vec<u8>>>,
 }
 
+#[cfg(target_os = "linux")]
 struct Proxy {
     addr: SocketAddr,
     state: Arc<ProxyState>,
 }
 
+#[cfg(target_os = "linux")]
 impl Proxy {
     fn start(server_addr: SocketAddr) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("proxy bind");
@@ -255,6 +412,7 @@ impl Proxy {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn proxy_pair(config: &Paired) -> (NoiseSession, NoiseSession, Proxy) {
     let server = server_noise(config);
     let (server_addr, server_handle) = spawn_server_handshake(server);
@@ -268,8 +426,10 @@ fn proxy_pair(config: &Paired) -> (NoiseSession, NoiseSession, Proxy) {
     (client, server, proxy)
 }
 
+#[cfg(target_os = "linux")]
 struct DelayProxy;
 
+#[cfg(target_os = "linux")]
 impl DelayProxy {
     fn start(server_addr: SocketAddr, delay: Duration) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").expect("delay proxy bind");
@@ -308,8 +468,10 @@ impl DelayProxy {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct DripProxy;
 
+#[cfg(target_os = "linux")]
 impl DripProxy {
     fn start(
         server_addr: SocketAddr,
@@ -372,6 +534,7 @@ impl DripProxy {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct WorkerFixture {
     worker: WorkerServer,
     store: Arc<Mutex<TrustStore>>,
@@ -381,8 +544,11 @@ struct WorkerFixture {
     expected_remote_static: [u8; 32],
     _server_dir: TempDir,
     _client_dir: TempDir,
+    _server_backend: Arc<MockKeyringBackend>,
+    _client_backend: Arc<MockKeyringBackend>,
 }
 
+#[cfg(target_os = "linux")]
 impl WorkerFixture {
     fn start(config: Paired, handshake_timeout: Duration, frame_timeout: Duration) -> Self {
         let client_config = client_noise(&config);
@@ -390,6 +556,8 @@ impl WorkerFixture {
         let Paired {
             _server_dir,
             _client_dir,
+            server_backend,
+            _client_backend,
             server_store,
             psk,
             prologue,
@@ -417,6 +585,8 @@ impl WorkerFixture {
             expected_remote_static,
             _server_dir,
             _client_dir,
+            _server_backend: server_backend,
+            _client_backend,
         }
     }
 
@@ -429,6 +599,7 @@ impl WorkerFixture {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn wait_for_control(worker: &WorkerServer, expected: &[u8]) -> bool {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -453,6 +624,7 @@ fn metadata_path(store_dir: &Path) -> PathBuf {
         .expect("metadata file")
 }
 
+#[cfg(unix)]
 fn mode_of(path: &Path) -> u32 {
     fs::metadata(path).expect("metadata").permissions().mode() & 0o777
 }
@@ -461,8 +633,8 @@ fn mode_of(path: &Path) -> u32 {
 fn pairing_requires_consent_rejects_replay_and_bad_policy() {
     let dir = TempDir::new("pairing");
     let client_dir = TempDir::new("pairing-client");
-    let mut store = TrustStore::open(dir.path()).expect("store");
-    let client_store = TrustStore::open(client_dir.path()).expect("client store");
+    let (mut store, _backend) = open_mock_store(dir.path()).expect("store");
+    let (client_store, _client_backend) = open_mock_store(client_dir.path()).expect("client store");
 
     assert!(matches!(
         store.begin_pairing("untrusted", NetworkTrust::Untrusted, true),
@@ -567,7 +739,7 @@ fn pairing_requires_consent_rejects_replay_and_bad_policy() {
 #[test]
 fn pairing_pin_must_be_bound_to_the_challenge_proof() {
     let dir = TempDir::new("pin-binding");
-    let mut store = TrustStore::open(dir.path()).expect("store");
+    let (mut store, _backend) = open_mock_store(dir.path()).expect("store");
     let key_a = [0xAAu8; 32];
     let key_b = [0xBBu8; 32];
 
@@ -635,8 +807,8 @@ fn pairing_pin_must_be_bound_to_the_challenge_proof() {
 fn stale_pending_offer_is_rejected_after_trust_epoch_advances() {
     let dir = TempDir::new("epoch");
     let client_dir = TempDir::new("epoch-client");
-    let mut store = TrustStore::open(dir.path()).expect("store");
-    let client_store = TrustStore::open(client_dir.path()).expect("client store");
+    let (mut store, _backend) = open_mock_store(dir.path()).expect("store");
+    let (client_store, _client_backend) = open_mock_store(client_dir.path()).expect("client store");
 
     let offer_a = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
@@ -677,10 +849,13 @@ fn stale_pending_offer_is_rejected_after_trust_epoch_advances() {
 fn trust_store_permissions_metadata_privacy_and_removal() {
     let config = paired("peer-a");
     let store_dir = config._server_dir.path();
-    assert_eq!(mode_of(store_dir), 0o700);
-    assert_eq!(mode_of(&store_dir.join("identity.key")), 0o600);
-    assert_eq!(mode_of(&store_dir.join("state.json")), 0o600);
-    assert_eq!(mode_of(&store_dir.join("peers")), 0o700);
+    assert!(!store_dir.join("identity.key").exists());
+    #[cfg(unix)]
+    {
+        assert_eq!(mode_of(store_dir), 0o700);
+        assert_eq!(mode_of(&store_dir.join("state.json")), 0o600);
+        assert_eq!(mode_of(&store_dir.join("peers")), 0o700);
+    }
 
     let meta_path = metadata_path(store_dir);
     let secret_path = meta_path
@@ -688,12 +863,10 @@ fn trust_store_permissions_metadata_privacy_and_removal() {
         .trim_end_matches(".meta.json")
         .to_string();
     let secret_path = PathBuf::from(format!("{secret_path}.secret"));
+    assert!(!secret_path.exists());
+    #[cfg(unix)]
     assert_eq!(mode_of(&meta_path), 0o600);
-    assert_eq!(mode_of(&secret_path), 0o600);
-    assert_eq!(
-        fs::metadata(&secret_path).expect("secret metadata").len(),
-        32
-    );
+    assert_eq!(config.server_backend.count(), 2);
 
     let meta_text = fs::read_to_string(&meta_path).expect("metadata text");
     let session_key_hex = config.session.session_key.fingerprint_hex();
@@ -709,6 +882,7 @@ fn trust_store_permissions_metadata_privacy_and_removal() {
     assert!(!store.is_trusted("peer-a"));
     assert_eq!(store.peer_static("peer-a"), None);
     assert_eq!(store.peer_pairing_secret("peer-a"), None);
+    assert_eq!(config.server_backend.count(), 1);
     assert!(!store.remove_peer("peer-a").expect("second removal"));
     assert!(fs::read_dir(store_dir.join("peers"))
         .map(|mut entries| entries.next().is_none())
@@ -719,8 +893,8 @@ fn trust_store_permissions_metadata_privacy_and_removal() {
 fn corrupt_records_fail_closed_and_stale_temporary_files_are_cleaned() {
     let dir = TempDir::new("corrupt");
     let client_dir = TempDir::new("corrupt-client");
-    let client_store = TrustStore::open(client_dir.path()).expect("client store");
-    let mut store = TrustStore::open(dir.path()).expect("store");
+    let (client_store, _client_backend) = open_mock_store(client_dir.path()).expect("client store");
+    let (mut store, backend) = open_mock_store(dir.path()).expect("store");
     let offer = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("offer");
@@ -735,29 +909,32 @@ fn corrupt_records_fail_closed_and_stale_temporary_files_are_cleaned() {
         .expect("accepted");
     let meta_path = metadata_path(dir.path());
     fs::write(&meta_path, b"not valid json").expect("corrupt metadata");
+    #[cfg(unix)]
     fs::set_permissions(&meta_path, fs::Permissions::from_mode(0o600)).expect("mode");
     let stale_tmp = dir.path().join("peers").join(".leftover.tmp-1-1");
     fs::write(&stale_tmp, b"partial").expect("stale temp");
     drop(store);
 
-    let mut reopened = TrustStore::open(dir.path()).expect("reopen");
+    let mut reopened = open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("reopen");
     assert!(!reopened.is_trusted("peer-a"));
     assert_eq!(reopened.peer_static("peer-a"), None);
     assert!(!stale_tmp.exists());
     assert!(reopened.remove_peer("peer-a").expect("remove corrupt"));
+    assert_eq!(backend.count(), 1);
     assert!(fs::read_dir(dir.path().join("peers"))
         .map(|mut entries| entries.next().is_none())
         .unwrap_or(false));
 
     let bad_identity_dir = TempDir::new("bad-identity");
     fs::write(bad_identity_dir.path().join("identity.key"), b"short").expect("bad identity");
+    #[cfg(unix)]
     fs::set_permissions(
         bad_identity_dir.path().join("identity.key"),
         fs::Permissions::from_mode(0o600),
     )
     .expect("mode");
     assert!(matches!(
-        TrustStore::open(bad_identity_dir.path()),
+        open_mock_store(bad_identity_dir.path()),
         Err(SecureWorkerError::StoreCorrupt)
     ));
 }
@@ -766,14 +943,17 @@ fn corrupt_records_fail_closed_and_stale_temporary_files_are_cleaned() {
 fn trust_store_refuses_to_chmod_an_unrelated_directory() {
     let dir = TempDir::new("unrelated");
     fs::write(dir.path().join("notes.txt"), b"user data").expect("notes");
+    #[cfg(unix)]
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).expect("mode");
     assert!(matches!(
-        TrustStore::open(dir.path()),
+        open_mock_store(dir.path()),
         Err(SecureWorkerError::StorePermission)
     ));
+    #[cfg(unix)]
     assert_eq!(mode_of(dir.path()), 0o755);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn wrong_psk_wrong_peer_prologue_and_bad_pin_fail_closed() {
     let config = paired("peer-a");
@@ -802,6 +982,7 @@ fn wrong_psk_wrong_peer_prologue_and_bad_pin_fail_closed() {
     let _ = server_handle.join();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn loopback_control_roundtrip_and_exact_frame_limits() {
     let config = paired("peer-a");
@@ -844,6 +1025,7 @@ fn loopback_control_roundtrip_and_exact_frame_limits() {
     ));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn transport_is_confidential_and_rejects_tamper_replay_truncation_and_oversize() {
     // No plaintext control payload is observable in the captured ciphertext.
@@ -934,6 +1116,7 @@ fn transport_is_confidential_and_rejects_tamper_replay_truncation_and_oversize()
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn tampered_and_oversized_handshake_messages_fail_closed() {
     {
@@ -956,6 +1139,7 @@ fn tampered_and_oversized_handshake_messages_fail_closed() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn handshake_uses_one_absolute_deadline_across_all_messages() {
     let config = paired("peer-a");
@@ -987,6 +1171,7 @@ fn handshake_uses_one_absolute_deadline_across_all_messages() {
     let _ = server_handle.join();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn partial_byte_handshake_frame_cannot_extend_absolute_deadline() {
     let config = paired("peer-a");
@@ -1016,6 +1201,7 @@ fn partial_byte_handshake_frame_cannot_extend_absolute_deadline() {
     let _ = server_handle.join();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn worker_rejects_preauth_and_truncated_payloads_without_retaining_controls() {
     let fixture = WorkerFixture::start(
@@ -1055,6 +1241,7 @@ fn worker_rejects_preauth_and_truncated_payloads_without_retaining_controls() {
     assert!(fixture.worker.is_running());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn worker_handshake_timeout_and_stop_close_owned_sessions() {
     let fixture = WorkerFixture::start(
@@ -1088,6 +1275,7 @@ fn worker_handshake_timeout_and_stop_close_owned_sessions() {
     assert!(client.recv_control().is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn worker_start_remove_revokes_and_restart_with_old_keys_fails() {
     let mut fixture = WorkerFixture::start(
@@ -1122,6 +1310,7 @@ fn worker_start_remove_revokes_and_restart_with_old_keys_fails() {
     assert!(matches!(restart, Err(SecureWorkerError::UntrustedPeer)));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn worker_frame_timeout_closes_an_idle_authenticated_session() {
     let fixture = WorkerFixture::start(
@@ -1144,12 +1333,20 @@ fn worker_frame_timeout_closes_an_idle_authenticated_session() {
 fn debug_output_and_errors_do_not_expose_secrets_or_endpoints() {
     let config = paired("peer-a");
     let key_hex = config.session.session_key.fingerprint_hex();
+    let psk_debug = format!("{:?}", config.psk);
+    assert!(psk_debug.contains("REDACTED"));
+    let store_debug = format!("{:?}", config.server_store);
+    assert!(!store_debug.contains("peer-a"));
+    assert!(!store_debug.contains(&key_hex));
+    let client_debug = format!("{:?}", config.client_store);
+    assert!(!client_debug.contains("peer-a"));
+    assert!(!client_debug.contains(&key_hex));
     let session_debug = format!("{:?}", config.session);
     assert!(session_debug.contains("REDACTED"));
     assert!(!session_debug.contains(&key_hex));
 
     let debug_dir = TempDir::new("debug-store");
-    let mut store = TrustStore::open(debug_dir.path()).expect("store");
+    let (mut store, _backend) = open_mock_store(debug_dir.path()).expect("store");
     let offer = store
         .begin_pairing("peer-a", NetworkTrust::Lan, true)
         .expect("offer");
@@ -1162,31 +1359,586 @@ fn debug_output_and_errors_do_not_expose_secrets_or_endpoints() {
     assert!(proof_debug.contains("REDACTED"));
     assert!(!proof_debug.contains(&hex(&proof.mac)));
 
-    let noise_debug = format!("{:?}", server_noise(&config));
-    assert!(!noise_debug.contains(&key_hex));
-    assert!(noise_debug.contains("REDACTED"));
+    #[cfg(target_os = "linux")]
+    {
+        let noise_debug = format!("{:?}", server_noise(&config));
+        assert!(!noise_debug.contains(&key_hex));
+        assert!(noise_debug.contains("REDACTED"));
 
-    let config_debug = format!(
-        "{:?}",
-        WorkerConfig {
-            peer_id: "peer-a".to_string(),
-            psk: config.psk.clone(),
-            prologue: config.prologue.clone(),
-            expected_remote_static: config.client_store.local_static_public(),
-            handshake_timeout: Duration::from_secs(1),
-            frame_timeout: Duration::from_secs(1),
-        }
-    );
-    assert!(!config_debug.contains(&key_hex));
-    assert!(config_debug.contains("REDACTED"));
+        let config_debug = format!(
+            "{:?}",
+            WorkerConfig {
+                peer_id: "peer-a".to_string(),
+                psk: config.psk.clone(),
+                prologue: config.prologue.clone(),
+                expected_remote_static: config.client_store.local_static_public(),
+                handshake_timeout: Duration::from_secs(1),
+                frame_timeout: Duration::from_secs(1),
+            }
+        );
+        assert!(!config_debug.contains(&key_hex));
+        assert!(config_debug.contains("REDACTED"));
+    }
 
     for error in [
         SecureWorkerError::StaticKeyMismatch,
         SecureWorkerError::HandshakeFailed,
         SecureWorkerError::UntrustedPeer,
+        SecureWorkerError::KeyringUnavailable,
+        SecureWorkerError::KeyringConflict,
+        SecureWorkerError::Unsupported,
     ] {
         let rendered = format!("{error} {error:?}");
         assert!(!rendered.contains("127.0.0.1"));
         assert!(!rendered.contains(&key_hex));
     }
+}
+
+fn test_hex_decode_32(bytes: &[u8]) -> [u8; 32] {
+    let text = std::str::from_utf8(bytes).expect("UTF-8 hex");
+    assert_eq!(text.len(), 64);
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).expect("hex byte");
+    }
+    out
+}
+
+fn find_raw_entry(backend: &MockKeyringBackend, prefix: &str) -> [u8; 32] {
+    backend
+        .raw_entries()
+        .into_iter()
+        .find(|(_, account, _)| account.starts_with(prefix))
+        .map(|(_, _, value)| test_hex_decode_32(&value))
+        .expect("expected keyring entry")
+}
+
+struct LegacyFixture {
+    id_private: Secret32,
+    id_public: [u8; 32],
+    id_file_bytes: Vec<u8>,
+    peer_id: String,
+    peer_secret: Secret32,
+    peer_secret_raw: Vec<u8>,
+    peer_public: [u8; 32],
+    meta_path: PathBuf,
+    secret_path: PathBuf,
+    meta_bytes: Vec<u8>,
+}
+
+fn seed_legacy_store_dir(
+    target_dir: &Path,
+    peer_id: &str,
+    peer_public: [u8; 32],
+    trust_epoch: u64,
+) -> LegacyFixture {
+    let seed_dir = TempDir::new("legacy-seed");
+    let (mut seed_store, seed_backend) = open_mock_store(seed_dir.path()).expect("seed store");
+    let id_private = seed_store.local_static_private();
+    let id_public = seed_store.local_static_public();
+    let id_priv_raw = find_raw_entry(&seed_backend, "id-");
+
+    let offer = seed_store
+        .begin_pairing(peer_id, NetworkTrust::Lan, true)
+        .expect("seed offer");
+    let proof = offer.proof_for(peer_public);
+    seed_store
+        .accept_pairing(
+            &offer,
+            &proof,
+            PairingConsent { approved: true },
+            peer_public,
+        )
+        .expect("seed accept");
+    let peer_secret = seed_store
+        .peer_pairing_secret(peer_id)
+        .expect("seed peer secret");
+    let peer_secret_raw = find_raw_entry(&seed_backend, "peer-").to_vec();
+
+    let seed_meta_path = metadata_path(seed_dir.path());
+    let peer_file_name = seed_meta_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("peer meta name")
+        .to_string();
+    let peer_stem = peer_file_name
+        .strip_suffix(".meta.json")
+        .expect("peer stem")
+        .to_string();
+    let meta_bytes = fs::read(&seed_meta_path).expect("read seed meta");
+
+    let peers_dir = target_dir.join("peers");
+    fs::create_dir_all(&peers_dir).expect("create legacy peers dir");
+    let mut id_file_bytes = Vec::with_capacity(64);
+    id_file_bytes.extend_from_slice(&id_priv_raw);
+    id_file_bytes.extend_from_slice(&id_public);
+    let id_path = target_dir.join("identity.key");
+    fs::write(&id_path, &id_file_bytes).expect("write legacy identity.key");
+
+    let state_path = target_dir.join("state.json");
+    fs::write(&state_path, format!("{{\"trust_epoch\":{trust_epoch}}}"))
+        .expect("write legacy state.json");
+
+    let meta_path = peers_dir.join(&peer_file_name);
+    fs::write(&meta_path, &meta_bytes).expect("write legacy meta.json");
+    let secret_path = peers_dir.join(format!("{peer_stem}.secret"));
+    fs::write(&secret_path, &peer_secret_raw).expect("write legacy .secret");
+
+    #[cfg(unix)]
+    {
+        fs::set_permissions(target_dir, fs::Permissions::from_mode(0o700)).expect("root mode");
+        fs::set_permissions(&peers_dir, fs::Permissions::from_mode(0o700)).expect("peers mode");
+        fs::set_permissions(&id_path, fs::Permissions::from_mode(0o600)).expect("id mode");
+        fs::set_permissions(&state_path, fs::Permissions::from_mode(0o600)).expect("state mode");
+        fs::set_permissions(&meta_path, fs::Permissions::from_mode(0o600)).expect("meta mode");
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("secret mode");
+    }
+
+    LegacyFixture {
+        id_private,
+        id_public,
+        id_file_bytes,
+        peer_id: peer_id.to_string(),
+        peer_secret,
+        peer_secret_raw,
+        peer_public,
+        meta_path,
+        secret_path,
+        meta_bytes,
+    }
+}
+
+#[test]
+fn keyring_backed_create_read_reopen_delete_and_redaction() {
+    let dir = TempDir::new("keyring-crud");
+    let backend = Arc::new(MockKeyringBackend::default());
+    let mut store =
+        open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("open with injected keyring");
+
+    assert!(!dir.path().join("identity.key").exists());
+    assert_eq!(backend.count(), 1);
+    let id_priv = store.local_static_private();
+    let id_pub = store.local_static_public();
+    let id_priv_hex = hex(&find_raw_entry(&backend, "id-"));
+    let state_text = fs::read_to_string(dir.path().join("state.json")).expect("state.json");
+    assert!(state_text.contains(&hex(&id_pub)));
+    assert!(!state_text.contains(&id_priv_hex));
+
+    let peer_id = "opaque-peer-secret-test";
+    let offer = store
+        .begin_pairing(peer_id, NetworkTrust::Lan, true)
+        .expect("offer");
+    let peer_static = [0x42u8; 32];
+    let proof = offer.proof_for(peer_static);
+    let _session = store
+        .accept_pairing(
+            &offer,
+            &proof,
+            PairingConsent { approved: true },
+            peer_static,
+        )
+        .expect("accept");
+    assert_eq!(backend.count(), 2);
+    assert!(store.is_trusted(peer_id));
+    let expected_peer_secret = store.peer_pairing_secret(peer_id).expect("peer secret");
+    let meta_path = metadata_path(dir.path());
+    let secret_path = PathBuf::from(format!(
+        "{}.secret",
+        meta_path.to_string_lossy().trim_end_matches(".meta.json")
+    ));
+    assert!(!secret_path.exists());
+    let peer_secret_hex = hex(&find_raw_entry(&backend, "peer-"));
+    let meta_text = fs::read_to_string(&meta_path).expect("meta.json");
+    assert!(!meta_text.contains(&peer_secret_hex));
+
+    let root_str = dir.path().to_string_lossy().to_string();
+    for locator in backend.locators() {
+        assert!(!locator.service.contains(peer_id));
+        assert!(!locator.account.contains(peer_id));
+        assert!(!locator.label.contains(peer_id));
+        assert!(!locator.service.contains(&root_str));
+        assert!(!locator.account.contains(&root_str));
+        assert!(!locator.label.contains(&root_str));
+    }
+    for (_, _, value) in backend.raw_entries() {
+        let text = std::str::from_utf8(&value).expect("UTF-8 hex secret for KDE compatibility");
+        assert_eq!(text.len(), 64);
+        assert!(text.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    drop(store);
+    let mut reopened = open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("reopen");
+    assert_eq!(reopened.local_static_private(), id_priv);
+    assert_eq!(reopened.local_static_public(), id_pub);
+    assert!(reopened.is_trusted(peer_id));
+    assert_eq!(reopened.peer_static(peer_id), Some(peer_static));
+    assert_eq!(reopened.peer_trust(peer_id), Some(NetworkTrust::Lan));
+    assert_eq!(
+        reopened.peer_pairing_secret(peer_id),
+        Some(expected_peer_secret)
+    );
+
+    assert!(reopened.remove_peer(peer_id).expect("remove peer"));
+    assert!(!reopened.is_trusted(peer_id));
+    assert!(!meta_path.exists());
+    assert_eq!(backend.count(), 1);
+    assert!(!reopened.remove_peer(peer_id).expect("idempotent removal"));
+}
+
+#[test]
+fn first_open_migrates_legacy_identity_and_peer_secret_files() {
+    let dir = TempDir::new("legacy-migrate");
+    let fixture = seed_legacy_store_dir(dir.path(), "legacy-peer", [0x44u8; 32], 9);
+
+    let backend = Arc::new(MockKeyringBackend::default());
+    let store =
+        open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("migrate legacy store");
+
+    assert!(!dir.path().join("identity.key").exists());
+    assert!(!fixture.secret_path.exists());
+    assert!(fixture.meta_path.exists());
+    assert_eq!(backend.count(), 2);
+
+    assert_eq!(store.local_static_private(), fixture.id_private);
+    assert_eq!(store.local_static_public(), fixture.id_public);
+    assert!(store.is_trusted(&fixture.peer_id));
+    assert_eq!(
+        store.peer_static(&fixture.peer_id),
+        Some(fixture.peer_public)
+    );
+    assert_eq!(
+        store.peer_pairing_secret(&fixture.peer_id),
+        Some(fixture.peer_secret.clone())
+    );
+
+    let state_text = fs::read_to_string(dir.path().join("state.json")).expect("state text");
+    assert!(state_text.contains("\"trust_epoch\":9"));
+    assert!(state_text.contains(&hex(&fixture.id_public)));
+    drop(store);
+
+    let reopened = open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("reopen migrated");
+    assert_eq!(reopened.local_static_private(), fixture.id_private);
+    assert_eq!(reopened.local_static_public(), fixture.id_public);
+    assert!(reopened.is_trusted(&fixture.peer_id));
+    assert_eq!(
+        reopened.peer_pairing_secret(&fixture.peer_id),
+        Some(fixture.peer_secret)
+    );
+}
+
+#[test]
+fn keyring_failures_and_readback_errors_fail_closed_and_preserve_legacy_files() {
+    let dir = TempDir::new("legacy-failures");
+    let fixture = seed_legacy_store_dir(dir.path(), "legacy-peer", [0x55u8; 32], 5);
+    let backend = Arc::new(MockKeyringBackend::default());
+
+    backend.set_fail_get(Some(KeyringBackendError::AccessDenied));
+    assert!(matches!(
+        open_mock_store_with(dir.path(), Arc::clone(&backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(dir.path().join("identity.key")).expect("identity preserved"),
+        fixture.id_file_bytes
+    );
+    assert_eq!(
+        fs::read(&fixture.secret_path).expect("secret preserved"),
+        fixture.peer_secret_raw
+    );
+    assert_eq!(backend.count(), 0);
+
+    backend.set_fail_set(Some(KeyringBackendError::Unavailable));
+    assert!(matches!(
+        open_mock_store_with(dir.path(), Arc::clone(&backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(dir.path().join("identity.key")).expect("identity preserved"),
+        fixture.id_file_bytes
+    );
+    assert_eq!(backend.count(), 0);
+
+    backend.set_drop_next_set(true);
+    assert!(matches!(
+        open_mock_store_with(dir.path(), Arc::clone(&backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(dir.path().join("identity.key")).expect("identity preserved"),
+        fixture.id_file_bytes
+    );
+    assert_eq!(backend.count(), 0);
+
+    backend.set_corrupt_readback_after_next_set(Some(b"not-valid-hex".to_vec()));
+    assert!(matches!(
+        open_mock_store_with(dir.path(), Arc::clone(&backend)),
+        Err(SecureWorkerError::StoreCorrupt)
+    ));
+    assert_eq!(
+        fs::read(dir.path().join("identity.key")).expect("identity preserved"),
+        fixture.id_file_bytes
+    );
+
+    backend.set_corrupt_readback_after_next_set(Some(vec![b'e'; 64]));
+    assert!(matches!(
+        open_mock_store_with(dir.path(), Arc::clone(&backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(dir.path().join("identity.key")).expect("identity preserved"),
+        fixture.id_file_bytes
+    );
+
+    // Pre-initialize identity cleanly, then add legacy peer files and test peer migration failures.
+    let pre_dir = TempDir::new("pre-migrated-id");
+    let peer_fail_seed = TempDir::new("peer-fail-seed");
+    let peer_fixture = seed_legacy_store_dir(peer_fail_seed.path(), "peer-fail", [0x66u8; 32], 3);
+    let peer_backend = Arc::new(MockKeyringBackend::default());
+    let pre_store =
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)).expect("init id");
+    drop(pre_store);
+
+    let meta_name = peer_fixture.meta_path.file_name().expect("meta file name");
+    let secret_name = peer_fixture
+        .secret_path
+        .file_name()
+        .expect("secret file name");
+    fs::write(
+        pre_dir.path().join("peers").join(meta_name),
+        &peer_fixture.meta_bytes,
+    )
+    .expect("write meta");
+    let target_secret_path = pre_dir.path().join("peers").join(secret_name);
+    fs::write(&target_secret_path, &peer_fixture.peer_secret_raw).expect("write secret");
+    #[cfg(unix)]
+    fs::set_permissions(&target_secret_path, fs::Permissions::from_mode(0o600)).expect("mode");
+
+    peer_backend.set_fail_set(Some(KeyringBackendError::Unavailable));
+    assert!(matches!(
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(&target_secret_path).expect("peer secret preserved"),
+        peer_fixture.peer_secret_raw
+    );
+    assert_eq!(peer_backend.count(), 1);
+
+    peer_backend.set_drop_next_set(true);
+    assert!(matches!(
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(&target_secret_path).expect("peer secret preserved"),
+        peer_fixture.peer_secret_raw
+    );
+    assert_eq!(peer_backend.count(), 1);
+
+    peer_backend.set_corrupt_readback_after_next_set(Some(b"not-valid-hex".to_vec()));
+    assert!(matches!(
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)),
+        Err(SecureWorkerError::StoreCorrupt)
+    ));
+    assert_eq!(
+        fs::read(&target_secret_path).expect("peer secret preserved"),
+        peer_fixture.peer_secret_raw
+    );
+    assert_eq!(peer_backend.count(), 1);
+
+    peer_backend.set_corrupt_readback_after_next_set(Some(vec![b'f'; 64]));
+    assert!(matches!(
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert_eq!(
+        fs::read(&target_secret_path).expect("peer secret preserved"),
+        peer_fixture.peer_secret_raw
+    );
+    assert_eq!(peer_backend.count(), 1);
+
+    let mut store =
+        open_mock_store_with(pre_dir.path(), Arc::clone(&peer_backend)).expect("recover migrate");
+    assert!(!target_secret_path.exists());
+    assert!(store.is_trusted(&peer_fixture.peer_id));
+
+    let offer = store
+        .begin_pairing("peer-write-fail", NetworkTrust::Lan, true)
+        .expect("offer");
+    let proof = offer.proof_for([0x77u8; 32]);
+    peer_backend.set_fail_set(Some(KeyringBackendError::AccessDenied));
+    assert!(matches!(
+        store.accept_pairing(
+            &offer,
+            &proof,
+            PairingConsent { approved: true },
+            [0x77u8; 32]
+        ),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert!(!store.is_trusted("peer-write-fail"));
+    assert_eq!(store.peer_pairing_secret("peer-write-fail"), None);
+
+    let offer2 = store
+        .begin_pairing("peer-drop-fail", NetworkTrust::Lan, true)
+        .expect("offer2");
+    let proof2 = offer2.proof_for([0x88u8; 32]);
+    peer_backend.set_drop_next_set(true);
+    assert!(matches!(
+        store.accept_pairing(
+            &offer2,
+            &proof2,
+            PairingConsent { approved: true },
+            [0x88u8; 32]
+        ),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert!(!store.is_trusted("peer-drop-fail"));
+
+    // Existing identity_public in state.json with missing keyring item fails closed.
+    drop(store);
+    let empty_backend = Arc::new(MockKeyringBackend::default());
+    assert!(matches!(
+        open_mock_store_with(pre_dir.path(), empty_backend),
+        Err(SecureWorkerError::StoreCorrupt)
+    ));
+}
+
+#[test]
+fn legacy_migration_conflicts_refuse_overwrite_and_fail_closed() {
+    // 1. Conflicting identity.key vs existing keyring identity entry.
+    let id_dir = TempDir::new("conflict-id");
+    let id_backend = Arc::new(MockKeyringBackend::default());
+    let orig_store = open_mock_store_with(id_dir.path(), Arc::clone(&id_backend)).expect("init");
+    drop(orig_store);
+    fs::remove_file(id_dir.path().join("state.json")).expect("remove state");
+    let conflicting_id_bytes = vec![0x29u8; 64];
+    fs::write(id_dir.path().join("identity.key"), &conflicting_id_bytes)
+        .expect("write conflict id");
+    #[cfg(unix)]
+    fs::set_permissions(
+        id_dir.path().join("identity.key"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .expect("mode");
+    let id_snapshot = id_backend.raw_entries();
+    assert!(matches!(
+        open_mock_store_with(id_dir.path(), Arc::clone(&id_backend)),
+        Err(SecureWorkerError::KeyringConflict)
+    ));
+    assert_eq!(id_backend.raw_entries(), id_snapshot);
+    assert_eq!(
+        fs::read(id_dir.path().join("identity.key")).expect("legacy conflict preserved"),
+        conflicting_id_bytes
+    );
+
+    // 2. Conflicting peer .secret vs existing keyring peer entry + matching crash recovery.
+    let peer_dir = TempDir::new("conflict-peer");
+    let peer_backend = Arc::new(MockKeyringBackend::default());
+    let mut store = open_mock_store_with(peer_dir.path(), Arc::clone(&peer_backend)).expect("init");
+    let offer = store
+        .begin_pairing("conflict-peer", NetworkTrust::Lan, true)
+        .expect("offer");
+    let proof = offer.proof_for([0x99u8; 32]);
+    store
+        .accept_pairing(
+            &offer,
+            &proof,
+            PairingConsent { approved: true },
+            [0x99u8; 32],
+        )
+        .expect("accept");
+    let meta_path = metadata_path(peer_dir.path());
+    let secret_path = PathBuf::from(format!(
+        "{}.secret",
+        meta_path.to_string_lossy().trim_end_matches(".meta.json")
+    ));
+    let expected_secret = store.peer_pairing_secret("conflict-peer").expect("secret");
+    drop(store);
+
+    let conflicting_secret = vec![0x5Au8; 32];
+    fs::write(&secret_path, &conflicting_secret).expect("write conflict secret");
+    #[cfg(unix)]
+    fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("mode");
+    let peer_snapshot = peer_backend.raw_entries();
+    assert!(matches!(
+        open_mock_store_with(peer_dir.path(), Arc::clone(&peer_backend)),
+        Err(SecureWorkerError::KeyringConflict)
+    ));
+    assert_eq!(peer_backend.raw_entries(), peer_snapshot);
+    assert_eq!(
+        fs::read(&secret_path).expect("preserved"),
+        conflicting_secret
+    );
+
+    // Interrupted-delete recovery: matching secret reconciles cleanly and deletes legacy file.
+    let matching_raw = find_raw_entry(&peer_backend, "peer-");
+    fs::write(&secret_path, matching_raw).expect("write matching secret");
+    #[cfg(unix)]
+    fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("mode");
+    let recovered =
+        open_mock_store_with(peer_dir.path(), Arc::clone(&peer_backend)).expect("recover");
+    assert!(!secret_path.exists());
+    assert!(recovered.is_trusted("conflict-peer"));
+    assert_eq!(
+        recovered.peer_pairing_secret("conflict-peer"),
+        Some(expected_secret)
+    );
+}
+
+#[test]
+fn remove_peer_handles_keyring_failure_idempotently() {
+    let dir = TempDir::new("remove-failure");
+    let backend = Arc::new(MockKeyringBackend::default());
+    let mut store = open_mock_store_with(dir.path(), Arc::clone(&backend)).expect("open");
+
+    let offer = store
+        .begin_pairing("peer-del", NetworkTrust::Lan, true)
+        .expect("offer");
+    let proof = offer.proof_for([0x31u8; 32]);
+    store
+        .accept_pairing(
+            &offer,
+            &proof,
+            PairingConsent { approved: true },
+            [0x31u8; 32],
+        )
+        .expect("accept");
+    let meta_path = metadata_path(dir.path());
+
+    backend.set_fail_delete(Some(KeyringBackendError::Unavailable));
+    assert!(matches!(
+        store.remove_peer("peer-del"),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+    assert!(!store.is_trusted("peer-del"));
+    assert_eq!(store.peer_pairing_secret("peer-del"), None);
+    let meta_after_fail = fs::read_to_string(&meta_path).expect("meta remains marked revoked");
+    assert!(meta_after_fail.contains("\"trusted\":false"));
+    assert_eq!(backend.count(), 2);
+
+    assert!(store.remove_peer("peer-del").expect("retry remove"));
+    assert!(!meta_path.exists());
+    assert_eq!(backend.count(), 1);
+    assert!(!store
+        .remove_peer("peer-del")
+        .expect("idempotent second remove"));
+
+    backend.set_fail_delete(Some(KeyringBackendError::AccessDenied));
+    assert!(matches!(
+        store.remove_peer("never-paired"),
+        Err(SecureWorkerError::KeyringUnavailable)
+    ));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn non_linux_trust_store_open_reports_unsupported() {
+    let dir = TempDir::new("unsupported-os");
+    assert!(matches!(
+        TrustStore::open(dir.path()),
+        Err(SecureWorkerError::Unsupported)
+    ));
+    assert!(!dir.path().join("state.json").exists());
+    assert!(!dir.path().join("identity.key").exists());
 }

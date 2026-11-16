@@ -94,7 +94,6 @@ impl SessionKey {
         crate::hex(&self.fingerprint())
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn expose(&self) -> &[u8; 32] {
         &self.0
     }

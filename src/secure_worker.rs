@@ -1,4 +1,4 @@
-//! Experimental secure Linux worker backend (first slice).
+//! Experimental secure worker backend (pairing trust store and Noise transport).
 //!
 //! This module is **experimental** and has not received an independent security
 //! review. It implements the pairing/trust boundary and a loopback-only
@@ -9,8 +9,17 @@
 //!
 //! - Pairing requires an explicit [`PairingConsent`] and a trusted network
 //!   tier. The pairing secret is generated with the operating-system CSPRNG;
-//!   the no-echo interactive transfer and secure-at-rest keyring UX are **not**
-//!   implemented here and remain a pending sub-gate.
+//!   the no-echo interactive TTY/UI pairing ceremony and network exchange remain
+//!   unimplemented here.
+//! - Persistent secrets (installation static X25519 private key and per-peer
+//!   pairing secrets) are stored in the Linux Secret Service keyring via
+//!   `zbus-secret-service-keyring-store` (`rt-async-io-crypto-rust`), encoded as
+//!   64-character UTF-8 hex for KDE Wallet compatibility and keyed by opaque
+//!   BLAKE3 digests rather than raw peer IDs or filesystem paths.
+//! - Requires a running, unlocked D-Bus Secret Service daemon on Linux; headless
+//!   sessions without an unlocked Secret Service fail closed with
+//!   [`SecureWorkerError::KeyringUnavailable`]. Non-Linux targets fail closed
+//!   with [`SecureWorkerError::Unsupported`] for `TrustStore::open`.
 //! - A fresh pairing secret is used as the Noise `XXpsk3` pre-shared key. It is
 //!   never used directly as a MAC or stream cipher.
 //! - Noise messages are capped at the protocol limit of 65,535 bytes including
@@ -18,17 +27,19 @@
 //!   chunking, never a single oversized Noise message.
 //! - No application frame is accepted before a successful Noise handshake and
 //!   explicit post-handshake confirmation.
-//! - Persisted trust metadata contains no routing endpoint. Endpoints are held
-//!   only in transient sockets.
+//! - Persisted trust metadata contains no routing endpoint or secret material.
+//!   Endpoints are held only in transient sockets.
 //!
-//! The `snow` crate (0.10.0) is not formally audited. See `SECURITY.md` and the
-//! design document before enabling this code outside tests.
+//! The `snow` crate (0.10.0) and third-party Secret Service/D-Bus crates are not
+//! formally audited, and in-crate D-Bus transport buffers outside FASTLINK are
+//! not zeroized by this module.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,7 +48,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::pairing::{
     sign_challenge, NetworkTrust, PairingChallenge, PairingError, PairingProof, PairingRegistry,
@@ -101,15 +112,21 @@ pub struct Secret32([u8; 32]);
 impl Secret32 {
     /// Generates a fresh secret from the operating-system CSPRNG.
     pub fn random() -> Result<Self, SecureWorkerError> {
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).map_err(|_| SecureWorkerError::Entropy)?;
-        Ok(Self(bytes))
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *bytes).map_err(|_| SecureWorkerError::Entropy)?;
+        Ok(Self::from_zeroizing(bytes))
     }
 
     /// Wraps caller-provided bytes. The caller remains responsible for the
     /// original buffer.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    fn from_zeroizing(mut bytes: Zeroizing<[u8; 32]>) -> Self {
+        let secret = Self(*bytes);
+        bytes.zeroize();
+        secret
     }
 
     /// Copies a completed pairing session key into the Noise PSK owner.
@@ -147,6 +164,14 @@ impl fmt::Debug for Secret32 {
     }
 }
 
+impl Zeroize for Secret32 {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Secret32 {}
+
 impl Drop for Secret32 {
     fn drop(&mut self) {
         self.0.zeroize();
@@ -176,6 +201,9 @@ pub enum SecureWorkerError {
     SessionLimit,
     StoreCorrupt,
     StorePermission,
+    KeyringUnavailable,
+    KeyringConflict,
+    Unsupported,
     Entropy,
     LockPoisoned,
     WorkerNotRunning,
@@ -201,6 +229,9 @@ impl fmt::Display for SecureWorkerError {
             Self::SessionLimit => "secure-worker session message limit reached",
             Self::StoreCorrupt => "trust store is corrupt",
             Self::StorePermission => "trust store permissions are unsafe",
+            Self::KeyringUnavailable => "operating-system keyring is unavailable or failed",
+            Self::KeyringConflict => "operating-system keyring secret conflicts with legacy file",
+            Self::Unsupported => "secure-worker storage is only supported on Linux",
             Self::Entropy => "operating-system CSPRNG failed",
             Self::LockPoisoned => "secure-worker lock is poisoned",
             Self::WorkerNotRunning => "secure worker is not running",
@@ -912,9 +943,136 @@ struct PeerMeta {
     created_at: u64,
 }
 
+const KEYRING_SERVICE: &str = "fastlink.secure-worker.v1";
+
+/// Backend-neutral keyring item identifier using opaque hashed scopes/accounts.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyringLocator {
+    pub service: String,
+    pub account: String,
+    pub label: String,
+}
+
+/// Safe failure class for keyring storage providers.
+///
+/// Unit variants carry no secret material, D-Bus errors, peer IDs, or paths.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyringBackendError {
+    Unavailable,
+    AccessDenied,
+    InvalidData,
+    Unsupported,
+}
+
+/// Narrow secret-storage backend abstraction for OS keyring integration and
+/// injected unit/integration testing.
+#[doc(hidden)]
+pub trait KeyringBackend: Send + Sync {
+    fn get_secret(
+        &self,
+        locator: &KeyringLocator,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, KeyringBackendError>;
+
+    fn set_secret(
+        &self,
+        locator: &KeyringLocator,
+        secret_utf8: &str,
+    ) -> Result<(), KeyringBackendError>;
+
+    /// Deletes any matching entry; returns `true` if deleted or `false` if absent.
+    fn delete_secret(&self, locator: &KeyringLocator) -> Result<bool, KeyringBackendError>;
+}
+
+#[cfg(target_os = "linux")]
+struct SecretServiceBackend {
+    store: Arc<zbus_secret_service_keyring_store::Store>,
+}
+
+#[cfg(target_os = "linux")]
+impl SecretServiceBackend {
+    fn connect() -> Result<Self, SecureWorkerError> {
+        let store = zbus_secret_service_keyring_store::Store::new()
+            .map_err(|err| map_keyring_backend_error(map_keyring_core_error(&err)))?;
+        Ok(Self { store })
+    }
+
+    fn entry_for(
+        &self,
+        locator: &KeyringLocator,
+    ) -> Result<keyring_core::Entry, KeyringBackendError> {
+        use keyring_core::api::CredentialStoreApi;
+
+        let modifiers = HashMap::from([("label", locator.label.as_str())]);
+        self.store
+            .build(&locator.service, &locator.account, Some(&modifiers))
+            .map_err(|err| map_keyring_core_error(&err))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl KeyringBackend for SecretServiceBackend {
+    fn get_secret(
+        &self,
+        locator: &KeyringLocator,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, KeyringBackendError> {
+        let entry = self.entry_for(locator)?;
+        match entry.get_secret() {
+            Ok(bytes) => Ok(Some(Zeroizing::new(bytes))),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(err) => Err(map_keyring_core_error(&err)),
+        }
+    }
+
+    fn set_secret(
+        &self,
+        locator: &KeyringLocator,
+        secret_utf8: &str,
+    ) -> Result<(), KeyringBackendError> {
+        let entry = self.entry_for(locator)?;
+        entry
+            .set_secret(secret_utf8.as_bytes())
+            .map_err(|err| map_keyring_core_error(&err))
+    }
+
+    fn delete_secret(&self, locator: &KeyringLocator) -> Result<bool, KeyringBackendError> {
+        let entry = self.entry_for(locator)?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring_core::Error::NoEntry) => Ok(false),
+            Err(err) => Err(map_keyring_core_error(&err)),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn map_keyring_core_error(err: &keyring_core::Error) -> KeyringBackendError {
+    match err {
+        keyring_core::Error::NoStorageAccess(_) => KeyringBackendError::AccessDenied,
+        keyring_core::Error::BadEncoding(_)
+        | keyring_core::Error::BadDataFormat(_, _)
+        | keyring_core::Error::BadStoreFormat(_) => KeyringBackendError::InvalidData,
+        keyring_core::Error::NotSupportedByStore(_) => KeyringBackendError::Unsupported,
+        _ => KeyringBackendError::Unavailable,
+    }
+}
+
+fn map_keyring_backend_error(err: KeyringBackendError) -> SecureWorkerError {
+    match err {
+        KeyringBackendError::Unavailable | KeyringBackendError::AccessDenied => {
+            SecureWorkerError::KeyringUnavailable
+        }
+        KeyringBackendError::InvalidData => SecureWorkerError::StoreCorrupt,
+        KeyringBackendError::Unsupported => SecureWorkerError::Unsupported,
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct StoreState {
     trust_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_public: Option<String>,
 }
 
 struct PeerRecord {
@@ -934,12 +1092,17 @@ struct PendingPairing {
 
 /// Durable local trust store.
 ///
-/// Directory mode is 0700 and secret/metadata files are 0600. Metadata contains
-/// no routing endpoint. Corrupt records are ignored (treated as untrusted) so a
-/// damaged store fails closed and requires re-pairing.
+/// Metadata directory mode is 0700 and metadata/state files are 0600 on Unix.
+/// Persistent identity private keys and per-peer pairing secrets are stored in
+/// the Linux Secret Service keyring rather than plaintext files. Metadata
+/// contains no routing endpoint or secret material. Corrupt peer records are
+/// ignored (treated as untrusted) so a damaged store fails closed and requires
+/// re-pairing.
 pub struct TrustStore {
     root: PathBuf,
     peers_dir: PathBuf,
+    store_scope: String,
+    keyring: Arc<dyn KeyringBackend>,
     identity_private: Secret32,
     identity_public: [u8; 32],
     trust_epoch: u64,
@@ -948,8 +1111,31 @@ pub struct TrustStore {
 }
 
 impl TrustStore {
-    /// Opens (and if necessary initializes) the trust store at `root`.
+    /// Opens (and if necessary initializes or migrates) the trust store at
+    /// `root`, backed by the Linux Secret Service keyring.
+    ///
+    /// Fails closed if the Secret Service keyring is unavailable or locked, and
+    /// returns [`SecureWorkerError::Unsupported`] on non-Linux targets.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, SecureWorkerError> {
+        #[cfg(target_os = "linux")]
+        {
+            let backend = Arc::new(SecretServiceBackend::connect()?);
+            Self::open_with_keyring_backend(root, backend)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = root;
+            Err(SecureWorkerError::Unsupported)
+        }
+    }
+
+    /// Opens (and if necessary initializes or migrates) the trust store using an
+    /// injected keyring backend implementation.
+    #[doc(hidden)]
+    pub fn open_with_keyring_backend(
+        root: impl AsRef<Path>,
+        keyring: Arc<dyn KeyringBackend>,
+    ) -> Result<Self, SecureWorkerError> {
         let root = root.as_ref().to_path_buf();
         ensure_root_dir(&root)?;
         let peers_dir = root.join("peers");
@@ -957,14 +1143,26 @@ impl TrustStore {
         cleanup_temporary_files(&root)?;
         cleanup_temporary_files(&peers_dir)?;
 
-        let (identity_private, identity_public) = load_or_create_identity(&root)?;
-        let trust_epoch = load_state(&root)?;
+        let canonical_root = fs::canonicalize(&root)?;
+        let store_scope = store_scope_digest(&canonical_root);
+        let state = load_state(&root)?;
+        let has_peers = has_any_peer_metadata(&peers_dir)?;
+        let (identity_private, identity_public) = load_or_create_identity(
+            &root,
+            &store_scope,
+            &*keyring,
+            state.trust_epoch,
+            state.identity_public,
+            has_peers,
+        )?;
         let mut store = Self {
             root,
             peers_dir,
+            store_scope,
+            keyring,
             identity_private,
             identity_public,
-            trust_epoch,
+            trust_epoch: state.trust_epoch,
             peers: HashMap::new(),
             pending: HashMap::new(),
         };
@@ -972,7 +1170,7 @@ impl TrustStore {
         Ok(store)
     }
 
-    /// Installation X25519 private key (mode-0600 file).
+    /// Installation X25519 private key (backed by OS keyring).
     pub fn local_static_private(&self) -> Secret32 {
         self.identity_private.clone()
     }
@@ -1092,9 +1290,9 @@ impl TrustStore {
         }
 
         let stem = peer_file_stem(&pending.peer_id);
-        let secret_path = self.peers_dir.join(format!("{stem}.secret"));
         let meta_path = self.peers_dir.join(format!("{stem}.meta.json"));
-        atomic_write(&secret_path, pending.secret.expose(), 0o600)?;
+        let peer_loc = peer_locator(&self.store_scope, &pending.peer_id);
+        write_and_verify_keyring_secret(&*self.keyring, &peer_loc, &pending.secret)?;
         let meta = PeerMeta {
             peer_id: pending.peer_id.clone(),
             static_public: hex_encode(&proof.static_public),
@@ -1105,9 +1303,9 @@ impl TrustStore {
         };
         let encoded = serde_json::to_vec(&meta).map_err(|_| SecureWorkerError::StoreCorrupt)?;
         if let Err(error) = atomic_write(&meta_path, &encoded, 0o600) {
-            // Do not leave an orphaned pairing secret behind if the trust
-            // metadata write fails.
-            let _ = remove_file_if_present(&secret_path);
+            // Do not leave an orphaned pairing secret in the keyring if the
+            // trust metadata write fails.
+            let _ = self.keyring.delete_secret(&peer_loc);
             return Err(error);
         }
 
@@ -1147,19 +1345,25 @@ impl TrustStore {
 
     /// Removes trust and credentials for `peer_id`.
     ///
+    /// Revokes in-memory trust, marks metadata revoked on disk, deletes the
+    /// keyring entry idempotently, and deletes metadata/legacy files. Fails
+    /// closed if keyring deletion fails.
+    ///
     /// This is storage-level revocation. To close a live connection at the same
     /// time, use [`WorkerServer::remove_peer`].
     pub fn remove_peer(&mut self, peer_id: &str) -> Result<bool, SecureWorkerError> {
         let stem = peer_file_stem(peer_id);
         let meta_path = self.peers_dir.join(format!("{stem}.meta.json"));
         let secret_path = self.peers_dir.join(format!("{stem}.secret"));
-        let existed =
-            meta_path.exists() || secret_path.exists() || self.peers.contains_key(peer_id);
-        if !existed {
-            return Ok(false);
-        }
+        let peer_loc = peer_locator(&self.store_scope, peer_id);
 
-        // Mark revoked before deletion so an interrupted removal fails closed.
+        let local_existed =
+            meta_path.exists() || secret_path.exists() || self.peers.contains_key(peer_id);
+
+        // Revoke live trust and mark metadata untrusted before deleting entries
+        // so an interrupted or failing removal still fails closed.
+        self.peers.remove(peer_id);
+        self.pending.retain(|_, pending| pending.peer_id != peer_id);
         if meta_path.exists() {
             if let Ok(bytes) = fs::read(&meta_path) {
                 if let Ok(mut meta) = serde_json::from_slice::<PeerMeta>(&bytes) {
@@ -1170,12 +1374,25 @@ impl TrustStore {
                 }
             }
         }
+        if local_existed {
+            self.trust_epoch = now_secs().max(self.trust_epoch.saturating_add(1));
+            self.persist_state()?;
+        }
+
+        let keyring_deleted = self
+            .keyring
+            .delete_secret(&peer_loc)
+            .map_err(map_keyring_backend_error)?;
+        if !local_existed && !keyring_deleted {
+            return Ok(false);
+        }
+        if !local_existed && keyring_deleted {
+            self.trust_epoch = now_secs().max(self.trust_epoch.saturating_add(1));
+            self.persist_state()?;
+        }
+
         remove_file_if_present(&meta_path)?;
         remove_file_if_present(&secret_path)?;
-        self.peers.remove(peer_id);
-        self.pending.retain(|_, pending| pending.peer_id != peer_id);
-        self.trust_epoch = now_secs().max(self.trust_epoch.saturating_add(1));
-        self.persist_state()?;
         Ok(true)
     }
 
@@ -1187,11 +1404,7 @@ impl TrustStore {
     }
 
     fn persist_state(&self) -> Result<(), SecureWorkerError> {
-        let state = StoreState {
-            trust_epoch: self.trust_epoch,
-        };
-        let encoded = serde_json::to_vec(&state).map_err(|_| SecureWorkerError::StoreCorrupt)?;
-        atomic_write(&self.root.join("state.json"), &encoded, 0o600)
+        persist_state_fields(&self.root, self.trust_epoch, Some(&self.identity_public))
     }
 
     fn expire_pending(&mut self) {
@@ -1241,31 +1454,45 @@ impl TrustStore {
             if !trust.is_permitted() {
                 continue;
             }
+            if restrict_permissions(&meta_path, 0o600).is_err() {
+                continue;
+            }
+
+            let peer_loc = peer_locator(&self.store_scope, &meta.peer_id);
             let secret_path = self.peers_dir.join(format!("{stem}.secret"));
-            let Ok(secret_meta) = fs::symlink_metadata(&secret_path) else {
-                continue;
+            let pairing_secret = match fs::symlink_metadata(&secret_path) {
+                Ok(secret_meta) => {
+                    if secret_meta.file_type().is_symlink()
+                        || !secret_meta.is_file()
+                        || secret_meta.len() != 32
+                    {
+                        continue;
+                    }
+                    restrict_permissions(&secret_path, 0o600)?;
+                    let secret_bytes = Zeroizing::new(fs::read(&secret_path)?);
+                    if secret_bytes.len() != 32 {
+                        continue;
+                    }
+                    let mut raw = Zeroizing::new([0u8; 32]);
+                    raw.copy_from_slice(&secret_bytes);
+                    if *raw == [0u8; 32] {
+                        continue;
+                    }
+                    let legacy_secret = Secret32::from_zeroizing(raw);
+                    migrate_or_reconcile_legacy_secret(&*self.keyring, &peer_loc, &legacy_secret)?;
+                    fs::remove_file(&secret_path).map_err(map_io)?;
+                    legacy_secret
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    let Some(keyring_secret) = read_keyring_secret32(&*self.keyring, &peer_loc)?
+                    else {
+                        continue;
+                    };
+                    keyring_secret
+                }
+                Err(err) => return Err(map_io(err)),
             };
-            if secret_meta.file_type().is_symlink()
-                || !secret_meta.is_file()
-                || secret_meta.len() != 32
-            {
-                continue;
-            }
-            let Ok(secret_bytes) = fs::read(&secret_path) else {
-                continue;
-            };
-            let secret_bytes = Zeroizing::new(secret_bytes);
-            let mut secret = [0u8; 32];
-            secret.copy_from_slice(&secret_bytes);
-            if secret == [0u8; 32] {
-                continue;
-            }
-            if fs::set_permissions(&meta_path, fs::Permissions::from_mode(0o600)).is_err()
-                || fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).is_err()
-            {
-                continue;
-            }
-            let pairing_secret = Secret32::from_bytes(secret);
+
             self.trust_epoch = self.trust_epoch.max(meta.epoch);
             self.peers.insert(
                 meta.peer_id.clone(),
@@ -1288,6 +1515,121 @@ impl fmt::Debug for TrustStore {
             .field("trust_epoch", &self.trust_epoch)
             .finish()
     }
+}
+
+fn store_scope_digest(canonical_root: &Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"FASTLINK-KEYRING-ROOT-V1");
+    hasher.update(canonical_root.as_os_str().as_encoded_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn identity_locator(store_scope: &str) -> KeyringLocator {
+    let short = &store_scope[..16];
+    KeyringLocator {
+        service: KEYRING_SERVICE.to_string(),
+        account: format!("id-{store_scope}"),
+        label: format!("fastlink-identity-{short}"),
+    }
+}
+
+fn peer_locator(store_scope: &str, peer_id: &str) -> KeyringLocator {
+    let peer_hash = peer_file_stem(peer_id);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"FASTLINK-KEYRING-PEER-V1");
+    hasher.update(store_scope.as_bytes());
+    hasher.update(peer_hash.as_bytes());
+    let account_hash = hasher.finalize().to_hex().to_string();
+    let short = &account_hash[..16];
+    KeyringLocator {
+        service: KEYRING_SERVICE.to_string(),
+        account: format!("peer-{account_hash}"),
+        label: format!("fastlink-peer-{short}"),
+    }
+}
+
+fn secret32_to_hex(secret: &Secret32) -> Zeroizing<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Zeroizing::new(String::with_capacity(64));
+    for &byte in secret.expose() {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn secret32_from_hex_bytes(bytes: &[u8]) -> Result<Secret32, SecureWorkerError> {
+    if bytes.len() != 64 {
+        return Err(SecureWorkerError::StoreCorrupt);
+    }
+    let mut decoded = Zeroizing::new([0u8; 32]);
+    for index in 0..32 {
+        let high = hex_nibble(bytes[index * 2]).ok_or(SecureWorkerError::StoreCorrupt)?;
+        let low = hex_nibble(bytes[index * 2 + 1]).ok_or(SecureWorkerError::StoreCorrupt)?;
+        decoded[index] = (high << 4) | low;
+    }
+    if *decoded == [0u8; 32] {
+        return Err(SecureWorkerError::StoreCorrupt);
+    }
+    Ok(Secret32::from_zeroizing(decoded))
+}
+
+fn read_keyring_secret32(
+    backend: &dyn KeyringBackend,
+    locator: &KeyringLocator,
+) -> Result<Option<Secret32>, SecureWorkerError> {
+    let Some(raw) = backend
+        .get_secret(locator)
+        .map_err(map_keyring_backend_error)?
+    else {
+        return Ok(None);
+    };
+    let secret = secret32_from_hex_bytes(&raw)?;
+    Ok(Some(secret))
+}
+
+fn write_and_verify_keyring_secret(
+    backend: &dyn KeyringBackend,
+    locator: &KeyringLocator,
+    secret: &Secret32,
+) -> Result<(), SecureWorkerError> {
+    let encoded = secret32_to_hex(secret);
+    backend
+        .set_secret(locator, encoded.as_str())
+        .map_err(map_keyring_backend_error)?;
+    let readback =
+        read_keyring_secret32(backend, locator)?.ok_or(SecureWorkerError::KeyringUnavailable)?;
+    if !readback.constant_time_eq(secret) {
+        return Err(SecureWorkerError::KeyringUnavailable);
+    }
+    Ok(())
+}
+
+fn migrate_or_reconcile_legacy_secret(
+    backend: &dyn KeyringBackend,
+    locator: &KeyringLocator,
+    legacy_secret: &Secret32,
+) -> Result<(), SecureWorkerError> {
+    if let Some(existing) = read_keyring_secret32(backend, locator)? {
+        if !existing.constant_time_eq(legacy_secret) {
+            return Err(SecureWorkerError::KeyringConflict);
+        }
+        return Ok(());
+    }
+    write_and_verify_keyring_secret(backend, locator, legacy_secret)
+}
+
+fn restrict_permissions(path: &Path, mode: u32) -> Result<(), SecureWorkerError> {
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .map_err(|_| SecureWorkerError::StorePermission)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+    Ok(())
 }
 
 fn prepare_private_dir(
@@ -1321,8 +1663,7 @@ fn prepare_private_dir(
             }
         }
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|_| SecureWorkerError::StorePermission)?;
+    restrict_permissions(path, 0o700)?;
     Ok(())
 }
 
@@ -1345,6 +1686,18 @@ fn ensure_peers_dir(path: &Path) -> Result<(), SecureWorkerError> {
     })
 }
 
+fn has_any_peer_metadata(peers_dir: &Path) -> Result<bool, SecureWorkerError> {
+    for entry in fs::read_dir(peers_dir)? {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str() {
+            if name.ends_with(".meta.json") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn cleanup_temporary_files(dir: &Path) -> Result<(), SecureWorkerError> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -1357,26 +1710,53 @@ fn cleanup_temporary_files(dir: &Path) -> Result<(), SecureWorkerError> {
     Ok(())
 }
 
-fn load_or_create_identity(root: &Path) -> Result<(Secret32, [u8; 32]), SecureWorkerError> {
-    let path = root.join("identity.key");
-    match fs::symlink_metadata(&path) {
+fn load_or_create_identity(
+    root: &Path,
+    store_scope: &str,
+    keyring: &dyn KeyringBackend,
+    trust_epoch: u64,
+    existing_identity_public: Option<[u8; 32]>,
+    has_peers: bool,
+) -> Result<(Secret32, [u8; 32]), SecureWorkerError> {
+    let id_loc = identity_locator(store_scope);
+    let legacy_path = root.join("identity.key");
+    match fs::symlink_metadata(&legacy_path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != 64 {
                 return Err(SecureWorkerError::StoreCorrupt);
             }
-            let bytes = Zeroizing::new(fs::read(&path)?);
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|_| SecureWorkerError::StorePermission)?;
-            let mut private = [0u8; 32];
-            let mut public = [0u8; 32];
-            private.copy_from_slice(&bytes[0..32]);
-            public.copy_from_slice(&bytes[32..64]);
-            if private == [0u8; 32] || public == [0u8; 32] {
+            let bytes = Zeroizing::new(fs::read(&legacy_path)?);
+            if bytes.len() != 64 {
                 return Err(SecureWorkerError::StoreCorrupt);
             }
-            Ok((Secret32::from_bytes(private), public))
+            restrict_permissions(&legacy_path, 0o600)?;
+            let mut private_buf = Zeroizing::new([0u8; 32]);
+            let mut public = [0u8; 32];
+            private_buf.copy_from_slice(&bytes[0..32]);
+            public.copy_from_slice(&bytes[32..64]);
+            if *private_buf == [0u8; 32] || public == [0u8; 32] {
+                return Err(SecureWorkerError::StoreCorrupt);
+            }
+            if let Some(state_pub) = existing_identity_public {
+                if !constant_time_eq_32(&state_pub, &public) {
+                    return Err(SecureWorkerError::StoreCorrupt);
+                }
+            }
+            let legacy_private = Secret32::from_zeroizing(private_buf);
+            migrate_or_reconcile_legacy_secret(keyring, &id_loc, &legacy_private)?;
+            persist_state_fields(root, trust_epoch, Some(&public))?;
+            fs::remove_file(&legacy_path).map_err(map_io)?;
+            Ok((legacy_private, public))
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if let Some(existing_secret) = read_keyring_secret32(keyring, &id_loc)? {
+                let public = existing_identity_public.ok_or(SecureWorkerError::StoreCorrupt)?;
+                return Ok((existing_secret, public));
+            }
+            if existing_identity_public.is_some() || has_peers {
+                return Err(SecureWorkerError::StoreCorrupt);
+            }
+
             let params = NOISE_PROTOCOL
                 .parse()
                 .map_err(|_| SecureWorkerError::InvalidConfig)?;
@@ -1384,24 +1764,35 @@ fn load_or_create_identity(root: &Path) -> Result<(Secret32, [u8; 32]), SecureWo
                 .generate_keypair()
                 .map_err(|_| SecureWorkerError::Entropy)?;
             if keypair.private.len() != 32 || keypair.public.len() != 32 {
+                keypair.private.zeroize();
                 return Err(SecureWorkerError::Entropy);
             }
-            let mut material = Zeroizing::new(Vec::with_capacity(64));
-            material.extend_from_slice(&keypair.private);
-            material.extend_from_slice(&keypair.public);
-            keypair.private.zeroize();
-            atomic_write(&path, &material, 0o600)?;
-            let mut private = [0u8; 32];
+            let mut private_buf = Zeroizing::new([0u8; 32]);
             let mut public = [0u8; 32];
-            private.copy_from_slice(&material[0..32]);
-            public.copy_from_slice(&material[32..64]);
-            Ok((Secret32::from_bytes(private), public))
+            private_buf.copy_from_slice(&keypair.private);
+            public.copy_from_slice(&keypair.public);
+            keypair.private.zeroize();
+            if *private_buf == [0u8; 32] || public == [0u8; 32] {
+                return Err(SecureWorkerError::Entropy);
+            }
+            let private = Secret32::from_zeroizing(private_buf);
+            write_and_verify_keyring_secret(keyring, &id_loc, &private)?;
+            if let Err(err) = persist_state_fields(root, trust_epoch, Some(&public)) {
+                let _ = keyring.delete_secret(&id_loc);
+                return Err(err);
+            }
+            Ok((private, public))
         }
         Err(err) => Err(map_io(err)),
     }
 }
 
-fn load_state(root: &Path) -> Result<u64, SecureWorkerError> {
+struct LoadedState {
+    trust_epoch: u64,
+    identity_public: Option<[u8; 32]>,
+}
+
+fn load_state(root: &Path) -> Result<LoadedState, SecureWorkerError> {
     let path = root.join("state.json");
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -1415,13 +1806,41 @@ fn load_state(root: &Path) -> Result<u64, SecureWorkerError> {
             }
             let state: StoreState =
                 serde_json::from_slice(&bytes).map_err(|_| SecureWorkerError::StoreCorrupt)?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|_| SecureWorkerError::StorePermission)?;
-            Ok(state.trust_epoch)
+            restrict_permissions(&path, 0o600)?;
+            let identity_public = match state.identity_public {
+                Some(ref text) => {
+                    let pub_key = hex_decode_32(text).ok_or(SecureWorkerError::StoreCorrupt)?;
+                    if pub_key == [0u8; 32] {
+                        return Err(SecureWorkerError::StoreCorrupt);
+                    }
+                    Some(pub_key)
+                }
+                None => None,
+            };
+            Ok(LoadedState {
+                trust_epoch: state.trust_epoch,
+                identity_public,
+            })
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(LoadedState {
+            trust_epoch: 0,
+            identity_public: None,
+        }),
         Err(err) => Err(map_io(err)),
     }
+}
+
+fn persist_state_fields(
+    root: &Path,
+    trust_epoch: u64,
+    identity_public: Option<&[u8; 32]>,
+) -> Result<(), SecureWorkerError> {
+    let state = StoreState {
+        trust_epoch,
+        identity_public: identity_public.map(|key| hex_encode(key)),
+    };
+    let encoded = serde_json::to_vec(&state).map_err(|_| SecureWorkerError::StoreCorrupt)?;
+    atomic_write(&root.join("state.json"), &encoded, 0o600)
 }
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1435,15 +1854,14 @@ fn atomic_write(path: &Path, data: &[u8], mode: u32) -> Result<(), SecureWorkerE
     let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
     let result = (|| -> Result<(), SecureWorkerError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&temporary)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(mode);
+        let mut file = options.open(&temporary)?;
         file.write_all(data)?;
         file.sync_all()?;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))
-            .map_err(|_| SecureWorkerError::StorePermission)?;
+        restrict_permissions(&temporary, mode)?;
         fs::rename(&temporary, path)?;
         if let Ok(dir) = File::open(parent) {
             let _ = dir.sync_all();
@@ -2125,6 +2543,48 @@ mod unit_tests {
         ));
     }
 
+    type UnitKeyringEntries = HashMap<(String, String), Zeroizing<Vec<u8>>>;
+
+    #[derive(Default)]
+    struct UnitMockKeyring {
+        entries: Mutex<UnitKeyringEntries>,
+    }
+
+    impl KeyringBackend for UnitMockKeyring {
+        fn get_secret(
+            &self,
+            locator: &KeyringLocator,
+        ) -> Result<Option<Zeroizing<Vec<u8>>>, KeyringBackendError> {
+            Ok(self
+                .entries
+                .lock()
+                .expect("unit mock lock")
+                .get(&(locator.service.clone(), locator.account.clone()))
+                .map(|bytes| Zeroizing::new(bytes.to_vec())))
+        }
+
+        fn set_secret(
+            &self,
+            locator: &KeyringLocator,
+            secret_utf8: &str,
+        ) -> Result<(), KeyringBackendError> {
+            self.entries.lock().expect("unit mock lock").insert(
+                (locator.service.clone(), locator.account.clone()),
+                Zeroizing::new(secret_utf8.as_bytes().to_vec()),
+            );
+            Ok(())
+        }
+
+        fn delete_secret(&self, locator: &KeyringLocator) -> Result<bool, KeyringBackendError> {
+            Ok(self
+                .entries
+                .lock()
+                .expect("unit mock lock")
+                .remove(&(locator.service.clone(), locator.account.clone()))
+                .is_some())
+        }
+    }
+
     struct UnitTemp(tempfile::TempDir);
 
     impl UnitTemp {
@@ -2145,7 +2605,8 @@ mod unit_tests {
     #[test]
     fn expired_pairing_offer_is_rejected_and_consumed() {
         let dir = UnitTemp::new("expiry");
-        let mut store = TrustStore::open(dir.path()).expect("store");
+        let keyring: Arc<dyn KeyringBackend> = Arc::new(UnitMockKeyring::default());
+        let mut store = TrustStore::open_with_keyring_backend(dir.path(), keyring).expect("store");
         let offer = store
             .begin_pairing("peer-a", NetworkTrust::Lan, true)
             .expect("offer");
@@ -2168,5 +2629,66 @@ mod unit_tests {
             ))
         ));
         assert!(!store.pending.contains_key(&offer.challenge.nonce));
+    }
+
+    #[test]
+    fn secret32_is_zeroize_on_drop_and_hex_checks_reject_bad_inputs() {
+        fn assert_zeroize_on_drop<T: Zeroize + ZeroizeOnDrop>(_val: &T) {}
+
+        let mut secret = Secret32::from_bytes([0x5Cu8; 32]);
+        assert_zeroize_on_drop(&secret);
+        let hex = secret32_to_hex(&secret);
+        assert_eq!(hex.len(), 64);
+        assert_eq!(
+            secret32_from_hex_bytes(hex.as_bytes()).expect("valid hex"),
+            secret
+        );
+        secret.zeroize();
+        assert_eq!(secret.expose(), &[0u8; 32]);
+
+        assert!(matches!(
+            secret32_from_hex_bytes(b"abcd"),
+            Err(SecureWorkerError::StoreCorrupt)
+        ));
+        assert!(matches!(
+            secret32_from_hex_bytes(&[b'0'; 64]),
+            Err(SecureWorkerError::StoreCorrupt)
+        ));
+        let mut bad_hex = [b'a'; 64];
+        bad_hex[63] = b'z';
+        assert!(matches!(
+            secret32_from_hex_bytes(&bad_hex),
+            Err(SecureWorkerError::StoreCorrupt)
+        ));
+    }
+
+    #[test]
+    fn keyring_locators_are_opaque_and_deterministic() {
+        let dir = UnitTemp::new("locator-secret-path");
+        let scope = store_scope_digest(dir.path());
+        assert_eq!(scope, store_scope_digest(dir.path()));
+
+        let id_loc = identity_locator(&scope);
+        let peer_loc = peer_locator(&scope, "secret-peer-name-123");
+        let dir_str = dir.path().to_string_lossy();
+        for loc in [&id_loc, &peer_loc] {
+            assert!(!loc.service.contains(dir_str.as_ref()));
+            assert!(!loc.account.contains(dir_str.as_ref()));
+            assert!(!loc.label.contains(dir_str.as_ref()));
+            assert!(!loc.service.contains("secret-peer-name-123"));
+            assert!(!loc.account.contains("secret-peer-name-123"));
+            assert!(!loc.label.contains("secret-peer-name-123"));
+        }
+        assert_ne!(id_loc.account, peer_loc.account);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn non_linux_open_reports_unsupported() {
+        let dir = UnitTemp::new("non-linux-unsupported");
+        assert!(matches!(
+            TrustStore::open(dir.path()),
+            Err(SecureWorkerError::Unsupported)
+        ));
     }
 }
