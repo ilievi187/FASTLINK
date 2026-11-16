@@ -192,3 +192,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Independent review of PR #12 head `f4154ab7e01189a40a9c668968b1d1711b097f91` found two P2 issues: the devices CLI reports a successful inventory on unsupported OSes despite probing Linux-only paths, and the session opt-in label implies real compute participation despite being a UI-only no-op. Findings were posted and verified in PR comment `6920376423`.
 - OpenCode is addressing both in an isolated follow-up branch `fix/m1-release-p2`. Keep PR #12 draft; do not merge until tests, independent follow-up review, exact-head CI, and Semgrep triage are clean.
 - `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no inference, GPU workload, or live discovery was started.
+
+## Checkpoint 20 — 2026-11-16 (generic runtime shutdown/join fix integrated)
+
+- Runtime candidate `f1276a5` was independently reviewed against `a2a5b27`: no findings. The reviewer verified driver-side early-return cleanup, listener wake-up, worker errors/panics, successful joins, and regression quality; residual: thread-leak regression is Linux-only and reviewer did not rerun Windows checks.
+- Rebased the isolated branch onto latest integration as `379577f61459ba366cc3bc456826ca3564eff4cd`. Commander verified the complete workspace tests, fmt, Linux Clippy, Windows GNU workspace check/Clippy, targeted Semgrep (0 findings), and diff-check. Exact feature CI `43894615269` and exact integration CI `43895224086` both passed on Ubuntu and Windows.
+- Fast-forward integrated and pushed to `integrate/fastlink-team`. Remote `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no GPU/model inference, live discovery, or service interruption occurred.

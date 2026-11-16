@@ -172,3 +172,8 @@
 
 - Independent review of PR #12 found that non-Linux `fastlink devices` could report a false-success inventory and that the no-op opt-in label overstated its effect. Both P2 findings are recorded on PR #12 in comment `6920376423`.
 - OpenCode is fixing the issues on an isolated branch; PR #12 stays draft until follow-up review, exact-head CI and Semgrep triage are complete.
+
+## 2026-11-16 — Generic runtime shutdown/join fix integrated
+
+- The generic node-runtime early-error fix passed independent review with no findings. After rebasing onto integration, full Linux tests/fmt/Clippy, Windows GNU check/Clippy, targeted Semgrep and diff-check passed; exact feature CI `43894615269` and integration CI `43895224086` are green.
+- Fast-forward integrated at `379577f61459ba366cc3bc456826ca3564eff4cd`. `main` remains unchanged. The M1 PR #12 P2 follow-up is separate and still under re-review/self-verification.
