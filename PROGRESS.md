@@ -167,3 +167,8 @@
 
 - Built `release/linux-local-device-ui` from `main` with only passive local inventory, Linux desktop shell, and desktop-entry packaging; no network discovery, secure-worker, model or GPU code was ported. Candidate `f4154ab` passed local Linux workspace tests/fmt/Clippy/build and Windows GNU compile/Clippy.
 - Draft PR #12 targets `main`; exact-head CI `43891839756` passed Ubuntu/Windows. Independent review is in progress; Semgrep flagged six candidate matches requiring triage, so the PR is not ready to merge yet.
+
+## 2026-11-16 — Main candidate review findings
+
+- Independent review of PR #12 found that non-Linux `fastlink devices` could report a false-success inventory and that the no-op opt-in label overstated its effect. Both P2 findings are recorded on PR #12 in comment `6920376423`.
+- OpenCode is fixing the issues on an isolated branch; PR #12 stays draft until follow-up review, exact-head CI and Semgrep triage are complete.

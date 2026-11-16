@@ -186,3 +186,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - The candidate excludes LAN/Tailscale discovery, secure worker, distributed inference, llama.cpp/GPU execution, and V4 experimental code. Local Linux workspace tests, fmt, Clippy, GUI build, Windows GNU check/Clippy, and diff-check passed; no GUI window or GPU workload was launched.
 - Draft PR #12 targets `main`; exact-head GitHub CI `43891839756` passed Ubuntu/Windows. PR #12 remains draft pending independent review and Semgrep triage (six candidate matches in Unix pipe syscalls, non-Unix temp-file fallback, and CLI argument parsing).
 - No changes have been merged to `main`; do not promote PR #12 until the independent review confirms release safety and all scan findings are resolved or substantiated as false positives.
+
+## Checkpoint 19 — 2026-11-16 (main candidate review blockers)
+
+- Independent review of PR #12 head `f4154ab7e01189a40a9c668968b1d1711b097f91` found two P2 issues: the devices CLI reports a successful inventory on unsupported OSes despite probing Linux-only paths, and the session opt-in label implies real compute participation despite being a UI-only no-op. Findings were posted and verified in PR comment `6920376423`.
+- OpenCode is addressing both in an isolated follow-up branch `fix/m1-release-p2`. Keep PR #12 draft; do not merge until tests, independent follow-up review, exact-head CI, and Semgrep triage are clean.
+- `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no inference, GPU workload, or live discovery was started.
