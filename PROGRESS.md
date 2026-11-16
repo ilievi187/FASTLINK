@@ -223,3 +223,9 @@
 - Integration `abe47dd` passed exact CI `43911743846`. Replayed the two keyring commits onto it in a separate worktree/branch, preserving the original `fix/secure-keyring-p2` branch; candidate `58545949e37cb93cd4feaec1a112710a5dcb0c4c` is pushed separately.
 - Full local Linux/Windows-target gates and targeted Semgrep passed on the rebased candidate. Exact CI `43912572730` and a fresh independent full-diff security review are in progress; do not integrate before both complete cleanly.
 - Existing unrelated dirty files in the repository root worktree remain untouched. No real keyring, network discovery, model, or GPU activity occurred.
+
+## 2026-11-16 — Keyring remediation integrated
+
+- PR #13 merged into `integrate/fastlink-team` at `a5f1cd7`; independent security review found no findings. Exact PR checks `43914199921`, feature CI `43913532911`, and exact integration merge CI `43914979069` passed on the reviewed candidate/merge.
+- The identity mismatch, ignored revocation persistence failure and public injected-backend seam issues are closed in the integrated candidate. Main remains at the separate M1 merge; no keyring code was merged to main.
+- Residual: no live Secret Service/D-Bus test, and no production-security claim. No live keyring, network discovery, model, GPU, or service interruption occurred.
