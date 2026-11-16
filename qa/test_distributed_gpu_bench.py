@@ -144,6 +144,46 @@ class MmapCollectorTests(unittest.TestCase):
                 COMMAND, capture_output=True, text=True, timeout=120,
             )
 
+    def test_zero_exit_incomplete_output_includes_stderr_diagnostic(self):
+        diagnostic = (
+            "FASTLINK mmap_transfer is unsupported on Windows: "
+            "POSIX shared memory is required."
+        )
+        result = subprocess.CompletedProcess(
+            COMMAND, 0, stdout="", stderr=diagnostic,
+        )
+        with mock.patch.object(
+            collector.subprocess, "run", return_value=result,
+        ) as run:
+            with self.assertRaises(RuntimeError) as raised:
+                collector.run_mmap_transport_microbench()
+            message = str(raised.exception)
+            self.assertIn("missing metrics", message)
+            self.assertIn("mmap_shm.min_ms", message)
+            self.assertIn("unsupported on Windows", message)
+            run.assert_called_once_with(
+                COMMAND, capture_output=True, text=True, timeout=120,
+            )
+
+    def test_zero_exit_incomplete_output_bounds_diagnostic(self):
+        diagnostic = "unsupported on Windows: " + ("x" * 10_000)
+        result = subprocess.CompletedProcess(
+            COMMAND, 0, stdout="", stderr=diagnostic,
+        )
+        with mock.patch.object(
+            collector.subprocess, "run", return_value=result,
+        ) as run:
+            with self.assertRaises(RuntimeError) as raised:
+                collector.run_mmap_transport_microbench()
+            message = str(raised.exception)
+            self.assertIn("missing metrics", message)
+            self.assertIn("unsupported on Windows", message)
+            self.assertIn("truncated", message)
+            self.assertLess(len(message), 5_000)
+            run.assert_called_once_with(
+                COMMAND, capture_output=True, text=True, timeout=120,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -312,10 +312,16 @@ def run_mmap_transport_microbench():
         if parsed[group][field] is None
     ]
     if missing:
-        raise RuntimeError(
+        message = (
             "mmap_transfer benchmark output is incomplete; missing metrics: "
             + ", ".join(missing)
         )
+        diagnostic = (res.stderr or "").strip() or stdout.strip()
+        if diagnostic:
+            if len(diagnostic) > 2_000:
+                diagnostic = diagnostic[:2_000] + "... [truncated]"
+            message += f"; diagnostic: {diagnostic}"
+        raise RuntimeError(message)
 
     return parsed, stdout
 
