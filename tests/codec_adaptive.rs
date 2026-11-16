@@ -5,6 +5,22 @@ use fastlink::{
     RLE, ZSTD,
 };
 
+/// A tiled, highly compressible tensor-like activation chunk. Repeating 32-byte
+/// rows keep RLE expanding while LZ4/ZSTD save most of the wire bytes, leaving
+/// a wide CPU-cost margin even on slow debug Windows runners.
+fn robust_tensor_like_chunk() -> Vec<u8> {
+    let mut tile = [0u8; 256];
+    for (i, byte) in tile.iter_mut().enumerate() {
+        *byte = ((i * 37 + (i / 16) * 11 + (i / 32) * 5) & 0xFF) as u8;
+    }
+    let mut data = Vec::with_capacity(CHUNK_BYTES);
+    while data.len() < CHUNK_BYTES {
+        data.extend_from_slice(&tile);
+    }
+    data.truncate(CHUNK_BYTES);
+    data
+}
+
 #[test]
 fn all_codecs_roundtrip_on_incompressible_sparse_and_tensor_like_chunks() {
     let fixtures = [
@@ -61,13 +77,13 @@ fn adaptive_selector_picks_lower_total_cost_codec_per_workload() {
     );
     let choice_sparse = select_codec_measured(&sparse, policy, 10);
     assert!(
-        choice_sparse.selected_metrics.total_cost_ms <= choice_sparse.candidates[0].total_cost_ms,
-        "selector must never pick a codec more expensive than RAW"
+        choice_sparse.selected_metrics.total_cost_ms < choice_sparse.candidates[0].total_cost_ms,
+        "selector must pick a codec strictly cheaper than RAW on sparse data"
     );
 
     // 3. Tensor-like BF16/FP16 strided data: RLE expands (>64 KiB), while LZ4/ZSTD compress heavily
     // and beat RAW on total cost (CPU ms + wire ms)
-    let tensor = synthetic_tensor_like_chunk();
+    let tensor = robust_tensor_like_chunk();
     let rle_tensor = encode_rle(&tensor);
     assert!(
         rle_tensor.len() > tensor.len(),
@@ -75,22 +91,28 @@ fn adaptive_selector_picks_lower_total_cost_codec_per_workload() {
     );
 
     let choice_tensor = select_codec_measured(&tensor, policy, 10);
-    // The CPU time is measured at runtime, so a slower Windows/CI machine may
-    // legitimately choose RAW despite a good LZ4/ZSTD compression ratio.
     assert!(
-        choice_tensor.selected_metrics.total_cost_ms <= choice_tensor.candidates[0].total_cost_ms,
-        "selector must not exceed the measured RAW transfer cost"
+        matches!(choice_tensor.codec, LZ4 | ZSTD),
+        "expected LZ4 or ZSTD to win on tensor-like data, got {}",
+        codec_name(choice_tensor.codec)
     );
-    if choice_tensor.codec != RAW {
-        assert!(choice_tensor.encoded.len() + policy.min_byte_savings < tensor.len());
-        assert!(
-            choice_tensor.selected_metrics.total_cost_ms
-                < choice_tensor.candidates[0].total_cost_ms
-        );
-    }
+    assert!(choice_tensor.encoded.len() + policy.min_byte_savings < tensor.len());
+    assert!(
+        choice_tensor.selected_metrics.total_cost_ms < choice_tensor.candidates[0].total_cost_ms,
+        "selected codec total_cost_ms ({:.4}) must be strictly less than RAW ({:.4})",
+        choice_tensor.selected_metrics.total_cost_ms,
+        choice_tensor.candidates[0].total_cost_ms
+    );
     assert_eq!(
         decode_chunk(choice_tensor.codec, &choice_tensor.encoded, tensor.len()).unwrap(),
         tensor
+    );
+    let wire_savings_ms = choice_tensor.candidates[0].wire_transfer_ms
+        - choice_tensor.selected_metrics.wire_transfer_ms;
+    let selected_cpu_ms = choice_tensor.selected_metrics.total_cpu_ms;
+    assert!(
+        wire_savings_ms > selected_cpu_ms * 3.0,
+        "tensor fixture must have robust CPU headroom: wire savings {wire_savings_ms:.4} ms vs measured CPU {selected_cpu_ms:.4} ms"
     );
 
     // 4. Structured Q8/activation block tensor where LZ4 wins at 250 Mbps
@@ -102,11 +124,14 @@ fn adaptive_selector_picks_lower_total_cost_codec_per_workload() {
     }
     let choice_blocks = select_codec_measured(&tensor_blocks, policy, 10);
     assert!(
-        choice_blocks.selected_metrics.total_cost_ms <= choice_blocks.candidates[0].total_cost_ms
+        matches!(choice_blocks.codec, LZ4 | ZSTD),
+        "expected LZ4 or ZSTD to win on Q8 tensor blocks, got {}",
+        codec_name(choice_blocks.codec)
     );
-    if choice_blocks.codec != RAW {
-        assert!(choice_blocks.encoded.len() + policy.min_byte_savings < tensor_blocks.len());
-    }
+    assert!(choice_blocks.encoded.len() + policy.min_byte_savings < tensor_blocks.len());
+    assert!(
+        choice_blocks.selected_metrics.total_cost_ms < choice_blocks.candidates[0].total_cost_ms
+    );
     assert_eq!(
         decode_chunk(
             choice_blocks.codec,
@@ -118,9 +143,12 @@ fn adaptive_selector_picks_lower_total_cost_codec_per_workload() {
     );
 
     let (fast_codec_tensor, fast_enc_tensor) = encode_chunk_adaptive(&tensor, policy);
-    if fast_codec_tensor != RAW {
-        assert!(fast_enc_tensor.len() + policy.min_byte_savings < tensor.len());
-    }
+    assert!(
+        matches!(fast_codec_tensor, LZ4 | ZSTD),
+        "fast adaptive encoder must pick LZ4 or ZSTD on robust tensor data, got {}",
+        codec_name(fast_codec_tensor)
+    );
+    assert!(fast_enc_tensor.len() + policy.min_byte_savings < tensor.len());
     assert_eq!(
         decode_chunk(fast_codec_tensor, &fast_enc_tensor, tensor.len()).unwrap(),
         tensor
