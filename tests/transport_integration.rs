@@ -384,6 +384,28 @@ fn async_client_batch_send_accepts_exact_max_tensor_bytes_cap() {
     server.join().expect("server thread");
 }
 
+#[cfg(feature = "rpc-v3-transport")]
+#[test]
+fn async_client_batch_send_rejects_invalid_ack_byte() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let bad_ack = fastlink::ACK ^ 0xFF;
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("accept");
+        let received = receive_tensor(&mut sock).expect("receive tensor");
+        sock.write_all(&[bad_ack]).expect("send invalid ack");
+        received
+    });
+
+    let mut client = fastlink::AsyncClient::new(addr).expect("connect");
+    let tensor = patterned_tensor(CHUNK_BYTES);
+    let error = client
+        .batch_send(&[&tensor])
+        .expect_err("non-ACK byte must fail batch_send");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(server.join().expect("server thread"), tensor);
+}
+
 /// Start a server that expects `receive_tensor` to fail, then send `payload`
 /// and confirm the read is rejected.
 fn assert_rejected(payload: &[u8]) {

@@ -104,6 +104,12 @@ impl AsyncClient {
         self.stream.write_all(&wire)?;
         let mut ack = [0u8; 1];
         self.stream.read_exact(&mut ack)?;
+        if ack[0] != ACK {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid batch ACK byte",
+            ));
+        }
         Ok(wire.len())
     }
 
