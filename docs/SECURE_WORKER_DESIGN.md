@@ -1,10 +1,13 @@
 # Secure Linux Worker Design (Task 7)
 
-**Status: design plus an experimental Linux-only backend slice.** The backend
-exists on `feat/secure-linux-worker` and is backed by loopback tests, but it has
-not received an independent audit. This document makes no production,
-benchmark, or secure-UX claim. The no-echo pairing UI and OS-keyring storage
-remain unimplemented.
+**Status: design plus an experimental backend slice with Linux Secret Service keyring storage.** The backend
+is backed by loopback and injected-keyring tests, but it has not received an
+independent audit. This document makes no production, benchmark, or secure-UX
+claim. The no-echo pairing UI and interactive pairing network exchange remain
+unimplemented; persistent identity/pairing secret storage now uses Linux Secret
+Service (`keyring-core` + `zbus-secret-service-keyring-store`
+`rt-async-io-crypto-rust`) on Linux and fails closed with `Unsupported` on
+non-Linux targets.
 
 The design targets the M1 security gate and the M2 discovery/pairing boundary:
 
@@ -209,34 +212,63 @@ mismatch aborts before application framing.
 
 ## 5. Trust store and removal
 
-### 5.1 Storage
+### 5.1 Storage and legacy migration
 
-Recommended v1 durable location:
+Durable metadata location:
 
 ```text
 $XDG_STATE_HOME/fastlink/secure-worker/v1/     (0700)
-  identity.key                                 (0600, X25519 private key)
+  state.json                                   (0600, trust epoch + identity public key)
   peers/<opaque-id-hash>.meta.json             (0600, non-secret metadata)
-  peers/<opaque-id-hash>.secret                (0600, pairing secret)
 ```
 
-If `XDG_STATE_HOME` is unset, use `$HOME/.local/state/fastlink/secure-worker/v1`.
+Persistent secrets (the installation X25519 private key and per-peer pairing
+secrets) are stored in the Linux Secret Service keyring (`org.freedesktop.secrets`,
+default collection) rather than in plaintext `identity.key` or
+`peers/<opaque-id-hash>.secret` files:
+
+- **UTF-8 encoding for KDE Wallet compatibility:** 32-byte secrets are encoded
+  as fixed 64-character lowercase hex UTF-8 strings in zeroizing buffers and
+  validated for exact length/hex/non-zero content on readback.
+- **Opaque item names:** keyring `service`, `account`, and `label` use
+  domain-separated BLAKE3 digests over the canonical store root and `peer_id` so
+  raw peer IDs and filesystem paths are omitted.
+- **First-open migration:** if legacy `identity.key` or
+  `peers/<opaque-id-hash>.secret` files are present on open, `TrustStore` writes
+  the secret to the keyring, reads it back to confirm an exact constant-time
+  match, persists non-secret metadata (`identity_public` in `state.json`), and
+  only then removes the legacy plaintext file. If an existing keyring item
+  conflicts with the legacy file, `TrustStore` refuses to overwrite either and
+  fails closed (`KeyringConflict`). If keyring access, write, readback, or
+  file deletion fails, it fails closed, leaves legacy files intact, and does
+  not mark trust established. No plaintext-file fallback exists after migration.
+- **Platform & headless limitations:** Linux runtime connects explicitly to D-Bus
+  Secret Service (`zbus-secret-service-keyring-store` with
+  `rt-async-io-crypto-rust`). Headless Linux sessions without an unlocked
+  `org.freedesktop.secrets` provider (or WSL without a default collection) fail
+  closed with `KeyringUnavailable` unless the operator unlocks a Secret Service
+  daemon. Non-Linux runtime `TrustStore::open` reports
+  `SecureWorkerError::Unsupported` while workspace builds and injected-backend
+  tests run on non-Linux CI.
+
 No endpoint, IP, MAC, provider message, or raw discovery field is stored.
 The metadata contains only opaque peer ID, pinned static-key fingerprint,
 transport labels, trust state, `min_epoch`/last accepted epoch, and timestamps.
-Pairing secrets are separate from metadata and are never included in JSON
-export/diagnostics.
+Pairing secrets are never written to JSON metadata, debug output, errors, or logs.
 
 Writes use a temporary file in the same directory, `fsync`, and atomic rename;
-directory/file permissions are checked and corrected to 0700/0600 before use.
-A corrupt/mismatched record fails closed and requires removal/re-pair, not
+directory/file permissions are checked and corrected to 0700/0600 on Unix before
+use. A corrupt/mismatched record fails closed and requires removal/re-pair, not
 automatic trust.
 
-**Residual:** file permissions do not protect against root, a same-user
-attacker, backups, or a compromised host. A future OS-keyring or encrypted
-store is desirable but is not required by v1. Local secret wrappers and
-plaintext buffers use `zeroize`; `snow`'s internal handshake/transport key state
-is not explicitly zeroized by this module.
+**Residual & migration caveats:** OS keyring access does not protect against a
+compromised OS/root user, unlocked same-user Secret Service queries, or plaintext
+filesystem remnants before legacy file removal / wear-leveling. Local FASTLINK
+secret wrappers and buffers use `zeroize`/`Zeroizing`, but `snow`'s internal
+handshake/transport key state and third-party D-Bus/Secret Service crate buffers
+(`zbus`/`secret-service`) are not explicitly zeroized by this module. Automated
+unit/integration tests exercise injected in-memory keyring backends rather than a
+live host Secret Service daemon.
 
 ### 5.2 Removal and re-pairing
 
@@ -489,9 +521,11 @@ listener, or network scan.
    pairing code (new pin must require explicit confirmation).
 3. **Pairing UX:** one-time code format, TTY no-echo implementation, SAS/fingerprint
    comparison, and cancellation/timeout behaviour in GUI and headless CLI.
-4. **Secret storage at rest:** 0600 files vs OS keyring; `zeroize` is now used
-   for local secret wrappers, but at-rest encryption/keyring storage, backup and
-   crash semantics, and root/same-user disclosure acceptance remain open.
+4. **Secret storage at rest:** Linux runtime now uses D-Bus Secret Service
+   (`zbus-secret-service-keyring-store`) with safe legacy migration and fail-closed
+   conflict checks, while same-user Secret Service access, headless daemon
+   provisioning, non-Linux platform backends, backup/crash semantics, and
+   root disclosure acceptance remain outside full production claims.
 5. **Durable replay policy:** persist last accepted epoch vs a bounded nonce
    ledger; crash consistency between challenge issuance and trust update.
 6. **Transport limits:** Noise per-message cap is fixed at 65,535 bytes including
