@@ -198,3 +198,10 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Runtime candidate `f1276a5` was independently reviewed against `a2a5b27`: no findings. The reviewer verified driver-side early-return cleanup, listener wake-up, worker errors/panics, successful joins, and regression quality; residual: thread-leak regression is Linux-only and reviewer did not rerun Windows checks.
 - Rebased the isolated branch onto latest integration as `379577f61459ba366cc3bc456826ca3564eff4cd`. Commander verified the complete workspace tests, fmt, Linux Clippy, Windows GNU workspace check/Clippy, targeted Semgrep (0 findings), and diff-check. Exact feature CI `43894615269` and exact integration CI `43895224086` both passed on Ubuntu and Windows.
 - Fast-forward integrated and pushed to `integrate/fastlink-team`. Remote `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`; no GPU/model inference, live discovery, or service interruption occurred.
+
+## Checkpoint 21 — 2026-11-16 (PR #12 follow-up review and Semgrep triage)
+
+- The PR #12 follow-up candidate `19fc8e6030331dad07e3b8a189545c85ee0fd5a5` passed commander-run Linux workspace tests/FASTLINK_BIN, fmt, Clippy, GUI build, Windows GNU check/Clippy, and diff-check; exact branch CI `43895251495` is green. The non-Linux false-success inventory issue is closed.
+- Independent re-review found one remaining P2: stale “Opted in this session” text in `crates/fastlink-gui/src/ui.rs:765` and “Session-only consent” wording in `docs/GUI.md:259` still imply operational consent. Finding posted and verified in PR comment `6921143930`.
+- Full Semgrep over the M1 candidate reports eight candidate matches across unsafe pipe syscalls, temporary-file paths, and CLI argument parsing. OpenCode is triaging/hardening them plus the stale copy on isolated branch `fix/m1-semgrep-tempfiles`; PR #12 is not updated or merged yet.
+- `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`. No GUI window, live discovery, model/inference, GPU work, or service interruption.

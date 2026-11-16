@@ -177,3 +177,8 @@
 
 - The generic node-runtime early-error fix passed independent review with no findings. After rebasing onto integration, full Linux tests/fmt/Clippy, Windows GNU check/Clippy, targeted Semgrep and diff-check passed; exact feature CI `43894615269` and integration CI `43895224086` are green.
 - Fast-forward integrated at `379577f61459ba366cc3bc456826ca3564eff4cd`. `main` remains unchanged. The M1 PR #12 P2 follow-up is separate and still under re-review/self-verification.
+
+## 2026-11-16 — PR #12 follow-up re-review and Semgrep triage
+
+- Commander verified the `19fc8e6` follow-up locally and exact CI `43895251495` passed, closing the unsupported-platform inventory defect. Independent re-review found stale “Opted in this session” and “Session-only consent” wording (P2); PR comment `6921143930` records the issue.
+- Semgrep reports eight candidate matches for the M1 release code/tests. OpenCode is triaging them and fixing the test temp-root plus any confirmed production risk on isolated branch `fix/m1-semgrep-tempfiles`; PR #12 remains draft pending that work, fresh review, and exact-head CI.
