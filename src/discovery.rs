@@ -156,9 +156,13 @@ pub fn discover_with_config(
     }
 }
 
+fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
+}
+
 #[cfg(any(not(target_os = "linux"), test))]
 fn unsupported_platform_report(cancel: Option<&AtomicBool>) -> DiscoveryReport {
-    let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
+    let cancelled = is_cancelled(cancel);
     let (status, lan_msg, ts_msg) = if cancelled {
         (
             "cancelled",
@@ -982,7 +986,7 @@ fn run_bounded_provider(
     max_output_bytes: usize,
     cancel: Option<&AtomicBool>,
 ) -> Result<ProviderOutput, CaptureError> {
-    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+    if is_cancelled(cancel) {
         return Err(CaptureError::Cancelled);
     }
 
@@ -1052,12 +1056,36 @@ fn child_has_exited(child: &Child) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn pump_bounded(
+trait DrainObserver {
+    fn on_post_exit_read(&mut self, _child: &Child, _drain_deadline: Instant) {}
+    fn after_post_exit_drain(
+        &mut self,
+        _child: &Child,
+        _drain_deadline: Instant,
+        _drain_result: &Result<(), CaptureError>,
+        _stdout: &PipeReader,
+    ) {
+    }
+    fn after_post_exit_cleanup(&mut self, _drain_deadline: Instant) {}
+}
+
+#[cfg(target_os = "linux")]
+struct NoopDrainObserver;
+
+#[cfg(target_os = "linux")]
+impl DrainObserver for NoopDrainObserver {}
+
+#[cfg(target_os = "linux")]
+fn pump_bounded_with<F>(
     stdout: &mut PipeReader,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
-) -> Result<(), CaptureError> {
-    if stdout.pump(deadline, cancel).is_err() {
+    on_read: F,
+) -> Result<(), CaptureError>
+where
+    F: FnMut(),
+{
+    if stdout.pump_with(deadline, cancel, on_read).is_err() {
         return Err(CaptureError::IoFailed);
     }
     if stdout.cancelled {
@@ -1070,11 +1098,37 @@ fn pump_bounded(
 }
 
 #[cfg(target_os = "linux")]
+fn pump_bounded(
+    stdout: &mut PipeReader,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), CaptureError> {
+    pump_bounded_with(stdout, deadline, cancel, || {})
+}
+
+#[cfg(target_os = "linux")]
 fn capture_child(
+    child: Child,
+    timeout: Duration,
+    max_output_bytes: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<ProviderOutput, CaptureError> {
+    capture_child_with_observer(
+        child,
+        timeout,
+        max_output_bytes,
+        cancel,
+        &mut NoopDrainObserver,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn capture_child_with_observer(
     mut child: Child,
     timeout: Duration,
     max_output_bytes: usize,
     cancel: Option<&AtomicBool>,
+    observer: &mut impl DrainObserver,
 ) -> Result<ProviderOutput, CaptureError> {
     let Some(stdout_handle) = child.stdout.take() else {
         stop_child(&mut child);
@@ -1092,7 +1146,7 @@ fn capture_child(
     let started = Instant::now();
     let overall_deadline = started + timeout;
     loop {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        if is_cancelled(cancel) {
             stop_child(&mut child);
             return Err(CaptureError::Cancelled);
         }
@@ -1118,20 +1172,42 @@ fn capture_child(
     }
 
     let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
-    if let Err(err) = pump_bounded(&mut stdout, drain_deadline, cancel) {
+    let drain_result = pump_bounded_with(&mut stdout, drain_deadline, cancel, || {
+        observer.on_post_exit_read(&child, drain_deadline);
+    });
+    observer.after_post_exit_drain(&child, drain_deadline, &drain_result, &stdout);
+    if let Err(err) = drain_result {
         stop_child(&mut child);
         return Err(err);
+    }
+    if is_cancelled(cancel) {
+        stop_child(&mut child);
+        return Err(CaptureError::Cancelled);
     }
 
     kill_process_group(child.id());
     let Ok(status) = child.wait() else {
         return Err(CaptureError::IoFailed);
     };
+    observer.after_post_exit_cleanup(drain_deadline);
+    if is_cancelled(cancel) {
+        return Err(CaptureError::Cancelled);
+    }
 
     Ok(ProviderOutput {
         status,
         stdout: stdout.retained,
     })
+}
+
+#[cfg(all(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PumpStop {
+    Eof,
+    WouldBlock,
+    Deadline,
+    Over,
+    Cancelled,
 }
 
 #[cfg(target_os = "linux")]
@@ -1143,6 +1219,8 @@ struct PipeReader {
     total: usize,
     eof: bool,
     cancelled: bool,
+    #[cfg(test)]
+    last_stop: Option<PumpStop>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1158,20 +1236,49 @@ impl PipeReader {
             total: 0,
             eof: false,
             cancelled: false,
+            #[cfg(test)]
+            last_stop: None,
         })
     }
 
-    fn pump(&mut self, deadline: Instant, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    fn pump_with<F>(
+        &mut self,
+        deadline: Instant,
+        cancel: Option<&AtomicBool>,
+        mut on_read: F,
+    ) -> io::Result<()>
+    where
+        F: FnMut(),
+    {
         if self.eof {
+            #[cfg(test)]
+            {
+                self.last_stop = Some(PumpStop::Eof);
+            }
             return Ok(());
         }
         let mut buffer = [0u8; 8192];
         loop {
-            if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            if is_cancelled(cancel) {
                 self.cancelled = true;
+                #[cfg(test)]
+                {
+                    self.last_stop = Some(PumpStop::Cancelled);
+                }
                 return Ok(());
             }
-            if Instant::now() >= deadline || self.is_over() {
+            if self.is_over() {
+                #[cfg(test)]
+                {
+                    self.last_stop = Some(PumpStop::Over);
+                }
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                #[cfg(test)]
+                {
+                    self.last_stop = Some(PumpStop::Deadline);
+                }
                 return Ok(());
             }
             // SAFETY: `fd` is an open, nonblocking pipe descriptor owned by `handle`.
@@ -1190,16 +1297,31 @@ impl PipeReader {
                     self.retained.extend_from_slice(&buffer[..room.min(n)]);
                 }
                 if self.is_over() {
+                    #[cfg(test)]
+                    {
+                        self.last_stop = Some(PumpStop::Over);
+                    }
                     return Ok(());
                 }
+                on_read();
             } else if read == 0 {
                 self.eof = true;
                 self.handle.take();
+                #[cfg(test)]
+                {
+                    self.last_stop = Some(PumpStop::Eof);
+                }
                 return Ok(());
             } else {
                 let err = io::Error::last_os_error();
                 match err.kind() {
-                    io::ErrorKind::WouldBlock => return Ok(()),
+                    io::ErrorKind::WouldBlock => {
+                        #[cfg(test)]
+                        {
+                            self.last_stop = Some(PumpStop::WouldBlock);
+                        }
+                        return Ok(());
+                    }
                     io::ErrorKind::Interrupted => continue,
                     _ => return Err(err),
                 }
@@ -1699,13 +1821,59 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn run_capture_on_exited_locking_child(
+    static DRAIN_TEST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(target_os = "linux")]
+    fn is_lock_free(lock_file: &std::path::Path) -> bool {
+        Command::new("/usr/bin/flock")
+            .arg("-n")
+            .arg(lock_file)
+            .arg("true")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_lock_release(lock_file: &std::path::Path, wait_for: Duration) -> bool {
+        let lock_deadline = Instant::now() + wait_for;
+        loop {
+            if is_lock_free(lock_file) {
+                return true;
+            }
+            if Instant::now() >= lock_deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const STREAMING_DESCENDANT_SCRIPT: &str = "n=0\n\
+         while [ \"$n\" -lt 8 ]; do\n\
+           printf 'stream-chunk\\n'\n\
+           n=$((n + 1))\n\
+         done\n\
+         printf ok > desc.ready\n\
+         exec /usr/bin/yes stream-chunk";
+
+    #[cfg(target_os = "linux")]
+    fn run_capture_on_exited_locking_child_with<O, M>(
         label: &str,
-        body: &str,
+        body_before_desc: &str,
+        descendant_cmd: &str,
+        body_after_ready: &str,
         max_output_bytes: usize,
-    ) -> (Result<ProviderOutput, CaptureError>, bool) {
+        cancel: Option<&AtomicBool>,
+        make_observer: M,
+    ) -> (Result<ProviderOutput, CaptureError>, bool, O)
+    where
+        O: DrainObserver,
+        M: FnOnce(&std::path::Path) -> O,
+    {
+        let seq = DRAIN_TEST_SEQ.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "fastlink_capture_drain_{label}_{}",
+            "fastlink_capture_drain_{label}_{}_{seq}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1713,14 +1881,15 @@ mod tests {
         let lock_file = dir.join("desc.lock");
 
         let script = format!(
-            "/usr/bin/flock desc.lock /bin/sh -c 'printf ok > desc.ready; sleep 5' &\n\
+            "{body_before_desc}\n\
+             /usr/bin/flock desc.lock /bin/sh -c '{descendant_cmd}' &\n\
              attempt=0\n\
              while [ ! -f desc.ready ]; do\n\
                attempt=$((attempt + 1))\n\
-               [ \"$attempt\" -lt 100 ] || exit 7\n\
+               [ \"$attempt\" -lt 200 ] || exit 7\n\
                sleep 0.01\n\
              done\n\
-             {body}\n"
+             {body_after_ready}\n"
         );
         let child = Command::new("/bin/sh")
             .arg("-c")
@@ -1743,29 +1912,38 @@ mod tests {
         }
 
         let pgid = child.id();
-        let result = capture_child(child, Duration::ZERO, max_output_bytes, None);
+        let mut observer = make_observer(&lock_file);
+        let result = capture_child_with_observer(
+            child,
+            Duration::ZERO,
+            max_output_bytes,
+            cancel,
+            &mut observer,
+        );
 
-        let lock_deadline = Instant::now() + Duration::from_millis(150);
-        let lock_released = loop {
-            if Command::new("/usr/bin/flock")
-                .arg("-n")
-                .arg(&lock_file)
-                .arg("true")
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-            {
-                break true;
-            }
-            if Instant::now() >= lock_deadline {
-                break false;
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
+        let lock_released = wait_for_lock_release(&lock_file, Duration::from_millis(150));
         if !lock_released {
             kill_process_group(pgid);
         }
         let _ = std::fs::remove_dir_all(&dir);
+        (result, lock_released, observer)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_capture_on_exited_locking_child(
+        label: &str,
+        body: &str,
+        max_output_bytes: usize,
+    ) -> (Result<ProviderOutput, CaptureError>, bool) {
+        let (result, lock_released, _) = run_capture_on_exited_locking_child_with(
+            label,
+            "",
+            "printf ok > desc.ready; sleep 5",
+            body,
+            max_output_bytes,
+            None,
+            |_| NoopDrainObserver,
+        );
         (result, lock_released)
     }
 
@@ -1796,5 +1974,264 @@ mod tests {
             lock_released,
             "descendant still held flock after normal post-exit drain"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_deadline_preserves_exit_code_and_output_while_killing_streaming_descendant(
+    ) {
+        struct DeadlineObserver {
+            lock_file: PathBuf,
+            read_count: usize,
+            child_exited_at_drain: bool,
+            lock_held_during_drain: bool,
+            stop_reason: Option<PumpStop>,
+            ended_after_deadline: bool,
+        }
+
+        impl DrainObserver for DeadlineObserver {
+            fn on_post_exit_read(&mut self, child: &Child, _drain_deadline: Instant) {
+                self.read_count += 1;
+                if self.read_count == 1 {
+                    self.child_exited_at_drain = child_has_exited(child).unwrap_or(false);
+                    self.lock_held_during_drain = !is_lock_free(&self.lock_file);
+                }
+                // Pace 8 KiB reads so the streaming descendant keeps the pipe non-empty across
+                // the full 50ms POST_EXIT_DRAIN without overflowing the 4 MiB capture cap.
+                thread::sleep(Duration::from_millis(2));
+            }
+
+            fn after_post_exit_drain(
+                &mut self,
+                _child: &Child,
+                drain_deadline: Instant,
+                drain_result: &Result<(), CaptureError>,
+                stdout: &PipeReader,
+            ) {
+                assert!(drain_result.is_ok(), "unexpected drain error");
+                self.stop_reason = stdout.last_stop;
+                self.ended_after_deadline = Instant::now() >= drain_deadline;
+            }
+        }
+
+        let cap = 4 * 1024 * 1024;
+        let (result, lock_released, observer) = run_capture_on_exited_locking_child_with(
+            "deadline",
+            "printf 'buffered-banner\\n'",
+            STREAMING_DESCENDANT_SCRIPT,
+            "sleep 0.005\nexit 37",
+            cap,
+            None,
+            |lock_file| DeadlineObserver {
+                lock_file: lock_file.to_path_buf(),
+                read_count: 0,
+                child_exited_at_drain: false,
+                lock_held_during_drain: false,
+                stop_reason: None,
+                ended_after_deadline: false,
+            },
+        );
+
+        let output = result.expect("drain deadline path should preserve completed child output");
+        assert!(observer.read_count > 0, "expected streaming reads in drain");
+        assert!(
+            observer.child_exited_at_drain,
+            "direct child must have exited before post-exit drain"
+        );
+        assert!(
+            observer.lock_held_during_drain,
+            "streaming descendant must hold lock during post-exit drain"
+        );
+        assert_eq!(
+            observer.stop_reason,
+            Some(PumpStop::Deadline),
+            "post-exit drain must hit deadline, not WouldBlock/Over/Cancelled/Eof"
+        );
+        assert!(
+            observer.ended_after_deadline,
+            "post-exit drain must finish at or after drain deadline"
+        );
+        assert_eq!(output.status.code(), Some(37));
+        assert!(output.stdout.starts_with(b"buffered-banner\n"));
+        assert!(
+            output
+                .stdout
+                .windows(b"stream-chunk\n".len())
+                .any(|w| w == b"stream-chunk\n"),
+            "expected drained descendant chunks in retained stdout"
+        );
+        assert!(output.stdout.len() < cap);
+        assert!(
+            lock_released,
+            "streaming descendant still held flock after drain deadline"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_cancellation_during_post_exit_drain_kills_streaming_descendant() {
+        struct MidDrainCancelObserver<'a> {
+            cancel: &'a AtomicBool,
+            lock_file: PathBuf,
+            read_count: usize,
+            raised_in_active_drain: bool,
+            stop_reason: Option<PumpStop>,
+        }
+
+        impl DrainObserver for MidDrainCancelObserver<'_> {
+            fn on_post_exit_read(&mut self, child: &Child, drain_deadline: Instant) {
+                self.read_count += 1;
+                if self.read_count == 1 {
+                    let exited = child_has_exited(child).unwrap_or(false);
+                    let drain_active = Instant::now() < drain_deadline;
+                    let lock_held = !is_lock_free(&self.lock_file);
+                    assert!(
+                        exited,
+                        "direct child must already have exited before cancel"
+                    );
+                    assert!(
+                        drain_active,
+                        "50ms drain must be active when cancel is raised"
+                    );
+                    assert!(lock_held, "descendant must still hold lock during drain");
+                    self.cancel.store(true, Ordering::Release);
+                    self.raised_in_active_drain = true;
+                }
+            }
+
+            fn after_post_exit_drain(
+                &mut self,
+                _child: &Child,
+                _drain_deadline: Instant,
+                _drain_result: &Result<(), CaptureError>,
+                stdout: &PipeReader,
+            ) {
+                self.stop_reason = stdout.last_stop;
+            }
+        }
+
+        let cancel = AtomicBool::new(false);
+        let (result, lock_released, observer) = run_capture_on_exited_locking_child_with(
+            "mid-drain-cancel",
+            "printf 'buffered-banner\\n'",
+            STREAMING_DESCENDANT_SCRIPT,
+            "sleep 0.005\nexit 0",
+            4 * 1024 * 1024,
+            Some(&cancel),
+            |lock_file| MidDrainCancelObserver {
+                cancel: &cancel,
+                lock_file: lock_file.to_path_buf(),
+                read_count: 0,
+                raised_in_active_drain: false,
+                stop_reason: None,
+            },
+        );
+
+        assert!(
+            observer.raised_in_active_drain,
+            "cancellation must be raised inside active post-exit drain"
+        );
+        assert_eq!(observer.stop_reason, Some(PumpStop::Cancelled));
+        assert!(
+            matches!(result, Err(CaptureError::Cancelled)),
+            "expected Cancelled during post-exit drain"
+        );
+        assert!(
+            lock_released,
+            "descendant still held flock after post-exit drain cancellation"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_boundary_cancellation_returns_cancelled_and_kills_descendant()
+    {
+        struct BoundaryCancelObserver<'a> {
+            cancel: &'a AtomicBool,
+            lock_file: PathBuf,
+            on_cleanup_instead: bool,
+            raised: bool,
+        }
+
+        impl DrainObserver for BoundaryCancelObserver<'_> {
+            fn after_post_exit_drain(
+                &mut self,
+                child: &Child,
+                drain_deadline: Instant,
+                drain_result: &Result<(), CaptureError>,
+                stdout: &PipeReader,
+            ) {
+                if self.on_cleanup_instead {
+                    return;
+                }
+                assert!(drain_result.is_ok());
+                assert_eq!(stdout.last_stop, Some(PumpStop::WouldBlock));
+                assert!(
+                    child_has_exited(child).unwrap_or(false),
+                    "direct child must already have exited before boundary cancellation"
+                );
+                assert!(
+                    Instant::now() < drain_deadline,
+                    "50ms drain window must still be active when boundary cancel is raised"
+                );
+                assert!(
+                    !is_lock_free(&self.lock_file),
+                    "descendant must still hold lock when boundary cancel is raised"
+                );
+                self.cancel.store(true, Ordering::Release);
+                self.raised = true;
+            }
+
+            fn after_post_exit_cleanup(&mut self, drain_deadline: Instant) {
+                if !self.on_cleanup_instead {
+                    return;
+                }
+                assert!(
+                    Instant::now() < drain_deadline,
+                    "50ms drain window must still be active before returning output"
+                );
+                self.cancel.store(true, Ordering::Release);
+                self.raised = true;
+            }
+        }
+
+        for (label, on_cleanup_instead) in [
+            ("boundary-after-pump", false),
+            ("boundary-after-cleanup", true),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let (result, lock_released, observer) = run_capture_on_exited_locking_child_with(
+                label,
+                "printf 'buffered-payload\\n'",
+                "printf ok > desc.ready; sleep 5",
+                "exit 0",
+                1024,
+                Some(&cancel),
+                |lock_file| BoundaryCancelObserver {
+                    cancel: &cancel,
+                    lock_file: lock_file.to_path_buf(),
+                    on_cleanup_instead,
+                    raised: false,
+                },
+            );
+
+            assert!(observer.raised, "failed to raise cancel at {label}");
+            assert!(
+                matches!(result, Err(CaptureError::Cancelled)),
+                "expected Cancelled at {label}, got {}",
+                match result {
+                    Ok(out) => format!(
+                        "Ok(status={:?}, len={})",
+                        out.status.code(),
+                        out.stdout.len()
+                    ),
+                    Err(err) => format!("Err({err:?})"),
+                }
+            );
+            assert!(
+                lock_released,
+                "descendant still held flock after {label} cancellation"
+            );
+        }
     }
 }
