@@ -180,6 +180,14 @@ def run_completion(url, prompt, n_predict):
     }
 
 
+def _bounded_diagnostic(res):
+    """Return stderr-preferred, stdout-fallback diagnostic capped at 2,000 chars."""
+    detail = (res.stderr or "").strip() or (res.stdout or "").strip()
+    if len(detail) > 2_000:
+        detail = detail[:2_000] + "... [truncated]"
+    return detail
+
+
 def run_mmap_transport_microbench():
     """Run cargo bench --bench mmap_transfer and parse its synthetic-safe stdout.
 
@@ -190,7 +198,7 @@ def run_mmap_transport_microbench():
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     stdout = res.stdout or ""
     if res.returncode != 0:
-        detail = (res.stderr or "").strip() or stdout.strip()
+        detail = _bounded_diagnostic(res)
         message = f"mmap_transfer benchmark failed with exit code {res.returncode}"
         if detail:
             message += f": {detail}"
@@ -316,10 +324,8 @@ def run_mmap_transport_microbench():
             "mmap_transfer benchmark output is incomplete; missing metrics: "
             + ", ".join(missing)
         )
-        diagnostic = (res.stderr or "").strip() or stdout.strip()
+        diagnostic = _bounded_diagnostic(res)
         if diagnostic:
-            if len(diagnostic) > 2_000:
-                diagnostic = diagnostic[:2_000] + "... [truncated]"
             message += f"; diagnostic: {diagnostic}"
         raise RuntimeError(message)
 

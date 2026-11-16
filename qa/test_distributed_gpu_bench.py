@@ -144,6 +144,49 @@ class MmapCollectorTests(unittest.TestCase):
                 COMMAND, capture_output=True, text=True, timeout=120,
             )
 
+    def test_zero_exit_incomplete_output_includes_stdout_diagnostic(self):
+        diagnostic = (
+            "mmap_transfer diagnostic: benchmark printed no RLE metrics"
+        )
+        incomplete = "\n".join(
+            line for line in SYNTHETIC_STDOUT.splitlines()
+            if "FASTLINK framed (RLE codec)" not in line
+        )
+        result = subprocess.CompletedProcess(
+            COMMAND, 0, stdout=incomplete + "\n" + diagnostic, stderr="",
+        )
+        with mock.patch.object(
+            collector.subprocess, "run", return_value=result,
+        ) as run:
+            with self.assertRaises(RuntimeError) as raised:
+                collector.run_mmap_transport_microbench()
+            message = str(raised.exception)
+            self.assertIn("missing metrics", message)
+            self.assertIn("fastlink_rpc.uniform_wire_bytes", message)
+            self.assertIn(diagnostic, message)
+            run.assert_called_once_with(
+                COMMAND, capture_output=True, text=True, timeout=120,
+            )
+
+    def test_nonzero_exit_bounds_diagnostic_and_keeps_exit_code(self):
+        diagnostic = "collector failure: " + ("x" * 10_000)
+        result = subprocess.CompletedProcess(
+            COMMAND, 1, stdout="", stderr=diagnostic,
+        )
+        with mock.patch.object(
+            collector.subprocess, "run", return_value=result,
+        ) as run:
+            with self.assertRaises(RuntimeError) as raised:
+                collector.run_mmap_transport_microbench()
+            message = str(raised.exception)
+            self.assertIn("exit code 1", message)
+            self.assertIn("collector failure", message)
+            self.assertIn("truncated", message)
+            self.assertLess(len(message), 5_000)
+            run.assert_called_once_with(
+                COMMAND, capture_output=True, text=True, timeout=120,
+            )
+
     def test_zero_exit_incomplete_output_includes_stderr_diagnostic(self):
         diagnostic = (
             "FASTLINK mmap_transfer is unsupported on Windows: "
