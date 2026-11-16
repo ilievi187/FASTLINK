@@ -182,3 +182,8 @@
 
 - Commander verified the `19fc8e6` follow-up locally and exact CI `43895251495` passed, closing the unsupported-platform inventory defect. Independent re-review found stale “Opted in this session” and “Session-only consent” wording (P2); PR comment `6921143930` records the issue.
 - Semgrep reports eight candidate matches for the M1 release code/tests. OpenCode is triaging them and fixing the test temp-root plus any confirmed production risk on isolated branch `fix/m1-semgrep-tempfiles`; PR #12 remains draft pending that work, fresh review, and exact-head CI.
+
+## 2026-11-16 — Keyring storage review blockers
+
+- Experimental keyring storage `e41e88e` passed commander-run Linux/Windows gates and exact feature CI `43904715725`. Independent review found two P2s: identity secret/public-key consistency on reopen and ignored metadata-revocation write failure.
+- AGY is addressing the findings on isolated branch `fix/secure-keyring-p2`; no integration or production-security claim until TDD, independent re-review and exact CI pass. No real keyring, live network, model or GPU work was performed.

@@ -205,3 +205,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Independent re-review found one remaining P2: stale “Opted in this session” text in `crates/fastlink-gui/src/ui.rs:765` and “Session-only consent” wording in `docs/GUI.md:259` still imply operational consent. Finding posted and verified in PR comment `6921143930`.
 - Full Semgrep over the M1 candidate reports eight candidate matches across unsafe pipe syscalls, temporary-file paths, and CLI argument parsing. OpenCode is triaging/hardening them plus the stale copy on isolated branch `fix/m1-semgrep-tempfiles`; PR #12 is not updated or merged yet.
 - `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`. No GUI window, live discovery, model/inference, GPU work, or service interruption.
+
+## Checkpoint 22 — 2026-11-16 (keyring storage reviewed; P2 fixes dispatched)
+
+- Experimental keyring candidate `e41e88e96ddaa72336c75ca25ca0d79b9e16514b` was pushed on `feat/secure-keyring-storage`; commander verified full Linux workspace tests/FASTLINK_BIN, fmt, Clippy, GUI build, Windows GNU check/Clippy, diff-check, and targeted Semgrep (0 findings). Exact feature CI `43904715725` passed.
+- Independent security review found two P2s: when the legacy identity file is absent, a keyring private key is not checked against persisted `identity_public`; and `remove_peer` ignores failure to persist `trusted=false`, with an early-return path before keyring deletion. AGY is fixing both with deterministic TDD on isolated branch `fix/secure-keyring-p2`; do not integrate until re-review and exact CI.
+- Tests use injected in-memory keyring backends; no live OS keyring, network discovery, model, GPU, or service activity occurred. The candidate remains experimental and makes no production-security claim. `main` remains `8cd1b281a545f1bb0806904c8ae97902d6b62f9b`.
