@@ -1056,8 +1056,22 @@ fn child_has_exited(child: &Child) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum PumpWouldBlock {
+    ReturnEarly,
+    WaitUntilDeadline,
+}
+
+#[cfg(target_os = "linux")]
+enum PumpEvent {
+    Read,
+    WouldBlock,
+}
+
+#[cfg(target_os = "linux")]
 trait DrainObserver {
     fn on_post_exit_read(&mut self, _child: &Child, _drain_deadline: Instant) {}
+    fn on_post_exit_would_block(&mut self, _child: &Child, _drain_deadline: Instant) {}
     fn after_post_exit_drain(
         &mut self,
         _child: &Child,
@@ -1080,12 +1094,16 @@ fn pump_bounded_with<F>(
     stdout: &mut PipeReader,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
-    on_read: F,
+    on_would_block: PumpWouldBlock,
+    on_event: F,
 ) -> Result<(), CaptureError>
 where
-    F: FnMut(),
+    F: FnMut(PumpEvent),
 {
-    if stdout.pump_with(deadline, cancel, on_read).is_err() {
+    if stdout
+        .pump_with(deadline, cancel, on_would_block, on_event)
+        .is_err()
+    {
         return Err(CaptureError::IoFailed);
     }
     if stdout.cancelled {
@@ -1103,7 +1121,13 @@ fn pump_bounded(
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), CaptureError> {
-    pump_bounded_with(stdout, deadline, cancel, || {})
+    pump_bounded_with(
+        stdout,
+        deadline,
+        cancel,
+        PumpWouldBlock::ReturnEarly,
+        |_| {},
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1172,9 +1196,16 @@ fn capture_child_with_observer(
     }
 
     let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
-    let drain_result = pump_bounded_with(&mut stdout, drain_deadline, cancel, || {
-        observer.on_post_exit_read(&child, drain_deadline);
-    });
+    let drain_result = pump_bounded_with(
+        &mut stdout,
+        drain_deadline,
+        cancel,
+        PumpWouldBlock::WaitUntilDeadline,
+        |event| match event {
+            PumpEvent::Read => observer.on_post_exit_read(&child, drain_deadline),
+            PumpEvent::WouldBlock => observer.on_post_exit_would_block(&child, drain_deadline),
+        },
+    );
     observer.after_post_exit_drain(&child, drain_deadline, &drain_result, &stdout);
     if let Err(err) = drain_result {
         stop_child(&mut child);
@@ -1200,7 +1231,8 @@ fn capture_child_with_observer(
     })
 }
 
-#[cfg(all(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PumpStop {
     Eof,
@@ -1241,44 +1273,44 @@ impl PipeReader {
         })
     }
 
+    fn record_stop(&mut self, _stop: PumpStop) {
+        #[cfg(test)]
+        {
+            self.last_stop = Some(_stop);
+        }
+    }
+
+    fn cancel_stop(&mut self) {
+        self.cancelled = true;
+        self.record_stop(PumpStop::Cancelled);
+    }
+
     fn pump_with<F>(
         &mut self,
         deadline: Instant,
         cancel: Option<&AtomicBool>,
-        mut on_read: F,
+        on_would_block: PumpWouldBlock,
+        mut on_event: F,
     ) -> io::Result<()>
     where
-        F: FnMut(),
+        F: FnMut(PumpEvent),
     {
         if self.eof {
-            #[cfg(test)]
-            {
-                self.last_stop = Some(PumpStop::Eof);
-            }
+            self.record_stop(PumpStop::Eof);
             return Ok(());
         }
         let mut buffer = [0u8; 8192];
         loop {
             if is_cancelled(cancel) {
-                self.cancelled = true;
-                #[cfg(test)]
-                {
-                    self.last_stop = Some(PumpStop::Cancelled);
-                }
+                self.cancel_stop();
                 return Ok(());
             }
             if self.is_over() {
-                #[cfg(test)]
-                {
-                    self.last_stop = Some(PumpStop::Over);
-                }
+                self.record_stop(PumpStop::Over);
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                #[cfg(test)]
-                {
-                    self.last_stop = Some(PumpStop::Deadline);
-                }
+                self.record_stop(PumpStop::Deadline);
                 return Ok(());
             }
             // SAFETY: `fd` is an open, nonblocking pipe descriptor owned by `handle`.
@@ -1297,30 +1329,39 @@ impl PipeReader {
                     self.retained.extend_from_slice(&buffer[..room.min(n)]);
                 }
                 if self.is_over() {
-                    #[cfg(test)]
-                    {
-                        self.last_stop = Some(PumpStop::Over);
-                    }
+                    self.record_stop(PumpStop::Over);
                     return Ok(());
                 }
-                on_read();
+                on_event(PumpEvent::Read);
             } else if read == 0 {
                 self.eof = true;
                 self.handle.take();
-                #[cfg(test)]
-                {
-                    self.last_stop = Some(PumpStop::Eof);
-                }
+                self.record_stop(PumpStop::Eof);
                 return Ok(());
             } else {
                 let err = io::Error::last_os_error();
                 match err.kind() {
                     io::ErrorKind::WouldBlock => {
-                        #[cfg(test)]
-                        {
-                            self.last_stop = Some(PumpStop::WouldBlock);
+                        on_event(PumpEvent::WouldBlock);
+                        match on_would_block {
+                            PumpWouldBlock::ReturnEarly => {
+                                self.record_stop(PumpStop::WouldBlock);
+                                return Ok(());
+                            }
+                            PumpWouldBlock::WaitUntilDeadline => {
+                                let Some(remaining) =
+                                    deadline.checked_duration_since(Instant::now())
+                                else {
+                                    self.record_stop(PumpStop::Deadline);
+                                    return Ok(());
+                                };
+                                if is_cancelled(cancel) {
+                                    self.cancel_stop();
+                                    return Ok(());
+                                }
+                                wait_pipe_readable(self.fd, remaining.min(POLL_INTERVAL))?;
+                            }
                         }
-                        return Ok(());
                     }
                     io::ErrorKind::Interrupted => continue,
                     _ => return Err(err),
@@ -1332,6 +1373,29 @@ impl PipeReader {
     fn is_over(&self) -> bool {
         self.total > self.cap
     }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_pipe_readable(fd: RawFd, wait_for: Duration) -> io::Result<()> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ts = libc::timespec {
+        tv_sec: libc::time_t::try_from(wait_for.as_secs()).unwrap_or(libc::time_t::MAX),
+        tv_nsec: wait_for.subsec_nanos() as libc::c_long,
+    };
+    // SAFETY: `pfd` references an open pipe fd and `ts` bounds the wait while
+    // allowing readability, hangup (`POLLHUP`), or `EINTR` to wake promptly.
+    let rc = unsafe { libc::ppoll(&mut pfd, 1, &ts, std::ptr::null()) };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1851,7 +1915,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     const STREAMING_DESCENDANT_SCRIPT: &str = "n=0\n\
          while [ \"$n\" -lt 8 ]; do\n\
-           printf 'stream-chunk\\n'\n\
+           printf \"stream-chunk\\n\"\n\
            n=$((n + 1))\n\
          done\n\
          printf ok > desc.ready\n\
@@ -2165,14 +2229,11 @@ mod tests {
                     return;
                 }
                 assert!(drain_result.is_ok());
-                assert_eq!(stdout.last_stop, Some(PumpStop::WouldBlock));
+                assert_eq!(stdout.last_stop, Some(PumpStop::Deadline));
+                assert!(Instant::now() >= drain_deadline);
                 assert!(
                     child_has_exited(child).unwrap_or(false),
                     "direct child must already have exited before boundary cancellation"
-                );
-                assert!(
-                    Instant::now() < drain_deadline,
-                    "50ms drain window must still be active when boundary cancel is raised"
                 );
                 assert!(
                     !is_lock_free(&self.lock_file),
@@ -2186,10 +2247,7 @@ mod tests {
                 if !self.on_cleanup_instead {
                     return;
                 }
-                assert!(
-                    Instant::now() < drain_deadline,
-                    "50ms drain window must still be active before returning output"
-                );
+                assert!(Instant::now() >= drain_deadline);
                 self.cancel.store(true, Ordering::Release);
                 self.raised = true;
             }
@@ -2233,5 +2291,166 @@ mod tests {
                 "descendant still held flock after {label} cancellation"
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_waits_past_wouldblock_for_delayed_chunk_until_deadline() {
+        struct DelayedChunkObserver {
+            lock_file: PathBuf,
+            emit2_file: PathBuf,
+            would_block_hits: usize,
+            stop_reason: Option<PumpStop>,
+            ended_after_deadline: bool,
+        }
+
+        impl DrainObserver for DelayedChunkObserver {
+            fn on_post_exit_would_block(&mut self, child: &Child, _drain_deadline: Instant) {
+                self.would_block_hits += 1;
+                if self.would_block_hits == 1 {
+                    assert!(
+                        child_has_exited(child).unwrap_or(false),
+                        "direct provider must already have exited before WouldBlock trigger"
+                    );
+                    assert!(
+                        !is_lock_free(&self.lock_file),
+                        "descendant must hold lock while paused before emitting second chunk"
+                    );
+                    let tmp = self.emit2_file.with_extension("tmp");
+                    std::fs::write(&tmp, b"go").expect("write delayed chunk trigger tmp");
+                    std::fs::rename(&tmp, &self.emit2_file)
+                        .expect("activate delayed chunk trigger");
+                }
+            }
+
+            fn after_post_exit_drain(
+                &mut self,
+                _child: &Child,
+                drain_deadline: Instant,
+                drain_result: &Result<(), CaptureError>,
+                stdout: &PipeReader,
+            ) {
+                assert!(drain_result.is_ok(), "unexpected drain error");
+                self.stop_reason = stdout.last_stop;
+                self.ended_after_deadline = Instant::now() >= drain_deadline;
+            }
+        }
+
+        let paused_descendant = "printf \"initial-chunk\\n\"\n\
+             printf ok > desc.ready\n\
+             while [ ! -f desc.emit2 ]; do\n\
+               sleep 0.001\n\
+             done\n\
+             printf \"delayed-chunk\\n\"\n\
+             sleep 5";
+
+        let (result, lock_released, observer) = run_capture_on_exited_locking_child_with(
+            "delayed-chunk",
+            "printf 'provider-header\\n'",
+            paused_descendant,
+            "exit 37",
+            64 * 1024,
+            None,
+            |lock_file| DelayedChunkObserver {
+                lock_file: lock_file.to_path_buf(),
+                emit2_file: lock_file
+                    .parent()
+                    .expect("lock parent dir")
+                    .join("desc.emit2"),
+                would_block_hits: 0,
+                stop_reason: None,
+                ended_after_deadline: false,
+            },
+        );
+
+        assert!(
+            observer.would_block_hits >= 1,
+            "reader must observe WouldBlock between initial and delayed chunks"
+        );
+        assert_eq!(
+            observer.stop_reason,
+            Some(PumpStop::Deadline),
+            "post-exit drain must wait until deadline instead of exiting early on WouldBlock"
+        );
+        assert!(
+            observer.ended_after_deadline,
+            "post-exit drain must not finish before drain deadline"
+        );
+        let output = result.expect("preserve exited provider status and delayed chunk");
+        assert_eq!(output.status.code(), Some(37));
+        assert_eq!(
+            output.stdout,
+            b"provider-header\ninitial-chunk\ndelayed-chunk\n"
+        );
+        assert!(
+            lock_released,
+            "descendant still held flock after post-exit drain deadline"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_child_post_exit_drain_cancels_on_wouldblock_wait_and_kills_descendant() {
+        struct WouldBlockCancelObserver<'a> {
+            cancel: &'a AtomicBool,
+            lock_file: PathBuf,
+            raised_on_would_block: bool,
+            stop_reason: Option<PumpStop>,
+        }
+
+        impl DrainObserver for WouldBlockCancelObserver<'_> {
+            fn on_post_exit_would_block(&mut self, child: &Child, drain_deadline: Instant) {
+                if !self.raised_on_would_block {
+                    assert!(
+                        child_has_exited(child).unwrap_or(false),
+                        "direct provider must already have exited before WouldBlock cancel"
+                    );
+                    assert!(
+                        Instant::now() < drain_deadline,
+                        "50ms drain window must still be active when WouldBlock cancel is raised"
+                    );
+                    assert!(
+                        !is_lock_free(&self.lock_file),
+                        "descendant must still hold lock on WouldBlock"
+                    );
+                    self.cancel.store(true, Ordering::Release);
+                    self.raised_on_would_block = true;
+                }
+            }
+
+            fn after_post_exit_drain(
+                &mut self,
+                _child: &Child,
+                _drain_deadline: Instant,
+                _drain_result: &Result<(), CaptureError>,
+                stdout: &PipeReader,
+            ) {
+                self.stop_reason = stdout.last_stop;
+            }
+        }
+
+        let cancel = AtomicBool::new(false);
+        let (result, lock_released, observer) = run_capture_on_exited_locking_child_with(
+            "wouldblock-cancel",
+            "printf 'buffered-payload\\n'",
+            "printf ok > desc.ready; sleep 5",
+            "exit 0",
+            64 * 1024,
+            Some(&cancel),
+            |lock_file| WouldBlockCancelObserver {
+                cancel: &cancel,
+                lock_file: lock_file.to_path_buf(),
+                raised_on_would_block: false,
+                stop_reason: None,
+            },
+        );
+
+        assert!(observer.raised_on_would_block);
+        assert_eq!(observer.stop_reason, Some(PumpStop::Cancelled));
+        assert!(matches!(result, Err(CaptureError::Cancelled)));
+        assert!(
+            lock_released,
+            "descendant still held flock after WouldBlock drain cancellation"
+        );
     }
 }
