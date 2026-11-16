@@ -302,10 +302,12 @@ fn main() {
         }
         Some("status") if cfg!(feature = "rpc-v3-transport") => {
             println!("FASTLINK-RPC/1 status (rpc-v3-transport feature gate)");
-            println!("  Pool<AsyncClient> with round-robin batch_send");
+            println!("  Synchronous blocking loopback Pool/AsyncClient (legacy name) with serialized round-robin batch_send");
             println!("  Telemetry: bytes_sent and latency_samples tracked per client");
-            println!("  Adaptive batch sizing, pool shrink/expand, and connection warmup");
-            println!("  (run 'cargo bench --features rpc-v3-transport' for measured numbers)");
+            println!("  Not implemented: adaptive batch sizing, pool shrink/expand, connection warmup, async I/O, keep-alive");
+            println!(
+                "  (run 'cargo bench --bench rpc_latency' for loopback transport measurements)"
+            );
             Ok(())
         }
         _ => {

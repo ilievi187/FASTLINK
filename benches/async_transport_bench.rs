@@ -1,6 +1,7 @@
-//! Benchmark for FASTLINK-RPC/1 async transport improvement.
-//! Measures wire-byte overhead amortisation and connect cost savings
-//! of Pool<AsyncClient> with keep-alive vs per-tensor connects.
+//! Synthetic framing-overhead arithmetic projection for FASTLINK-RPC/1 batches.
+//! Computes in-memory wire-byte sizes with `frame_tensor` and arithmetic
+//! connect-count reduction only; does not open sockets, use `Pool` or
+//! `AsyncClient`, or measure async I/O, TCP keep-alive, latency, or throughput.
 //!
 //! Built with: cargo bench --features rpc-v3-transport
 
@@ -33,40 +34,34 @@ fn per_tensor_wire_sync(tensor: &[u8]) -> usize {
 
 fn main() {
     let tensor = patterned_tensor(TENSOR_BYTES);
-    println!("FASTLINK-RPC/1 async transport improvement benchmark");
+    println!("FASTLINK-RPC/1 synthetic batch-framing projection (unmeasured; no sockets opened)");
     println!(
         "tensor_bytes = {} B ({} chunks of {} B each)",
         TENSOR_BYTES, CHUNKS_PER_TENSOR, CHUNK_BYTES
     );
     println!();
 
-    println!("Batch size    async_wire    sync_wire    connect_savings    keepalive_%%");
-    println!("------------  ----------  ----------  ---------------  ----------");
+    println!("Batch size    batched_wire_B    per_tensor_wire_B    connect_count_reduction");
+    println!("------------  --------------    -----------------    -----------------------");
     for &n in BATCH_SIZES.iter() {
-        let aw = n * per_tensor_wire_sync(&tensor);
-        let sw = n * per_tensor_wire_sync(&tensor);
-        let connect_savings = if n > 1 {
+        let batched_wire = n * per_tensor_wire_sync(&tensor);
+        let single_wire = per_tensor_wire_sync(&tensor);
+        let connect_reduction_pct = if n > 1 {
             (n as f64 - 1.0) / (n as f64) * 100.0
         } else {
             0.0
         };
-        let keepalive_pct = if n >= 2 { 30.0 } else { 0.0 };
 
         println!(
-            "{:>11}              {:>10}              {:>10}       {:>15.1}%%       {:>7.1}%",
-            n, aw, sw, connect_savings, keepalive_pct,
+            "{:>11}   {:>14}    {:>17}    {:>22.1}%",
+            n, batched_wire, single_wire, connect_reduction_pct,
         );
     }
 
     println!();
-    println!("Design notes:");
-    println!("  * Pool<AsyncClient> round-robin across 4 persistent connections");
-    println!("  * Keep-alive config retains connections alive between batches");
-    println!("  * Single write_all instead of n write_all syscalls reduces syscall overhead");
-    println!("  * Concurrent chunk reads: async_recv reads multiple tensors without blocking");
-    println!();
-    println!("Expected improvement:");
-    println!("  * Connect overhead amortised across batches");
-    println!("  * Wire-byte overhead present but constant per tensor");
-    println!("  * Sustained workloads see consistent performance with keep-alive");
+    println!("Design notes (in-memory arithmetic only):");
+    println!("  * Pool is mutex-serialized around blocking AsyncClient TCP streams (legacy name)");
+    println!("  * Single write_all coalesces framed records for a batch, followed by one ACK byte");
+    println!("  * Each tensor still retains its 12-byte header and 5-byte per-chunk headers");
+    println!("  * Not measured: no TCP sockets opened, no async I/O, and no TCP keep-alive");
 }

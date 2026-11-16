@@ -10,7 +10,7 @@ pub mod transport;
 #[cfg(feature = "rpc-v3-transport")]
 mod transport_async;
 #[cfg(feature = "rpc-v3-transport")]
-pub use transport_async::{AsyncClient, KeepAliveConfig, Pool, ACK};
+pub use transport_async::{AsyncClient, Pool, ACK};
 
 pub const MAGIC: &[u8; 4] = b"FLNK";
 pub const VERSION: u16 = 1;

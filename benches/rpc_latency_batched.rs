@@ -1,10 +1,9 @@
-//! Batched loopback latency and throughput bench for FASTLINK-RPC/1.
-//! Uses the async `Pool<AsyncClient>` + `batch_send()` when built with
-//! `cargo bench --features rpc-v3-transport`.
-//! Without the feature it measures the same as rpc_latency.rs (sync per-tensor).
-
-//! THIS BENCH measures the wire-byte overhead and connection amortisation
-//! of sending N tensors individually vs batched over a single connection.
+//! Synthetic framing-overhead and handshake-count arithmetic for FASTLINK-RPC/1.
+//!
+//! Computes framed wire sizes using [`frame_tensor`] and theoretical TCP
+//! connect-count reduction for N tensors sharing one blocking connection. Does
+//! **not** open TCP sockets, invoke `AsyncClient`/`Pool`, perform async I/O,
+//! or measure loopback latency or throughput.
 
 use fastlink::rpc_client::frame_tensor;
 use fastlink::CHUNK_BYTES;
@@ -47,7 +46,7 @@ fn batched_wire(n: usize, tensor: &[u8]) -> usize {
 /// Report overhead and amortisation.
 fn main() {
     let tensor = patterned_tensor(TENSOR_BYTES);
-    println!("FASTLINK-RPC/1 batched design summary");
+    println!("FASTLINK-RPC/1 batched framing arithmetic summary (synthetic; unmeasured)");
     println!(
         "tensor_bytes = {} B ({} chunks of {} B each)",
         TENSOR_BYTES, CHUNKS_PER_TENSOR, CHUNK_BYTES
@@ -58,15 +57,16 @@ fn main() {
         per_tensor_wire(&tensor)
     );
     println!();
-    println!("Design notes:");
+    println!("Design arithmetic (no sockets opened, no timing measured):");
     println!("  * per_tensor_wire = 12 + sum_over_chunks(5 + encoded_len) bytes per tensor");
-    println!("  * batched_wire = n * per_tensor_wire  (same total bytes, but only one connect)");
-    println!("  * Pool<AsyncClient> round-robin across connections, eliminating the ~0.039 ms");
-    println!("    connect cost per tensor and enabling concurrent in-flight batches");
-    println!("  * Single write_all instead of n write_all syscalls reduces syscall overhead");
+    println!(
+        "  * batched_wire = n * per_tensor_wire  (same total bytes; one connect per reused conn)"
+    );
+    println!("  * Pool is synchronous and mutex-serialized over blocking AsyncClient TcpStreams");
+    println!("  * batch_send uses a single write_all plus one ACK byte (no async/concurrent I/O)");
     println!();
-    println!("Batch size    per_tensor_wire    batched_wire    connect_savings");
-    println!("------------  ---------------  -------------  -------------");
+    println!("Batch size    per_tensor_wire    batched_wire    connect_count_reduction");
+    println!("------------  ---------------  -------------  -----------------------");
     for &n in BATCH_SIZES.iter() {
         let pt = per_tensor_wire(&tensor);
         let bt = batched_wire(n, &tensor);
@@ -76,7 +76,7 @@ fn main() {
             0.0
         };
         println!(
-            "{:>11}              {:>15}              {:>15}       {:>7.1}%",
+            "{:>11}              {:>15}              {:>15}       {:>15.1}%",
             n, pt, bt, savings,
         );
     }
