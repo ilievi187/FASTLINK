@@ -267,3 +267,16 @@ fn session_intent_copy_is_explicitly_non_operational() {
         "the post-toggle badge must not imply operational opt-in: {badge}"
     );
 }
+
+#[test]
+fn session_marker_summary_is_visual_only_and_not_consent() {
+    let summary = fastlink_gui::view::session_marker_summary(2).to_ascii_lowercase();
+    assert!(
+        !summary.contains("opted"),
+        "footer must not imply consent or participation: {summary}"
+    );
+    assert!(
+        summary.contains("visual") && summary.contains("no operational effect"),
+        "footer must identify the marker as visual-only with no effect: {summary}"
+    );
+}

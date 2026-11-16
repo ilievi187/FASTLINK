@@ -256,8 +256,9 @@ the hostname, machine id or hash.
 - **Stale snapshots are labelled.** If a refresh fails, the last successful
   snapshot stays visible with a warning banner instead of being replaced by
   fabricated or cleared data.
-- **Session-only consent.** Opt-in is local-node-only UI state. It does not
-  pair, does not configure the CLI, is not persisted, and sends nothing.
+- **Session-only visual marker.** The marker is local-node-only UI state and is
+  not consent. It has no operational effect: it does not enable compute, pair
+  devices, open connections, configure the CLI, persist, or send data.
 - **Trust boundary.** The GUI runs the executable you configure. It does not
   restrict what that executable does; use a FASTLINK binary you trust. The GUI
   itself opens no sockets and performs no discovery.

@@ -582,9 +582,11 @@ fn node_card(
                 );
             } else {
                 ui.label(
-                    RichText::new("Opt-in is available only for the local node.")
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
+                    RichText::new(
+                        "The session visual marker is available only for the local node and has no operational effect.",
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
                 );
             }
         });
@@ -762,7 +764,7 @@ fn footer(ui: &mut Ui, state: &AppState) {
         );
         ui.label(RichText::new("·").small().weak());
         ui.label(
-            RichText::new(format!("Opted in this session: {}", state.opted_in_count()))
+            RichText::new(view::session_marker_summary(state.opted_in_count()))
                 .small()
                 .weak(),
         );

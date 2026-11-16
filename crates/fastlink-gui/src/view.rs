@@ -18,6 +18,12 @@ pub const OPT_IN_DETAIL: &str =
     "No operational effect: this does not enable compute, pair devices, open connections, or send data. It is discarded when the window closes.";
 pub const OPT_IN_BADGE: &str = "Visual intent only (no effect)";
 
+/// Footer summary for the session-only visual marker.
+#[must_use]
+pub fn session_marker_summary(count: usize) -> String {
+    format!("Session visual markers active: {count} (no consent; no operational effect)")
+}
+
 /// One label/value row rendered by the node, GPU and capability tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldRow {

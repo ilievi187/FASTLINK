@@ -11,6 +11,8 @@ use fastlink_gui::state::AppState;
 use fastlink_gui::ui;
 
 fn main() -> eframe::Result {
+    // These are user-facing display/CLI-path options, not an authorization or
+    // security identity. argv0 is explicitly skipped.
     let options = match Options::parse(std::env::args_os().skip(1)) {
         Ok(options) => options,
         Err(error) => {

@@ -15,13 +15,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(not(unix))]
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 #[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(not(unix))]
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(unix))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -55,10 +51,6 @@ pub const UI_DETAIL_LINES: usize = 12;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[cfg(unix)]
 const POST_EXIT_DRAIN: Duration = Duration::from_millis(50);
-#[cfg(not(unix))]
-const MAX_CAPTURE_CREATE_ATTEMPTS: usize = 16;
-#[cfg(not(unix))]
-static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Top-level inventory document.
 ///
@@ -644,6 +636,9 @@ impl<H: AsRawFd> PipeReader<H> {
         retained_limit: usize,
         cap: u64,
     ) -> std::io::Result<Self> {
+        // `fd` remains owned by `handle`. It is valid for every read below
+        // while `handle` is Some; EOF drops the handle and sets `eof`, so no
+        // later read can touch a closed descriptor.
         let fd = handle.as_raw_fd();
         set_nonblocking(fd)?;
         Ok(Self {
@@ -712,7 +707,8 @@ impl<H: AsRawFd> PipeReader<H> {
 
 #[cfg(unix)]
 fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
-    // SAFETY: `fd` is an open pipe descriptor owned by the caller.
+    // SAFETY: `fd` is an open pipe descriptor owned by the caller; fcntl does
+    // not take ownership, and the caller keeps it valid for the reader's life.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error());
@@ -869,55 +865,25 @@ fn overflow_pair<A: AsRawFd, B: AsRawFd>(
 #[cfg(not(unix))]
 #[derive(Debug)]
 struct CaptureFiles {
-    stdout_path: PathBuf,
-    stderr_path: PathBuf,
-    stdout: Option<File>,
-    stderr: Option<File>,
+    stdout: Option<tempfile::NamedTempFile>,
+    stderr: Option<tempfile::NamedTempFile>,
 }
 
 #[cfg(not(unix))]
 impl CaptureFiles {
     fn create() -> std::io::Result<Self> {
-        let mut last_error = None;
-        for _ in 0..MAX_CAPTURE_CREATE_ATTEMPTS {
-            let id = NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
-            let base = format!("fastlink-gui-inventory-{}-{nanos}-{id}", std::process::id());
-            let stdout_path = std::env::temp_dir().join(format!("{base}.stdout"));
-            let stderr_path = std::env::temp_dir().join(format!("{base}.stderr"));
-
-            let stdout = match open_capture_file(&stdout_path) {
-                Ok(file) => file,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    last_error = Some(err);
-                    continue;
-                }
-                Err(err) => return Err(err),
-            };
-            let stderr = match open_capture_file(&stderr_path) {
-                Ok(file) => file,
-                Err(err) => {
-                    drop(stdout);
-                    let _ = fs::remove_file(&stdout_path);
-                    if err.kind() == std::io::ErrorKind::AlreadyExists {
-                        last_error = Some(err);
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
-
-            return Ok(Self {
-                stdout_path,
-                stderr_path,
-                stdout: Some(stdout),
-                stderr: Some(stderr),
-            });
-        }
-        Err(last_error
-            .unwrap_or_else(|| std::io::Error::other("could not create a unique capture file")))
+        // NamedTempFile creates a unique private file with RAII deletion on
+        // both Unix and Windows. This path is only used on non-Unix targets.
+        let stdout = tempfile::Builder::new()
+            .prefix("fastlink-gui-inventory-")
+            .tempfile()?;
+        let stderr = tempfile::Builder::new()
+            .prefix("fastlink-gui-inventory-")
+            .tempfile()?;
+        Ok(Self {
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+        })
     }
 
     fn stdout_stdio(&self) -> std::io::Result<Stdio> {
@@ -931,12 +897,14 @@ impl CaptureFiles {
     fn stdout_file(&self) -> std::io::Result<&File> {
         self.stdout
             .as_ref()
+            .map(tempfile::NamedTempFile::as_file)
             .ok_or_else(|| std::io::Error::other("stdout capture is not open"))
     }
 
     fn stderr_file(&self) -> std::io::Result<&File> {
         self.stderr
             .as_ref()
+            .map(tempfile::NamedTempFile::as_file)
             .ok_or_else(|| std::io::Error::other("stderr capture is not open"))
     }
 
@@ -964,6 +932,7 @@ impl CaptureFiles {
         let file = self
             .stdout
             .as_mut()
+            .map(tempfile::NamedTempFile::as_file_mut)
             .ok_or_else(|| std::io::Error::other("stdout capture is not open"))?;
         read_capped(file, MAX_CAPTURE_BYTES)
     }
@@ -972,19 +941,10 @@ impl CaptureFiles {
         let file = self
             .stderr
             .as_mut()
+            .map(tempfile::NamedTempFile::as_file_mut)
             .ok_or_else(|| std::io::Error::other("stderr capture is not open"))?;
         let (bytes, total, _truncated) = read_capped(file, MAX_STDERR_DETAIL_BYTES as u64)?;
         Ok(StderrDetail { bytes, total })
-    }
-}
-
-#[cfg(not(unix))]
-impl Drop for CaptureFiles {
-    fn drop(&mut self) {
-        drop(self.stdout.take());
-        drop(self.stderr.take());
-        let _ = fs::remove_file(&self.stdout_path);
-        let _ = fs::remove_file(&self.stderr_path);
     }
 }
 
@@ -1041,13 +1001,6 @@ fn read_capped(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64, bo
     }
     let observed = total.max(bytes.len() as u64);
     Ok((bytes, observed, truncated))
-}
-
-#[cfg(not(unix))]
-fn open_capture_file(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    options.open(path)
 }
 
 /// Keep stderr useful but bounded: first lines, first characters, no control

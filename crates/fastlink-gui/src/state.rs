@@ -6,7 +6,7 @@
 //!
 //! The marker is intentionally session-only and has no operational effect:
 //! this milestone creates no pairing, listener, compute permission or
-//! persisted consent.
+//! persisted state.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};

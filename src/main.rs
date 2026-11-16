@@ -286,6 +286,8 @@ fn usage() {
 }
 
 fn main() {
+    // User-facing command dispatch only; these arguments are not an
+    // authenticated identity and grant no network or compute permission.
     let args: Vec<String> = std::env::args().collect();
     let outcome = match args.get(1).map(String::as_str) {
         Some("serve") if args.len() <= 4 => {

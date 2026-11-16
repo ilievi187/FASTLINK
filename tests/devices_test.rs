@@ -6,21 +6,39 @@ use fastlink::devices::{
 };
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::ops::Deref;
+use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+struct TempRoot(tempfile::TempDir);
 
-fn temp_root(label: &str) -> PathBuf {
-    let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "fastlink_devices_test_{label}_{}_{seq}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create temp root");
-    dir
+impl TempRoot {
+    fn new(label: &str) -> Self {
+        let prefix = format!("fastlink_devices_test_{label}_");
+        let dir = tempfile::Builder::new()
+            .prefix(&prefix)
+            .tempdir()
+            .expect("secure temp root");
+        Self(dir)
+    }
+}
+
+impl Deref for TempRoot {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.path()
+    }
+}
+
+impl AsRef<Path> for TempRoot {
+    fn as_ref(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+fn temp_root(label: &str) -> TempRoot {
+    TempRoot::new(label)
 }
 
 fn write_file(base: &std::path::Path, rel: &str, contents: &str) {
