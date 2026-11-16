@@ -130,3 +130,10 @@
 - Fresh CPU review of `2af90f7` found that a non-final CPU-stage error could detach downstream threads blocked in listener `accept()`. Strict TDD RED showed `NonFiniteActivation` with thread count rising 2→4. Commit `05d7fe8` relays a private nonempty error sentinel so all stages finish/join before the safe error is returned; the isolated regression passed 10/10.
 - Rebased CPU candidate `05d7fe8` passed commander-run workspace tests, fmt, Linux Clippy, Windows GNU check/Clippy, targeted Semgrep (0 findings), and feature CI `43871521672` on Ubuntu/Windows. Independent review of this final head remains pending, so it is not integrated.
 - Secure-worker residual risks remain tracked: unaudited `snow` 0.10, extra PairingRegistry secret copy, incomplete secure pairing UX/network exchange, 0600 file storage rather than OS keyring, and Noise internal zeroization. No production-security claim; no GPU/model/network work; `main` untouched.
+
+## 2026-11-16 — CPU MLP correctness foundation integrated
+
+- Fast-forwarded `feat/cpu-stage-inference-proof` at `69cdcf7` into `integrate/fastlink-team`. Independent final review found no findings; feature CI `43872823024` and exact integration CI `43873323917` passed on Ubuntu/Windows. `main` remains untouched.
+- The CPU-only authenticated loopback MLP matches its monolithic reference and fixed expected values. Strict TDD caught both NaN masking through ReLU and a non-final-stage error path that leaked blocked downstream threads; the final error sentinel is relayed until every stage joins, then the stored error is returned. The focused thread-leak test passed 10/10 and full local gates passed at the rebased head.
+- Residual: this does not implement an LLM loader/tokenizer or prove multi-machine inference or throughput. Generic runtime failures before its join loop are not covered by this CPU-specific fix. No model/GPU/server/network activity was started.
+- Secure worker remains experimental: `snow` audit, extra PairingRegistry secret copy, secure pairing UX/network exchange, OS-keyring storage and explicit Noise internal zeroization remain unresolved.
