@@ -146,3 +146,9 @@ end-to-end RPC transfer or a GPU performance claim.
 - Integration coverage in `tests/cache_quota_test.rs` (7 tests) covers pre-write oversize rejection, shrunk-quota eviction (single oversize and multi-chunk caches), oldest-first eviction with newest retention when it fits, no-quota no-op, duplicate storage, and zero-length chunks.
 
 **Residual limits:** Single-instance sequential chunk-file byte bound only — not a process-wide or concurrent quota lock. `store()` renames the new chunk before evicting older ones, so an eviction error can leave a failed store above quota; transient `.partial` staging files can coexist during atomic writes. `evict_to_quota()` ignores stale non-digest/leftover `.partial` files (`purge_invalid()` removes those, while `total_bytes()` counts all files under shard directories). The opt-in quota is not wired into the file-sync CLI/server. Measurements/tests are CPU-only local checks, not disk-block or throughput claims.
+
+## 2026-11-17 — Bad-digest sync regression and benchmark-free automatic CI
+
+- Added a loopback integration regression for a client advertising digest(A) but sending same-length bytes B; the server must reject the chunk, preserve an existing output, and avoid caching B under A's digest.
+- Automatic push/PR CI now runs unit, integration, example, and doctest targets without executing benchmark binaries. The RPC benchmark smoke step is available only by manual `workflow_dispatch` on Linux; normal CI may compile benchmarks but does not run them.
+- This is correctness-test coverage and CI policy hardening, not a claim that the broader M1 transport security/storage work is complete.

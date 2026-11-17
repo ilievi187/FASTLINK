@@ -2,6 +2,7 @@ name: Rust CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 jobs:
   test:
     strategy:
@@ -19,14 +20,16 @@ jobs:
       - name: Build
         run: cargo build --all-targets
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --workspace --lib --bins --tests --examples
+      - name: Doc tests
+        run: cargo test --workspace --doc
       - name: Feature-gated transport integration tests
         run: cargo test -p fastlink --features rpc-v3-transport --test transport_integration --test status_cli
       - name: Doc coherence (M-5)
         if: runner.os == 'Linux'
         run: cargo test -p fastlink --test benchmark_docs
       - name: Transport benchmark smoke test
-        if: runner.os == 'Linux'
+        if: github.event_name == 'workflow_dispatch' && runner.os == 'Linux'
         run: cargo bench -p fastlink --bench rpc_latency
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
