@@ -427,6 +427,85 @@ mod tests {
     }
 
     #[test]
+    fn bad_digest_chunk_is_rejected_without_caching_or_replacing_output() {
+        let root = tempfile::tempdir().expect("temp root");
+        let outputs = root.path().join("outputs");
+        fs::create_dir_all(&outputs).expect("outputs dir");
+
+        let sentinel = b"pre-existing completed output";
+        let output = outputs.join("victim");
+        fs::write(&output, sentinel).expect("pre-existing output");
+
+        let expected = b"expected bytes A";
+        let advertised_hash = digest(expected);
+        let mut corrupt = expected.to_vec();
+        corrupt[0] ^= 0xFF;
+        assert_ne!(digest(&corrupt), advertised_hash);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let server_root = root.path().to_path_buf();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept client");
+            process_session(stream, &server_root)
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("client read timeout");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("client write timeout");
+
+        let client_result = (|| -> io::Result<()> {
+            client_handshake(&mut client)?;
+            write_u8(&mut client, CMD_SYNC)?;
+            write_u16(&mut client, "victim".len() as u16)?;
+            client.write_all(b"victim")?;
+            write_u64(&mut client, expected.len() as u64)?;
+            write_u32(&mut client, CHUNK_BYTES as u32)?;
+            write_u32(&mut client, 1)?;
+            client.write_all(&advertised_hash)?;
+
+            let missing_len = read_u32(&mut client)?;
+            if missing_len != 1 {
+                return Err(invalid("expected one missing chunk"));
+            }
+            let missing_index = read_u32(&mut client)?;
+            if missing_index != 0 {
+                return Err(invalid("expected missing chunk index zero"));
+            }
+
+            write_u32(&mut client, 0)?;
+            write_u8(&mut client, fastlink::RAW)?;
+            write_u32(&mut client, corrupt.len() as u32)?;
+            client.write_all(&corrupt)?;
+            client.flush()?;
+            Ok(())
+        })();
+        drop(client);
+        let server_result = server.join().expect("server thread");
+        client_result.expect("malicious client protocol");
+
+        let error = server_result.expect_err("bad digest must fail the session");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read(&output).expect("pre-existing output"),
+            sentinel,
+            "a rejected chunk must not replace the completed output"
+        );
+        assert!(
+            !digest_path(root.path(), &advertised_hash).exists(),
+            "a rejected chunk must not be stored under its advertised digest"
+        );
+        assert!(
+            error.to_string().contains("chunk hash mismatch"),
+            "unexpected server error: {error}"
+        );
+    }
+
+    #[test]
     fn staging_skips_ascii_case_folded_final_output_alias() {
         let root = tempfile::tempdir().expect("temp root");
         let outputs = root.path().join("outputs");
