@@ -7,7 +7,7 @@ use fastlink::{
     VERSION,
 };
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -41,6 +41,37 @@ fn store_chunk(root: &Path, hash: &Digest, bytes: &[u8]) -> io::Result<()> {
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+fn create_staging_file(output_dir: &Path, output: &Path) -> io::Result<(PathBuf, File)> {
+    for attempt in 0..1024u32 {
+        let candidate = output_dir.join(format!(
+            ".fastlink-partial-{}-{}",
+            std::process::id(),
+            attempt
+        ));
+        if candidate == output {
+            continue;
+        }
+        if let (Some(candidate_name), Some(output_name)) = (
+            candidate.file_name().and_then(|name| name.to_str()),
+            output.file_name().and_then(|name| name.to_str()),
+        ) {
+            if candidate_name.eq_ignore_ascii_case(output_name) {
+                continue;
+            }
+        }
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(invalid("could not create a unique output staging file"))
 }
 
 fn safe_basename(name: &str) -> io::Result<&str> {
@@ -230,23 +261,45 @@ fn process_session(mut stream: TcpStream, root: &Path) -> io::Result<()> {
     let output_dir = root.join("outputs");
     fs::create_dir_all(&output_dir)?;
     let output = output_dir.join(&name);
-    let partial = output.with_extension("fastlink-partial");
-    let result = (|| -> io::Result<()> {
-        let mut destination = File::create(&partial)?;
-        for (idx, hash) in hashes.iter().enumerate() {
-            let bytes = fs::read(digest_path(root, hash))?;
-            if bytes.len() != expected_chunk_len(size, idx as u32)? || digest(&bytes) != *hash {
-                return Err(invalid("cache integrity failure"));
+    let (partial, mut destination) = create_staging_file(&output_dir, &output)?;
+    let mut result: io::Result<()> = Ok(());
+    for (idx, hash) in hashes.iter().enumerate() {
+        let bytes = match fs::read(digest_path(root, hash)) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                result = Err(err);
+                break;
             }
-            destination.write_all(&bytes)?;
+        };
+        let expected = match expected_chunk_len(size, idx as u32) {
+            Ok(expected) => expected,
+            Err(err) => {
+                result = Err(err);
+                break;
+            }
+        };
+        if bytes.len() != expected || digest(&bytes) != *hash {
+            result = Err(invalid("cache integrity failure"));
+            break;
         }
-        destination.sync_all()?;
-        drop(destination);
-        fs::rename(&partial, &output)?;
-        Ok(())
-    })();
+        if let Err(err) = destination.write_all(&bytes) {
+            result = Err(err);
+            break;
+        }
+    }
+    if result.is_ok() {
+        if let Err(err) = destination.sync_all() {
+            result = Err(err);
+        }
+    }
+    drop(destination);
+    if result.is_ok() {
+        if let Err(err) = fs::rename(&partial, &output) {
+            result = Err(err);
+        }
+    }
     if result.is_err() {
-        let _ = fs::remove_file(partial);
+        let _ = fs::remove_file(&partial);
     }
     result?;
     write_u8(&mut stream, 0)?;
@@ -360,5 +413,77 @@ fn main() {
     if let Err(err) = outcome {
         eprintln!("FASTLINK error: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    fn sync_does_not_clobber_existing_partial_named_output() {
+        let root = tempfile::tempdir().expect("temp root");
+        let source_dir = root.path().join("source");
+        let outputs = root.path().join("outputs");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(&outputs).expect("outputs dir");
+
+        let sentinel = b"pre-existing completed output";
+        let sentinel_path = outputs.join("victim.fastlink-partial");
+        fs::write(&sentinel_path, sentinel).expect("sentinel");
+
+        let payload = b"new completed output payload";
+        let source = source_dir.join("victim");
+        fs::write(&source, payload).expect("source file");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let server_root = root.path().to_path_buf();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept client");
+            process_session(stream, &server_root)
+        });
+
+        send_file(&source, &address.to_string()).expect("sync source");
+        server.join().expect("server thread").expect("session");
+
+        assert_eq!(
+            fs::read(outputs.join("victim")).expect("final output"),
+            payload,
+            "the completed output must match the source"
+        );
+        assert_eq!(
+            fs::read(&sentinel_path).expect("pre-existing output"),
+            sentinel,
+            "a valid output named like the old staging suffix must not be clobbered"
+        );
+    }
+
+    #[test]
+    fn staging_skips_ascii_case_folded_final_output_alias() {
+        let root = tempfile::tempdir().expect("temp root");
+        let outputs = root.path().join("outputs");
+        fs::create_dir_all(&outputs).expect("outputs dir");
+
+        let final_name = format!(".FASTLINK-PARTIAL-{}-0", std::process::id());
+        let output = outputs.join(&final_name);
+        let (staging, handle) = create_staging_file(&outputs, &output).expect("staging file");
+        let staging_name = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("ASCII staging name");
+
+        assert!(
+            !staging_name.eq_ignore_ascii_case(&final_name),
+            "staging basename {staging_name:?} must not alias final basename {final_name:?}"
+        );
+        assert!(
+            !output.exists(),
+            "the final output path must not exist while its staging handle is open"
+        );
+
+        drop(handle);
+        fs::remove_file(&staging).expect("remove staging file");
     }
 }
