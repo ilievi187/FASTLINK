@@ -282,7 +282,12 @@ fn serve(address: &str, root: &Path) -> io::Result<()> {
 }
 
 fn usage() {
-    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\nNo remote GPU scheduling yet.");
+    let status_usage = if cfg!(feature = "rpc-v3-transport") {
+        "  fastlink status (rpc-v3-transport)\n"
+    } else {
+        ""
+    };
+    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\n{status_usage}No remote GPU scheduling yet.");
 }
 
 fn main() {
@@ -301,6 +306,16 @@ fn main() {
         Some("send") if (3..=4).contains(&args.len()) => {
             let server = args.get(3).map(String::as_str).unwrap_or("127.0.0.1:18777");
             send_file(Path::new(&args[2]), server)
+        }
+        Some("status") if cfg!(feature = "rpc-v3-transport") && args.len() == 2 => {
+            println!("FASTLINK-RPC/1 status (rpc-v3-transport feature gate)");
+            println!("  Synchronous blocking loopback Pool/AsyncClient (legacy name) with serialized round-robin batch_send");
+            println!("  Telemetry: bytes_sent and latency_samples tracked per client");
+            println!("  Not implemented: adaptive batch sizing, pool shrink/expand, connection warmup, async I/O, keep-alive");
+            println!(
+                "  (run 'cargo bench --bench rpc_latency' for loopback transport measurements)"
+            );
+            Ok(())
         }
         Some("devices") => devices::run_devices(&args[2..]).map(|output| print!("{output}")),
         _ => {

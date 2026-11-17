@@ -1,0 +1,214 @@
+{
+  "timestamp": "2026-11-10 22:51:54",
+  "hardware": {
+    "gpu0_nightknightpc": {
+      "adapter": "AMD Radeon RX 7900 XT (Navi 31)",
+      "total_vram_mb": 20464.0,
+      "used_vram_mb": 19510.79,
+      "used_vram_pct": 95.34,
+      "free_vram_mb": 953.21,
+      "process_dedicated_mb": 18800.0
+    },
+    "gpu1_detti": {
+      "adapter": "AMD Radeon RX 6600 XT (Navi 23)",
+      "total_vram_mb": 8192.0,
+      "used_vram_mb": 6779.3,
+      "used_vram_pct": 82.76,
+      "free_vram_mb": 1412.7,
+      "process_dedicated_mb": 6015.32,
+      "process_shared_mb": 99.0,
+      "compute_util_pct": 0.0
+    }
+  },
+  "single_gpu_7900_xt": {
+    "results": [
+      {
+        "prompt_tokens": 15,
+        "output_tokens": 32,
+        "prompt_tps": 132.71,
+        "decode_tps": 86.29,
+        "ttft_s": 0.113,
+        "total_wall_s": 0.5147,
+        "content_head": "<think>\nThe user is asking me to explain the concept of content-addressed chunki",
+        "scenario": "short_32",
+        "desc": "Short prompt (smoke test)"
+      },
+      {
+        "prompt_tokens": 45,
+        "output_tokens": 64,
+        "prompt_tps": 284.86,
+        "decode_tps": 84.58,
+        "ttft_s": 0.158,
+        "total_wall_s": 0.9228,
+        "content_head": "<think>\nThe user is asking about FASTLINK, a \"high-performance content-addressab",
+        "scenario": "medium_64",
+        "desc": "Medium prompt (systems architecture)"
+      },
+      {
+        "prompt_tokens": 51,
+        "output_tokens": 128,
+        "prompt_tps": 299.2,
+        "decode_tps": 84.8,
+        "ttft_s": 0.1705,
+        "total_wall_s": 1.6887,
+        "content_head": "<think>\nThe user is asking me to review a Rust network transport implementation ",
+        "scenario": "standard_128",
+        "desc": "Standard prompt (code review & concurrency)"
+      },
+      {
+        "prompt_tokens": 38,
+        "output_tokens": 128,
+        "prompt_tps": 235.65,
+        "decode_tps": 84.9,
+        "ttft_s": 0.1613,
+        "total_wall_s": 1.6778,
+        "content_head": "<think>\nThe user wants a complete, valid GLSL fragment shader for a low-poly ter",
+        "scenario": "code_task_128",
+        "desc": "Code task prompt (3D low-poly shader generator)"
+      }
+    ],
+    "latency_percentiles": {
+      "min": 0.5147,
+      "p50": 1.6778,
+      "p95": 1.6887,
+      "p99": 1.6887,
+      "mean": 1.201
+    }
+  },
+  "single_gpu_6600_xt": {
+    "results": [
+      {
+        "prompt_tokens": 15,
+        "output_tokens": 32,
+        "prompt_tps": 47.14,
+        "decode_tps": 26.68,
+        "ttft_s": 0.3182,
+        "total_wall_s": 1.5091,
+        "content_head": "<think>\nThe user is asking me to explain the concept of content-addressed chunki",
+        "scenario": "short_32",
+        "desc": "Short prompt (smoke test)"
+      },
+      {
+        "prompt_tokens": 45,
+        "output_tokens": 64,
+        "prompt_tps": 31.48,
+        "decode_tps": 28.2,
+        "ttft_s": 1.4297,
+        "total_wall_s": 3.7323,
+        "content_head": "<think>\nThe user is asking about FASTLINK, a \"high-performance content-addressab",
+        "scenario": "medium_64",
+        "desc": "Medium prompt (systems architecture)"
+      },
+      {
+        "prompt_tokens": 51,
+        "output_tokens": 128,
+        "prompt_tps": 41.29,
+        "decode_tps": 29.98,
+        "ttft_s": 1.2352,
+        "total_wall_s": 5.5416,
+        "content_head": "<think>\nThe user is asking me to review a Rust network transport implementation ",
+        "scenario": "standard_128",
+        "desc": "Standard prompt (code review & concurrency)"
+      },
+      {
+        "prompt_tokens": 38,
+        "output_tokens": 128,
+        "prompt_tps": 33.82,
+        "decode_tps": 29.64,
+        "ttft_s": 1.1235,
+        "total_wall_s": 5.4779,
+        "content_head": "<think>\nThe user wants a complete, valid GLSL fragment shader for a low-poly ter",
+        "scenario": "code_task_128",
+        "desc": "Code task prompt (3D low-poly shader generator)"
+      }
+    ],
+    "latency_percentiles": {
+      "min": 1.5091,
+      "p50": 5.4779,
+      "p95": 5.5416,
+      "p99": 5.5416,
+      "mean": 4.0652
+    }
+  },
+  "distributed_dual_gpu": {
+    "results": [
+      {
+        "scenario": "short_32",
+        "desc": "Short prompt (smoke test)",
+        "gpu0_7900_decode_tps": 85.83,
+        "gpu1_6600_decode_tps": 31.58,
+        "aggregate_decode_tps": 117.41,
+        "gpu0_ttft_s": 0.0999,
+        "gpu1_ttft_s": 0.2118,
+        "effective_wall_s": 1.27
+      },
+      {
+        "scenario": "medium_64",
+        "desc": "Medium prompt (systems architecture)",
+        "gpu0_7900_decode_tps": 87.05,
+        "gpu1_6600_decode_tps": 31.62,
+        "aggregate_decode_tps": 118.67,
+        "gpu0_ttft_s": 0.135,
+        "gpu1_ttft_s": 1.0597,
+        "effective_wall_s": 3.1292
+      },
+      {
+        "scenario": "standard_128",
+        "desc": "Standard prompt (code review & concurrency)",
+        "gpu0_7900_decode_tps": 87.64,
+        "gpu1_6600_decode_tps": 31.3,
+        "aggregate_decode_tps": 118.94,
+        "gpu0_ttft_s": 0.141,
+        "gpu1_ttft_s": 1.1078,
+        "effective_wall_s": 5.2425
+      },
+      {
+        "scenario": "code_task_128",
+        "desc": "Code task prompt (3D low-poly shader generator)",
+        "gpu0_7900_decode_tps": 86.97,
+        "gpu1_6600_decode_tps": 31.02,
+        "aggregate_decode_tps": 117.99,
+        "gpu0_ttft_s": 0.126,
+        "gpu1_ttft_s": 0.9991,
+        "effective_wall_s": 5.1621
+      }
+    ],
+    "latency_percentiles": {
+      "min": 0.4858,
+      "p50": 1.6164,
+      "p95": 5.2425,
+      "p99": 5.2425,
+      "mean": 2.4245
+    }
+  },
+  "tensor_transfer_mmap_vs_raw": {
+    "mmap_shm": {
+      "p50_ms": 0.001,
+      "p95_ms": 0.001,
+      "p99_ms": 0.001,
+      "min_ms": 0.001,
+      "mean_ms": 0.001,
+      "patterned_tp_mbs": 26166.1,
+      "uniform_tp_mbs": 26849.9
+    },
+    "raw_tcp": {
+      "p50_ms": 0.021,
+      "p95_ms": 0.029,
+      "p99_ms": 0.043,
+      "min_ms": 0.017,
+      "mean_ms": 0.023,
+      "patterned_tp_mbs": 7779.5,
+      "uniform_tp_mbs": 7398.2
+    },
+    "fastlink_rpc": {
+      "p50_ms": 0.113,
+      "p95_ms": 0.196,
+      "p99_ms": 0.215,
+      "min_ms": 0.091,
+      "mean_ms": 0.124,
+      "patterned_raw_mbs": 574.1,
+      "uniform_raw_mbs": 1930.9,
+      "uniform_wire_bytes": 66700
+    }
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "timestamp": "2026-11-10T22:22:17+0200",
+  "hardware": {
+    "node": "detti",
+    "gpu": "AMD Radeon RX 6600 XT 8GB (Navi 23)",
+    "vram_total_mb": 8192.0,
+    "cpu": "AMD Ryzen 7 5800X3D (8C/16T)",
+    "ram_gb": 32,
+    "os": "Microsoft Windows 11 Version 10.0.26200.9711",
+    "driver": "32.0.21043.19003"
+  },
+  "server": {
+    "binary": "llama-b12191/llama-server.exe",
+    "backend": "Vulkan0",
+    "model": "Ornith-1.5-35B-A3B-Heretic-MTP-APEX-I-Mini.gguf (Q3_K_M)",
+    "context_size": 65536,
+    "kv_cache": "q4_0",
+    "flash_attention": true,
+    "moe_cache_gpu_mb": 4096,
+    "moe_cache_cpu_share": 0.95,
+    "threads": 6,
+    "batch": 1024,
+    "ubatch": 512
+  },
+  "vram_utilization": {
+    "adapter_dedicated_mb": 6782.07,
+    "adapter_dedicated_pct": 82.79,
+    "process_dedicated_mb": 6018.09,
+    "process_dedicated_pct": 73.46,
+    "process_shared_mb": 104.64,
+    "compute_util_pct": 60.05
+  },
+  "inference_benchmarks": [
+    {
+      "prompt_tokens": 15,
+      "output_tokens": 32,
+      "prompt_tps": 60.09,
+      "decode_tps": 29.23,
+      "ttft_s": 0.2496,
+      "total_wall_s": 7.5119,
+      "content_head": "<think>\nThe user is asking me to explain the concept of content-addressed chunki",
+      "scenario": "short_32",
+      "desc": "Short prompt (smoke test)",
+      "peak_compute_util_pct": 89.79,
+      "vram_dedicated_mb": 6782.07,
+      "vram_process_mb": 6018.09
+    },
+    {
+      "prompt_tokens": 45,
+      "output_tokens": 64,
+      "prompt_tps": 39.97,
+      "decode_tps": 30.35,
+      "ttft_s": 1.1257,
+      "total_wall_s": 15.879,
+      "content_head": "<think>\nThe user is asking about \"FASTLINK, a high-performance content-addressab",
+      "scenario": "medium_64",
+      "desc": "Medium prompt (systems architecture)",
+      "peak_compute_util_pct": 96.83,
+      "vram_dedicated_mb": 6782.07,
+      "vram_process_mb": 6018.09
+    },
+    {
+      "prompt_tokens": 51,
+      "output_tokens": 128,
+      "prompt_tps": 45.3,
+      "decode_tps": 31.03,
+      "ttft_s": 1.1257,
+      "total_wall_s": 5.2479,
+      "content_head": "<think>\nThe user is asking me to review a Rust network transport implementation ",
+      "scenario": "standard_128",
+      "desc": "Standard prompt (code review & concurrency)",
+      "peak_compute_util_pct": 0.0,
+      "vram_dedicated_mb": 6782.07,
+      "vram_process_mb": 6018.09
+    },
+    {
+      "prompt_tokens": 38,
+      "output_tokens": 128,
+      "prompt_tps": 37.48,
+      "decode_tps": 31.44,
+      "ttft_s": 1.0139,
+      "total_wall_s": 5.0808,
+      "content_head": "<think>\nThe user wants a complete, valid GLSL fragment shader for a low-poly ter",
+      "scenario": "code_task_128",
+      "desc": "Code task prompt (3D low-poly shader generator)",
+      "peak_compute_util_pct": 0.0,
+      "vram_dedicated_mb": 6782.07,
+      "vram_process_mb": 6018.09
+    }
+  ],
+  "transport_benchmarks": {
+    "raw_single_chunk_min_ms": 0.018,
+    "raw_single_chunk_median_ms": 0.021,
+    "raw_single_chunk_mean_ms": 0.022,
+    "fastlink_single_chunk_min_ms": 0.093,
+    "fastlink_single_chunk_median_ms": 0.096,
+    "fastlink_single_chunk_mean_ms": 0.098,
+    "raw_patterned_throughput_mbs": 8122.5,
+    "raw_patterned_elapsed_ms": 33.05,
+    "fastlink_patterned_raw_mbs": 605.6,
+    "fastlink_patterned_wire_mbs": 605.6,
+    "fastlink_patterned_elapsed_ms": 443.29,
+    "fastlink_patterned_wire_bytes": 8389260,
+    "raw_uniform_throughput_mbs": 7815.5,
+    "raw_uniform_elapsed_ms": 34.35,
+    "fastlink_uniform_raw_mbs": 1892.2,
+    "fastlink_uniform_wire_mbs": 15.0,
+    "fastlink_uniform_elapsed_ms": 141.87,
+    "fastlink_uniform_wire_bytes": 66700,
+    "raw_bytes": 8388608
+  }
+}
