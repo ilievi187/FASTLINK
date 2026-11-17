@@ -91,6 +91,53 @@ fn benchmark_checklist_matches_harness_and_transport_integrity_contract() {
 }
 
 #[test]
+fn ci_automatic_tests_do_not_execute_benchmarks() {
+    let workflow = include_str!("../.github/workflows/ci.yml").replace("\r\n", "\n");
+
+    assert!(
+        workflow.contains("  workflow_dispatch:"),
+        "CI must expose manual workflow_dispatch"
+    );
+    assert!(
+        workflow.contains("cargo test --workspace --lib --bins --tests"),
+        "CI automatic tests must target lib, bins, and tests only"
+    );
+    assert!(
+        !workflow.contains("cargo test --all-targets"),
+        "CI must not execute benchmarks through cargo test --all-targets"
+    );
+
+    let test_step = workflow
+        .split("- name: Test")
+        .nth(1)
+        .expect("Test step")
+        .split("- name:")
+        .next()
+        .expect("Test step body");
+    assert!(
+        test_step.contains("run: cargo test --workspace --lib --bins --tests"),
+        "automatic Test step must not run benchmarks"
+    );
+
+    let benchmark_step = workflow
+        .split("- name: Transport benchmark smoke test")
+        .nth(1)
+        .expect("Transport benchmark smoke test step")
+        .split("- name:")
+        .next()
+        .expect("Transport benchmark smoke test body");
+    assert!(
+        benchmark_step.lines().any(|line| line.trim()
+            == "if: github.event_name == 'workflow_dispatch' && runner.os == 'Linux'"),
+        "benchmark smoke test must be workflow_dispatch-only on Linux"
+    );
+    assert!(
+        benchmark_step.contains("run: cargo bench -p fastlink --bench rpc_latency"),
+        "manual benchmark step must still invoke the benchmark"
+    );
+}
+
+#[test]
 fn results_do_not_mislabel_cpu_shared_memory_copy_as_gpu_zero_copy() {
     let results = include_str!("../RESULTS.md");
     assert!(results.contains("CPU-only shared-memory copy"));
