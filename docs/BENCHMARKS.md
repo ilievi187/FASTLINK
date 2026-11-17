@@ -65,12 +65,13 @@ data, matching the earlier measurement. The framed RLE case is deliberately slow
 in wall-clock because decode + hashing work dominates while almost no network
 data is moved. Raw TCP streaming was ~14.4× faster in patterned throughput in
 that particular run; it skips framing, content addressing and decode. Pooling
-amortizes connection setup, not per-tensor headers; the separate batched bench
-is still WIP.
+amortizes connection setup, not per-tensor headers. The batched bench currently
+prints design arithmetic only; it opens no sockets and records no timing.
 
 **Limitations:** loopback only; unauthenticated, unencrypted; single connection;
-one machine, so not a performance guarantee. The batched `Pool` measurement is
-in progress (see PROGRESS.md).
+one machine, so not a performance guarantee. No measured batched `Pool`
+latency/throughput numbers exist; the current batched bench is design arithmetic
+only and opens no sockets.
 
 ## 2026-11-10 23:27 +02:00 — Canonical loopback snapshot
 

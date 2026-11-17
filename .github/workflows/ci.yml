@@ -21,12 +21,19 @@ jobs:
       - name: Test
         run: cargo test --all-targets
       - name: Feature-gated transport integration tests
-        run: cargo test --features rpc-v3-transport --test transport_integration
+        run: cargo test -p fastlink --features rpc-v3-transport --test transport_integration --test status_cli
       - name: Doc coherence (M-5)
         if: runner.os == 'Linux'
-        run: cargo test --all-targets
+        run: cargo test -p fastlink --test benchmark_docs
       - name: Transport benchmark smoke test
         if: runner.os == 'Linux'
-        run: cargo bench --bench rpc_latency
+        run: cargo bench -p fastlink --bench rpc_latency
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Feature-gated transport Clippy
+        run: cargo clippy -p fastlink --features rpc-v3-transport --all-targets -- -D warnings
+      - name: Live GUI-to-CLI inventory contract
+        if: runner.os == 'Linux'
+        env:
+          FASTLINK_BIN: ${{ github.workspace }}/target/debug/fastlink
+        run: cargo test -p fastlink-gui --test command_runner actual_fastlink_binary_from_environment_satisfies_parser

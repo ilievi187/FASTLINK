@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "profile_id": "synthetic-n7",
+  "topology": {
+    "node_count": 7
+  },
+  "provenance": {
+    "status": "synthetic",
+    "source": "deterministic_fixture",
+    "hardware_measurement": false
+  },
+  "nodes": [
+    {
+      "id": "node-1",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-2",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-3",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-4",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-5",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-6",
+      "opt_in": true,
+      "role": "computer",
+      "memory_gib": 128,
+      "telemetry": "unknown",
+      "decode_eligible": true
+    },
+    {
+      "id": "node-7",
+      "opt_in": true,
+      "role": "phone",
+      "memory_gib": 8,
+      "telemetry": "unknown",
+      "decode_eligible": false,
+      "exclusion_reason": "slow_wifi"
+    }
+  ],
+  "links": [
+    {
+      "source": "node-1",
+      "target": "node-2",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-1",
+      "target": "node-3",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-1",
+      "target": "node-4",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-1",
+      "target": "node-5",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-1",
+      "target": "node-6",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-1",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-2",
+      "target": "node-3",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-2",
+      "target": "node-4",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-2",
+      "target": "node-5",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-2",
+      "target": "node-6",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-2",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-3",
+      "target": "node-4",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-3",
+      "target": "node-5",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-3",
+      "target": "node-6",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-3",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-4",
+      "target": "node-5",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-4",
+      "target": "node-6",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-4",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-5",
+      "target": "node-6",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-5",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    },
+    {
+      "source": "node-6",
+      "target": "node-7",
+      "status": "unknown",
+      "evidence": "unknown"
+    }
+  ],
+  "objective": "minimize_latency",
+  "scenario": {
+    "evidence": "simulated",
+    "unknown_telemetry_fallback": "local_only",
+    "model_memory": {
+      "model": "70B-class",
+      "parameter_count": 70000000000,
+      "bytes_per_parameter": 2,
+      "total_bytes": 140000000000,
+      "decimal_gb": 140,
+      "binary_gib": 130.385160446167,
+      "basis": "arithmetic_only",
+      "fit_claim": false
+    }
+  }
+}

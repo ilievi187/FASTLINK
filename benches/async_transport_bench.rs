@@ -3,7 +3,7 @@
 //! connect-count reduction only; does not open sockets, use `Pool` or
 //! `AsyncClient`, or measure async I/O, TCP keep-alive, latency, or throughput.
 //!
-//! Built with: cargo bench --features rpc-v3-transport
+//! Built with: cargo bench --features rpc-v3-transport --bench async_transport_bench
 
 use fastlink::rpc_client::frame_tensor;
 use fastlink::CHUNK_BYTES;

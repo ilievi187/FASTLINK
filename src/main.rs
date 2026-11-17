@@ -1,9 +1,9 @@
 //! FASTLINK CPU-only proof of concept: content-addressed, lossless delta sync.
 //! This does NOT yet accelerate llama.cpp RPC or GPU execution.
 use fastlink::{
-    chunk_count, decode_chunk, digest, encode_chunk, expected_chunk_len, hex, read_u16, read_u32,
-    read_u64, read_u8, write_u16, write_u32, write_u64, write_u8, Digest, CHUNK_BYTES, MAGIC,
-    MAX_CHUNKS, MAX_ENCODED_BYTES, VERSION,
+    chunk_count, decode_chunk, devices, digest, encode_chunk, expected_chunk_len, hex, read_u16,
+    read_u32, read_u64, read_u8, write_u16, write_u32, write_u64, write_u8, Digest, CHUNK_BYTES,
+    MAGIC, MAX_CHUNKS, MAX_ENCODED_BYTES, VERSION,
 };
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -282,10 +282,17 @@ fn serve(address: &str, root: &Path) -> io::Result<()> {
 }
 
 fn usage() {
-    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\nNo remote GPU scheduling yet.");
+    let status_usage = if cfg!(feature = "rpc-v3-transport") {
+        "  fastlink status (rpc-v3-transport)\n"
+    } else {
+        ""
+    };
+    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\n{status_usage}No remote GPU scheduling yet.");
 }
 
 fn main() {
+    // User-facing command dispatch only; these arguments are not an
+    // authenticated identity and grant no network or compute permission.
     let args: Vec<String> = std::env::args().collect();
     let outcome = match args.get(1).map(String::as_str) {
         Some("serve") if args.len() <= 4 => {
@@ -300,7 +307,7 @@ fn main() {
             let server = args.get(3).map(String::as_str).unwrap_or("127.0.0.1:18777");
             send_file(Path::new(&args[2]), server)
         }
-        Some("status") if cfg!(feature = "rpc-v3-transport") => {
+        Some("status") if cfg!(feature = "rpc-v3-transport") && args.len() == 2 => {
             println!("FASTLINK-RPC/1 status (rpc-v3-transport feature gate)");
             println!("  Synchronous blocking loopback Pool/AsyncClient (legacy name) with serialized round-robin batch_send");
             println!("  Telemetry: bytes_sent and latency_samples tracked per client");
@@ -310,6 +317,7 @@ fn main() {
             );
             Ok(())
         }
+        Some("devices") => devices::run_devices(&args[2..]).map(|output| print!("{output}")),
         _ => {
             usage();
             std::process::exit(2);

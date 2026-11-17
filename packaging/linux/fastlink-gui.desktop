@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=FASTLINK
+GenericName=Local Device Overview
+Comment=Inspect passive local device inventory (pre-alpha)
+Exec=fastlink-gui
+Icon=fastlink-gui
+Terminal=false
+Categories=System;Monitor;
+Keywords=fastlink;devices;inventory;local;
+StartupNotify=true
+StartupWMClass=FASTLINK

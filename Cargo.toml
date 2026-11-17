@@ -1,3 +1,8 @@
+[workspace]
+members = ["crates/fastlink-gui"]
+default-members = [".", "crates/fastlink-gui"]
+resolver = "2"
+
 [package]
 name = "fastlink"
 version = "0.1.0"
@@ -18,6 +23,11 @@ name = "rpc_latency"
 harness = false
 test = false
 
+[[bench]]
+name = "async_transport_bench"
+harness = false
+test = false
+
 [features]
 default = []
 rpc-v3-transport = ["tokio/rt"]
@@ -25,6 +35,7 @@ rpc-v3-transport = ["tokio/rt"]
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 libc = "0.2"
+tempfile = "3"
 
 [[bench]]
 name = "rpc_latency_batched"
