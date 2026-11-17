@@ -98,38 +98,6 @@ where
     (addr, handle)
 }
 
-/// Accepts one loopback connection and never reads it until released, keeping a
-/// request write blocked without any non-loopback traffic. Then captures the
-/// bytes already queued before the client observed cancellation.
-fn spawn_non_reading_loopback_server() -> (SocketAddr, mpsc::Sender<()>, mpsc::Receiver<Vec<u8>>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
-    let addr = listener.local_addr().expect("local addr");
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-    let (captured_tx, captured_rx) = mpsc::channel::<Vec<u8>>();
-    thread::spawn(move || {
-        if let Ok((mut stream, _peer)) = listener.accept() {
-            stream.set_nodelay(true).ok();
-            let _ = release_rx.recv_timeout(Duration::from_secs(10));
-            stream
-                .set_read_timeout(Some(Duration::from_millis(500)))
-                .ok();
-            let mut captured = Vec::new();
-            let mut buf = [0u8; 8192];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => captured.extend_from_slice(&buf[..n]),
-                    Err(_) => break,
-                }
-            }
-            let _ = captured_tx.send(captured);
-        } else {
-            let _ = captured_tx.send(Vec::new());
-        }
-    });
-    (addr, release_tx, captured_rx)
-}
-
 /// Accepts one loopback connection (if any), never reads it while the client is
 /// running, and reports whatever bytes the client managed to enqueue.
 fn spawn_stalled_loopback_server(accept_wait: Duration) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
@@ -1418,68 +1386,5 @@ fn chunk_beyond_remaining_response_budget_is_rejected_before_reading_payload() {
     assert!(
         matches!(err, LlamaRpcError::ParseError(ref message) if message.contains("HTTP chunk")),
         "expected an HTTP chunk budget error, got {err:?}"
-    );
-}
-
-#[test]
-fn request_write_deadline_is_independent_of_connect_timeout() {
-    let (addr, release, captured_rx) = spawn_non_reading_loopback_server();
-    let big_prompt = "P".repeat(8 * 1024 * 1024);
-    let tight = CompletionStreamOptions {
-        connect_timeout: Duration::from_millis(50),
-        read_timeout: Duration::from_secs(5),
-        ..options()
-    };
-    let external = Arc::new(AtomicBool::new(false));
-    let handle = spawn_completion_stream_with_cancel(
-        addr,
-        &CompletionRequest::new(big_prompt).with_n_predict(1),
-        &tight,
-        Arc::clone(&external),
-    )
-    .expect("spawn stream");
-    let (_events, _cancel, worker) = handle.into_parts();
-
-    thread::sleep(Duration::from_millis(300));
-    let still_writing = !worker.is_finished();
-    external.store(true, Ordering::SeqCst);
-    let cancel_deadline = Instant::now() + Duration::from_secs(1);
-    while !worker.is_finished() && Instant::now() < cancel_deadline {
-        thread::sleep(Duration::from_millis(5));
-    }
-    let stopped_before_peer_read = worker.is_finished();
-    let _ = release.send(());
-    let result = worker.join().expect("worker thread did not panic");
-    let captured = captured_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("server captures queued request bytes after cancellation");
-
-    assert!(
-        still_writing,
-        "a request write must not be bounded by connect_timeout; got {result:?}"
-    );
-    assert!(
-        matches!(result, Err(LlamaRpcError::StreamCancelled)),
-        "expected cancellation to end the blocked write, got {result:?}"
-    );
-    assert!(
-        stopped_before_peer_read,
-        "the worker must stop before the peer is allowed to drain its receive buffer"
-    );
-
-    let header_end = captured
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .expect("the complete HTTP request header reached the server");
-    let headers = String::from_utf8_lossy(&captured[..header_end]).to_ascii_lowercase();
-    let body_len = headers
-        .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .expect("request has a valid content-length");
-    let full_request_len = header_end + 4 + body_len;
-    assert!(
-        captured.len() < full_request_len,
-        "server received the complete {full_request_len}-byte request, so the test did not prove a blocked write"
     );
 }

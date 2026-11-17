@@ -335,6 +335,8 @@ const MAX_TRAILER_LINES: usize = 32;
 const READ_SLICE: Duration = Duration::from_millis(50);
 /// Socket write slice; cancellation is checked between these writes.
 const WRITE_SLICE: Duration = Duration::from_millis(50);
+/// Bound each request send so cancellation is checked between finite chunks.
+const REQUEST_WRITE_CHUNK_BYTES: usize = 16 * 1024;
 /// Full event-queue retry slice; cancellation is re-checked this often.
 const SEND_RETRY_SLICE: Duration = Duration::from_millis(2);
 /// Request-write bound, deliberately independent of `connect_timeout`.
@@ -595,12 +597,21 @@ fn connect_loopback(addr: SocketAddr, timeout: Duration) -> Result<TcpStream, Ll
 /// Private, test-only connector seam.
 #[cfg(test)]
 mod seam {
+    use std::net::TcpStream;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     type Hook = Box<dyn FnOnce() + Send + 'static>;
+    type RequestWriteHook = Box<dyn FnOnce(&mut TcpStream, usize) + Send + 'static>;
+    type RequestWriteHookState = (
+        Vec<u8>,
+        usize,
+        RequestWriteHook,
+        std::sync::mpsc::Sender<()>,
+    );
 
     static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    static REQUEST_WRITE_HOOK: Mutex<Option<RequestWriteHookState>> = Mutex::new(None);
     static NON_LOOPBACK_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
     /// Installs a one-shot pause that runs after a loopback connect completes
@@ -611,6 +622,47 @@ mod seam {
 
     pub(super) fn clear() {
         *HOOK.lock().expect("connect seam lock") = None;
+    }
+
+    pub(super) fn clear_request_write_hook() {
+        *REQUEST_WRITE_HOOK.lock().expect("request-write seam lock") = None;
+    }
+
+    /// Installs a one-shot pause after the tagged request has made enough
+    /// progress through the socket writer.
+    pub(super) fn install_request_write_hook(
+        tag: &[u8],
+        min_written: usize,
+        hook: RequestWriteHook,
+        hook_exited: std::sync::mpsc::Sender<()>,
+    ) {
+        assert!(!tag.is_empty(), "request-write seam tag must not be empty");
+        assert!(
+            min_written > 0,
+            "request-write seam threshold must be positive"
+        );
+        *REQUEST_WRITE_HOOK.lock().expect("request-write seam lock") =
+            Some((tag.to_vec(), min_written, hook, hook_exited));
+    }
+
+    /// Pauses only the uniquely tagged request and takes the hook before
+    /// blocking, so the mutex is never held across the test handshake.
+    pub(super) fn pause_after_request_write(stream: &mut TcpStream, data: &[u8], written: usize) {
+        let hook = {
+            let mut guard = REQUEST_WRITE_HOOK.lock().expect("request-write seam lock");
+            let should_run = guard.as_ref().is_some_and(|(tag, min_written, _, _)| {
+                written >= *min_written && data.windows(tag.len()).any(|window| window == tag)
+            });
+            if should_run {
+                guard.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_tag, _min_written, hook, hook_exited)) = hook {
+            hook(stream, written);
+            let _ = hook_exited.send(());
+        }
     }
 
     /// Records a test-visible attempt to connect outside loopback.
@@ -845,14 +897,19 @@ fn write_request_cancellable(
                 "completion request write stalled past the write deadline",
             )));
         }
-        match stream.write(&data[written..]) {
+        let chunk_end = written + (data.len() - written).min(REQUEST_WRITE_CHUNK_BYTES);
+        match stream.write(&data[written..chunk_end]) {
             Ok(0) => {
                 return Err(LlamaRpcError::Io(io::Error::new(
                     io::ErrorKind::WriteZero,
                     "completion request write made no progress",
                 )))
             }
-            Ok(n) => written += n,
+            Ok(n) => {
+                written += n;
+                #[cfg(test)]
+                seam::pause_after_request_write(stream, data, written);
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e)
                 if matches!(
@@ -1795,6 +1852,14 @@ mod connect_seam_tests {
         }
     }
 
+    struct RequestWriteHookReset;
+
+    impl Drop for RequestWriteHookReset {
+        fn drop(&mut self) {
+            seam::clear_request_write_hook();
+        }
+    }
+
     struct FullQueueHookReset;
 
     impl Drop for FullQueueHookReset {
@@ -1916,6 +1981,140 @@ mod connect_seam_tests {
             "non-loopback rejection must happen before any connect call"
         );
         seam::reset_non_loopback_attempts();
+    }
+
+    #[test]
+    fn request_write_cancellation_stops_after_partial_progress() {
+        const PROMPT_SENTINEL: &str = "REQUEST-WRITE-CANCEL-PROGRESS-8162";
+        const MIN_WRITTEN: usize = 512;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
+        // Keep this proof independent of platform-default receive-buffer sizes.
+        socket2::SockRef::from(&listener)
+            .set_recv_buffer_size(4096)
+            .expect("bound the listener receive buffer");
+        let addr = listener.local_addr().expect("local addr");
+        let (release_peer_tx, release_peer_rx) = mpsc::channel::<()>();
+        let (server_ready_tx, server_ready_rx) = mpsc::channel::<()>();
+        let (captured_tx, captured_rx) = mpsc::channel::<Vec<u8>>();
+        let server = thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept fake client");
+            socket2::SockRef::from(&stream)
+                .set_recv_buffer_size(4096)
+                .expect("bound the accepted socket receive buffer");
+            let _ = server_ready_tx.send(());
+            let _ = release_peer_rx.recv_timeout(Duration::from_secs(5));
+            stream.set_read_timeout(Some(Duration::from_secs(1))).ok();
+            let mut captured = Vec::new();
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => captured.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = captured_tx.send(captured);
+        });
+
+        let (progress_tx, progress_rx) = mpsc::channel::<usize>();
+        let (writer_release_tx, writer_release_rx) = mpsc::channel::<()>();
+        let (hook_exited_tx, hook_exited_rx) = mpsc::channel::<()>();
+        let _reset = RequestWriteHookReset;
+        seam::install_request_write_hook(
+            PROMPT_SENTINEL.as_bytes(),
+            MIN_WRITTEN,
+            Box::new(move |stream, written| {
+                socket2::SockRef::from(&*stream)
+                    .set_send_buffer_size(4096)
+                    .expect("bound the client send buffer");
+                let _ = progress_tx.send(written);
+                let _ = server_ready_rx.recv_timeout(Duration::from_secs(5));
+                let _ = writer_release_rx.recv_timeout(Duration::from_secs(5));
+            }),
+            hook_exited_tx,
+        );
+
+        let options = CompletionStreamOptions {
+            connect_timeout: Duration::from_millis(50),
+            read_timeout: Duration::from_millis(500),
+            ..CompletionStreamOptions::default()
+        };
+        let external = Arc::new(AtomicBool::new(false));
+        let request =
+            CompletionRequest::new(format!("{PROMPT_SENTINEL}{}", "P".repeat(256 * 1024)))
+                .with_n_predict(1);
+        let handle =
+            spawn_completion_stream_with_cancel(addr, &request, &options, Arc::clone(&external))
+                .expect("loopback endpoint accepted");
+        let (_events, _cancel, worker) = handle.into_parts();
+
+        let progress = progress_rx.recv_timeout(Duration::from_secs(2));
+        let (progress_seen, progress_value) = match progress {
+            Ok(written) => (true, written),
+            Err(_) => (false, 0),
+        };
+        let hook_exited = if progress_seen {
+            // Release the test barrier before observing the writer, so a
+            // live worker after the timeout cannot be explained by this hook.
+            let _ = writer_release_tx.send(());
+            hook_exited_rx.recv_timeout(Duration::from_secs(1)).is_ok()
+        } else {
+            false
+        };
+        if hook_exited {
+            thread::sleep(Duration::from_millis(100));
+        }
+        let worker_stayed_active = !worker.is_finished();
+        external.store(true, Ordering::SeqCst);
+        let _ = writer_release_tx.send(());
+        let _ = release_peer_tx.send(());
+        let result = worker.join().expect("worker thread did not panic");
+        let captured = captured_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server captures queued request bytes after cancellation");
+        server.join().expect("server thread");
+
+        assert!(
+            progress_seen,
+            "request writer did not signal deterministic partial progress"
+        );
+        assert!(
+            progress_value >= MIN_WRITTEN,
+            "request writer signaled before the progress threshold: {progress_value}"
+        );
+        assert!(
+            hook_exited,
+            "request writer did not acknowledge exiting the test hook"
+        );
+        assert!(
+            worker_stayed_active,
+            "request writing must remain active after the connect timeout; got {result:?}"
+        );
+        assert!(
+            matches!(result, Err(LlamaRpcError::StreamCancelled)),
+            "expected cancellation to stop the partial request write, got {result:?}"
+        );
+
+        let header_end = captured
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("the complete HTTP request header reached the server");
+        let headers = String::from_utf8_lossy(&captured[..header_end]).to_ascii_lowercase();
+        let body_len = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .expect("request has a valid content-length");
+        let full_request_len = header_end + 4 + body_len;
+        assert!(
+            captured.len() > header_end + 4,
+            "test must observe body bytes after the complete header"
+        );
+        assert!(
+            captured.len() < full_request_len,
+            "server received the complete {full_request_len}-byte request, so the test did not prove a partial write"
+        );
     }
 
     #[test]
