@@ -99,18 +99,35 @@ where
 }
 
 /// Accepts one loopback connection and never reads it until released, keeping a
-/// request write blocked without any non-loopback traffic.
-fn spawn_non_reading_loopback_server() -> (SocketAddr, mpsc::Sender<()>) {
+/// request write blocked without any non-loopback traffic. Then captures the
+/// bytes already queued before the client observed cancellation.
+fn spawn_non_reading_loopback_server() -> (SocketAddr, mpsc::Sender<()>, mpsc::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
     let addr = listener.local_addr().expect("local addr");
     let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (captured_tx, captured_rx) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
-        if let Ok((stream, _peer)) = listener.accept() {
+        if let Ok((mut stream, _peer)) = listener.accept() {
             stream.set_nodelay(true).ok();
             let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .ok();
+            let mut captured = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => captured.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = captured_tx.send(captured);
+        } else {
+            let _ = captured_tx.send(Vec::new());
         }
     });
-    (addr, release_tx)
+    (addr, release_tx, captured_rx)
 }
 
 /// Accepts one loopback connection (if any), never reads it while the client is
@@ -1313,6 +1330,49 @@ fn empty_data_lines_count_against_the_event_budget_before_the_boundary() {
 }
 
 #[test]
+fn sse_event_budget_accepts_exact_joined_size_and_rejects_separator_overflow() {
+    const FIRST: &str = "{\"content\":";
+    const SECOND: &str = "\"boundary\",\"stop\":true}";
+    let joined = format!("\n{FIRST}\n{SECOND}");
+
+    for (limit, should_succeed) in [(joined.len(), true), (joined.len() - 1, false)] {
+        let (addr, server) = spawn_fake_server(move |mut stream, _req| {
+            if stream
+                .write_all(close_delimited_ok_headers().as_bytes())
+                .is_err()
+            {
+                return;
+            }
+            let event = format!("data:\ndata: {FIRST}\ndata: {SECOND}\n\n");
+            let _ = stream.write_all(event.as_bytes());
+        });
+        let bounded = CompletionStreamOptions {
+            max_event_bytes: limit,
+            ..options()
+        };
+
+        let result = stream_completion(
+            addr,
+            &CompletionRequest::new("event-boundary"),
+            &bounded,
+            |_event| {},
+        );
+        server.join().expect("fake server");
+
+        if should_succeed {
+            let metrics = result.expect("joined payload exactly at the limit is accepted");
+            assert_eq!(metrics.content, "boundary");
+        } else {
+            let err = result.expect_err("the inserted newline must count against the limit");
+            assert!(
+                matches!(err, LlamaRpcError::ParseError(ref message) if message.contains("max_event_bytes")),
+                "expected event-size error, got {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn chunk_beyond_remaining_response_budget_is_rejected_before_reading_payload() {
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (addr, server) = spawn_fake_server(move |mut stream, _req| {
@@ -1363,11 +1423,11 @@ fn chunk_beyond_remaining_response_budget_is_rejected_before_reading_payload() {
 
 #[test]
 fn request_write_deadline_is_independent_of_connect_timeout() {
-    let (addr, release) = spawn_non_reading_loopback_server();
+    let (addr, release, captured_rx) = spawn_non_reading_loopback_server();
     let big_prompt = "P".repeat(8 * 1024 * 1024);
     let tight = CompletionStreamOptions {
         connect_timeout: Duration::from_millis(50),
-        read_timeout: Duration::from_millis(500),
+        read_timeout: Duration::from_secs(5),
         ..options()
     };
     let external = Arc::new(AtomicBool::new(false));
@@ -1383,8 +1443,16 @@ fn request_write_deadline_is_independent_of_connect_timeout() {
     thread::sleep(Duration::from_millis(300));
     let still_writing = !worker.is_finished();
     external.store(true, Ordering::SeqCst);
+    let cancel_deadline = Instant::now() + Duration::from_secs(1);
+    while !worker.is_finished() && Instant::now() < cancel_deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let stopped_before_peer_read = worker.is_finished();
     let _ = release.send(());
     let result = worker.join().expect("worker thread did not panic");
+    let captured = captured_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("server captures queued request bytes after cancellation");
 
     assert!(
         still_writing,
@@ -1393,5 +1461,25 @@ fn request_write_deadline_is_independent_of_connect_timeout() {
     assert!(
         matches!(result, Err(LlamaRpcError::StreamCancelled)),
         "expected cancellation to end the blocked write, got {result:?}"
+    );
+    assert!(
+        stopped_before_peer_read,
+        "the worker must stop before the peer is allowed to drain its receive buffer"
+    );
+
+    let header_end = captured
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("the complete HTTP request header reached the server");
+    let headers = String::from_utf8_lossy(&captured[..header_end]).to_ascii_lowercase();
+    let body_len = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .expect("request has a valid content-length");
+    let full_request_len = header_end + 4 + body_len;
+    assert!(
+        captured.len() < full_request_len,
+        "server received the complete {full_request_len}-byte request, so the test did not prove a blocked write"
     );
 }

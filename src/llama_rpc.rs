@@ -1500,10 +1500,30 @@ fn send_event_or_cancel(
         match sender.try_send(event) {
             Ok(()) => return Ok(()),
             Err(TrySendError::Full(returned)) => {
+                #[cfg(test)]
+                notify_send_event_full_test_hook(&returned);
                 event = returned;
                 thread::sleep(SEND_RETRY_SLICE);
             }
             Err(TrySendError::Disconnected(_)) => return Err(LlamaRpcError::StreamCancelled),
+        }
+    }
+}
+
+#[cfg(test)]
+static SEND_EVENT_FULL_TEST_HOOK: std::sync::Mutex<Option<(String, mpsc::Sender<()>)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn notify_send_event_full_test_hook(event: &CompletionEvent) {
+    let CompletionEvent::Delta { text, .. } = event else {
+        return;
+    };
+    if let Ok(hook) = SEND_EVENT_FULL_TEST_HOOK.lock() {
+        if let Some((expected_text, sender)) = hook.as_ref() {
+            if text == expected_text {
+                let _ = sender.send(());
+            }
         }
     }
 }
@@ -1772,6 +1792,88 @@ mod connect_seam_tests {
     impl Drop for SeamReset {
         fn drop(&mut self) {
             seam::clear();
+        }
+    }
+
+    struct FullQueueHookReset;
+
+    impl Drop for FullQueueHookReset {
+        fn drop(&mut self) {
+            if let Ok(mut hook) = SEND_EVENT_FULL_TEST_HOOK.lock() {
+                *hook = None;
+            }
+        }
+    }
+
+    fn queue_test_event(text: &str) -> CompletionEvent {
+        CompletionEvent::Delta {
+            index: 0,
+            text: text.to_owned(),
+            ttft_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn send_event_or_cancel_returns_when_a_full_queue_is_cancelled() {
+        for cancel_internal in [false, true] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            sender
+                .try_send(queue_test_event("queue-occupier"))
+                .expect("the test fills the bounded queue before starting the worker");
+            let internal = Arc::new(AtomicBool::new(false));
+            let external = Arc::new(AtomicBool::new(false));
+            let cancellation = Cancellation {
+                internal: Arc::clone(&internal),
+                external: Some(Arc::clone(&external)),
+            };
+            const FULL_QUEUE_SENTINEL: &str = "FULL-QUEUE-CANCEL-REVIEW-SENTINEL";
+            let (full_tx, full_rx) = mpsc::channel();
+            *SEND_EVENT_FULL_TEST_HOOK
+                .lock()
+                .expect("install full-queue test hook") =
+                Some((FULL_QUEUE_SENTINEL.to_owned(), full_tx));
+            let _hook_reset = FullQueueHookReset;
+            let (result_tx, result_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                let result = send_event_or_cancel(
+                    &sender,
+                    queue_test_event(FULL_QUEUE_SENTINEL),
+                    &cancellation,
+                );
+                let _ = result_tx.send(result);
+            });
+
+            if full_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                if cancel_internal {
+                    internal.store(true, Ordering::SeqCst);
+                } else {
+                    external.store(true, Ordering::SeqCst);
+                }
+                drop(receiver);
+                let _ = worker.join();
+                panic!("send worker never observed TrySendError::Full");
+            }
+            if cancel_internal {
+                internal.store(true, Ordering::SeqCst);
+            } else {
+                external.store(true, Ordering::SeqCst);
+            }
+
+            let result = match result_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(result) => result,
+                Err(err) => {
+                    // Unblock a regressed blocking send before reporting failure.
+                    drop(receiver);
+                    let _ = worker.join();
+                    panic!("full-queue send did not observe cancellation: {err}");
+                }
+            };
+            assert!(
+                matches!(result, Err(LlamaRpcError::StreamCancelled)),
+                "full-queue cancellation must return StreamCancelled, got {result:?}"
+            );
+            drop(receiver);
+            worker.join().expect("send worker");
         }
     }
 
