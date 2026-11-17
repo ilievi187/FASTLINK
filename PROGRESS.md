@@ -9,6 +9,48 @@
 
 **Status:** commander verification is green; independent re-review of the corrected follow-up is pending. The hook is compiled only for tests; no production behavior changed.
 
+## 2026-11-17 — GGUF opened-file identity follow-up (`fix/luna-gguf-file-identity`)
+
+- Strict TDD reproduced a same-path replacement bug: the regression test failed because a replacement file at the same pathname retained the old canonical-path identity and stayed confirmed.
+- Added `OpenedFileIdentity`, captured from the opened handle's device/inode metadata on Unix. Catalog deduplication and load confirmation now compare the submitted path, canonical display path, and opened-file identity. Non-Unix targets retain a documented canonical-path fallback.
+- The regression proves a distinct inode atomically replacing the registered path clears confirmation; explicit re-registration updates the same row and keeps confirmation cleared. No file contents or weights are read.
+- Verified focused RED then GREEN; `cargo test -p fastlink-gui --offline --locked --lib` (66 passed), `cargo test -p fastlink-gui --offline --locked --test model_catalog` (38 passed), `cargo fmt --all -- --check`, `cargo clippy -p fastlink-gui --all-targets --offline --locked -- -D warnings`, and `git diff --check`.
+
+**Explicit limitation:** the identity is filesystem-object metadata, not a content fingerprint. In-place edits to the same object are not detected; non-Unix identity is best-effort path-based.
+
+## 2026-11-17 — GGUF catalog recovery review fixes (`fix/luna-gguf-model-ui-recovery`)
+
+- Windows directory opens (ERROR_ACCESS_DENIED without `FILE_FLAG_BACKUP_SEMANTICS`) are classified from the path again, so a directory reports `NotAFile`; access-denied on a regular file stays `NotReadable`.
+- Device/UNC/NT namespace checks and DOS reserved-name checks are pure helpers tested on every host. They run only on Windows; `\\?\C:\…`/Volume-GUID extended local paths stay valid and Linux files named `NUL.gguf`/`COM1.gguf` register normally.
+- Unix opened-file identity is captured as device/inode metadata from the opened handle; non-Unix targets use a best-effort canonical-path identity. Confirmation mismatches clear the confirmation, set a `Changed` error, and never rename or refresh the row.
+- A repointed symlink alias refreshes the existing row instead of adding an unreachable duplicate.
+- Rendered names and paths also replace U+2028/U+2029, interlinear/tag characters, and invisible fillers. The unused `MODEL_WORKER_JOB_LIMIT` constant was removed and the worker limit is described without it.
+- Tests: workspace lib/tests/doctests, focused model_catalog/headless_ui/command_runner, Clippy, GUI build, and a Windows-GNU all-target check.
+
+**Explicit limitation:** the model worker still cannot interrupt a Windows file open that has already started; the bound remains one background job, not a timeout.
+
+## 2026-11-17 — GGUF catalog confirmation and path-privacy fixes (`feat/luna-gguf-model-ui`)
+
+- Confirmation now requires both the stored path and the opened-file identity. A symlink alias refreshes size only and keeps the original path, canonical identity, and canonical file name.
+- An already confirmed path can be re-checked. A failed re-registration or identity/path mismatch clears that confirmation. A different invalid path does not.
+- Select and Remove are refused while the single model worker is busy. Each result carries the catalog generation from queue time, so a stale success or error cannot rewrite a removed or different entry.
+- Unix identity comes from the opened descriptor. Windows named-pipe and DOS-device paths are rejected before open. A normal Windows `CreateFile` is not cancellable and is not described as having a hard timeout.
+- Successful registration clears the draft. Painted paths recognize `HOME` and `USERPROFILE` with either separator, truncate the tail, and replace control, bidi, and format characters in the name and path.
+- No weight bytes are read and no model is loaded. Chat stays unavailable.
+
+**Explicit limitation:** the model worker still cannot interrupt a Windows file open that has already started. The bound is one queued job on a background thread, not a timeout.
+
+## 2026-11-17 — Session GGUF catalog review fixes (`feat/luna-gguf-model-ui`)
+
+- The Linux GUI can register more than one explicit `.gguf` path. Each check runs on a bounded background worker, so a stalled filesystem call does not stop discovery polling or cancellation.
+- A path is accepted only when a non-blocking open (Unix) and `fstat` show a regular readable file. Directories, FIFOs, and directory symlinks are refused. Metadata errors stay distinct: not found, not readable, and other failures.
+- The catalog stores the submitted path, a lossy file name (non-UTF-8 names are not blank), and the byte size. Re-registering the same file refreshes the size. Confirm load re-checks the file and refuses a deleted path. Nothing is copied, scanned, persisted, or loaded.
+- The window shows a shortened path (`~` for the home directory, ellipsis for a long prefix) and takes the loaded/chat lines from `loaded` plus the disconnected-backend flags. Chat stays unavailable and no tokens are generated.
+- The unreadable-file test follows whether `File::open` actually fails, so Windows read-only attributes and root (DAC override) do not fail the suite.
+- Verified with `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, focused `model_catalog` tests, `cargo test --workspace --lib --bins --tests` (benches excluded), `cargo build -p fastlink-gui`, and a Windows-target check when that target is installed. No GUI window, GPU, model load, or network scan.
+
+**Explicit limitation:** confirmation is a session flag only. There is still no inference backend, so weights are never loaded and chat cannot run. Unix non-blocking open is the FIFO guard; other platforms open through the standard library on the same worker. The catalog is memory-only and disappears when the process exits.
+
 ## 2026-11-15 — Post-exit capture drain race (final review)
 
 - Fixed the final P3 finding: `capture_child_unix` used `min(now + POST_EXIT_DRAIN, overall_deadline)` for the post-exit drain. If a completed child was observed after the deadline, buffered valid JSON was skipped and reported as empty/malformed.

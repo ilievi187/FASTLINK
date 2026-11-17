@@ -5,9 +5,11 @@
 //! `node_id` is the only identity used for selection and opt-in.
 //!
 //! Opt-in state is intentionally session-only: this milestone creates no
-//! pairing, listener or persisted consent.
+//! pairing, listener or persisted consent. The GGUF catalog is also
+//! session-only metadata and never loads a model.
 
 use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::discovery::{DiscoveryCommand, DiscoveryInventory};
 use crate::inventory::{DeviceInventory, InventoryCommand, InventoryNode, LoadError};
+use crate::models::{inspect_gguf_path, ModelCatalog, ModelJob, ModelJobResult, ModelPathError};
 
 /// What the central panel should show right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +105,7 @@ impl<T> WorkerLoader<T> {
 
 pub type InventoryLoader = WorkerLoader<DeviceInventory>;
 pub type DiscoveryLoader = WorkerLoader<DiscoveryInventory>;
+pub type ModelLoader = WorkerLoader<ModelJobResult>;
 
 impl WorkerLoader<DeviceInventory> {
     /// Start local inventory on a worker thread.
@@ -133,6 +137,10 @@ pub struct AppState {
     discovery: Option<DiscoveryInventory>,
     discovery_error: Option<LoadError>,
     discovery_at: Option<Instant>,
+    model_catalog: ModelCatalog,
+    model_loader: ModelLoader,
+    /// Generation of the catalog when the current model job was queued.
+    model_job_generation: Option<u64>,
 }
 
 impl AppState {
@@ -153,7 +161,168 @@ impl AppState {
             discovery: None,
             discovery_error: None,
             discovery_at: None,
+            model_catalog: ModelCatalog::new(),
+            model_loader: ModelLoader::new(),
+            model_job_generation: None,
         }
+    }
+
+    #[must_use]
+    pub fn model_fs_busy(&self) -> bool {
+        self.model_loader.is_busy()
+    }
+
+    #[must_use]
+    pub fn model_loader_mut(&mut self) -> &mut ModelLoader {
+        &mut self.model_loader
+    }
+
+    #[must_use]
+    pub fn discovery_loader_mut(&mut self) -> &mut DiscoveryLoader {
+        &mut self.discovery_loader
+    }
+
+    /// Attach a cancel token when a test or caller already started discovery.
+    ///
+    /// Does not start discovery and does not touch the model worker.
+    pub fn bind_discovery_cancel(&mut self) -> bool {
+        if !self.discovery_loader.is_busy() {
+            return false;
+        }
+        if self.discovery_cancel.is_none() {
+            self.discovery_cancel = Some(Arc::new(AtomicBool::new(false)));
+        }
+        true
+    }
+
+    /// Queue one explicit path check on the model worker.
+    ///
+    /// Returns immediately. An empty draft is rejected on this thread because
+    /// that check does not touch the filesystem. A second request while the
+    /// worker is busy is refused.
+    pub fn request_register_model(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        let draft = self.model_catalog.draft().trim().to_owned();
+        if draft.is_empty() {
+            self.model_catalog
+                .note_failure(ModelPathError::Empty, false);
+            return false;
+        }
+        let path = PathBuf::from(draft);
+        self.start_model_job(ModelJob::Register, path)
+    }
+
+    /// Re-check the selected file on the model worker before confirming.
+    ///
+    /// Does not mark the model loaded and does not start discovery.
+    pub fn request_confirm_model_load(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        let Some(index) = self.model_catalog.selected_index() else {
+            return false;
+        };
+        let Some(path) = self
+            .model_catalog
+            .entries()
+            .get(index)
+            .map(|entry| entry.path.clone())
+        else {
+            return false;
+        };
+        self.start_model_job(ModelJob::Confirm, path)
+    }
+
+    /// Change the selected catalog row. Refused while a model check is running.
+    pub fn select_registered_model(&mut self, index: usize) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.select(index)
+    }
+
+    /// Drop the selected catalog row. Refused while a model check is running.
+    pub fn remove_selected_model(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.remove_selected()
+    }
+
+    fn start_model_job(&mut self, job: ModelJob, path: PathBuf) -> bool {
+        let generation = self.model_catalog.generation();
+        let inspected = path.clone();
+        match self.model_loader.start_with(move || {
+            Ok(ModelJobResult {
+                job,
+                generation,
+                path: inspected.clone(),
+                outcome: inspect_gguf_path(&inspected),
+            })
+        }) {
+            Ok(true) => {
+                self.model_job_generation = Some(generation);
+                true
+            }
+            Ok(false) => false,
+            Err(_) => {
+                self.model_catalog
+                    .note_failure(ModelPathError::Unavailable, false);
+                false
+            }
+        }
+    }
+
+    fn apply_model_job(&mut self, result: ModelJobResult) {
+        if result.generation != self.model_catalog.generation() {
+            return;
+        }
+        match (result.job, result.outcome) {
+            (ModelJob::Register, Ok(entry)) => {
+                self.model_catalog.accept_registration(entry);
+            }
+            (ModelJob::Register, Err(error)) => {
+                let clear = self.model_catalog.load_confirmation() == Some(result.path.as_path());
+                self.model_catalog.note_failure(error, clear);
+            }
+            (ModelJob::Confirm, Ok(entry)) => {
+                self.model_catalog.accept_confirmation(entry);
+            }
+            (ModelJob::Confirm, Err(error)) => {
+                self.model_catalog.note_failure(error, true);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn model_catalog(&self) -> &ModelCatalog {
+        &self.model_catalog
+    }
+
+    pub fn model_catalog_mut(&mut self) -> &mut ModelCatalog {
+        &mut self.model_catalog
+    }
+
+    /// Chat stays closed until a real inference backend is connected.
+    ///
+    /// Registration and load confirmation never connect a backend.
+    #[must_use]
+    pub fn chat_available(&self) -> bool {
+        self.inference_backend_connected()
+    }
+
+    /// This shell has no inference backend.
+    #[must_use]
+    pub fn inference_backend_connected(&self) -> bool {
+        false
+    }
+
+    /// No token stream exists. The shell never fabricates completions.
+    #[must_use]
+    pub fn generated_tokens(&self) -> &'static [&'static str] {
+        &[]
     }
 
     #[must_use]
@@ -362,6 +531,21 @@ impl AppState {
                 )));
             } else {
                 self.apply_discovery_result(result);
+            }
+            changed = true;
+        }
+        if let Some(result) = self.model_loader.poll() {
+            let queued = self.model_job_generation.take();
+            match result {
+                Ok(job) => self.apply_model_job(job),
+                Err(_) => {
+                    if queued
+                        .is_some_and(|generation| generation == self.model_catalog.generation())
+                    {
+                        self.model_catalog
+                            .note_failure(ModelPathError::Unavailable, false);
+                    }
+                }
             }
             changed = true;
         }

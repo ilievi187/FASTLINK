@@ -3,10 +3,13 @@
 //! `draw` takes a plain [`egui::Ui`], so the exact same code path can be
 //! rendered headlessly in tests through [`egui::Context::run_ui`].
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui};
 
 use crate::discovery::{CandidateNode, DiscoveryInventory, ProviderStatus, DISCOVERY_SCOPE};
 use crate::inventory::GpuDevice;
+use crate::models::{chat_status_text, loaded_status_label, redacted_path};
 use crate::state::{AppState, Screen};
 use crate::view::{self, FieldRow};
 
@@ -31,7 +34,7 @@ fn top_bar(ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
             ui.label(RichText::new("FASTLINK").size(24.0).strong());
             ui.label(
-                RichText::new("Local devices + opt-in discovery · pre-alpha")
+                RichText::new("Local devices, opt-in discovery, session GGUF catalog · pre-alpha")
                     .small()
                     .color(ui.visuals().weak_text_color()),
             );
@@ -131,18 +134,23 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     };
     empty_block(ui, "Paired peers", &peer_status, peer_body);
 
-    empty_block(
-        ui,
-        "Models",
-        "None linked",
-        "No model catalog, download, or transfer exists in this milestone.",
-    );
-    empty_block(
-        ui,
-        "Chat",
-        "Not available",
-        "Inference and chat are not implemented. This shell only shows local device inventory.",
-    );
+    let registered = state.model_catalog().entries().len();
+    let loaded_label = loaded_status_label(state.model_catalog().weights_loaded());
+    let (model_status, model_body) = if registered == 0 {
+        (
+            "None registered".to_owned(),
+            "Enter one .gguf path in the catalog. Nothing is scanned, copied, or loaded.",
+        )
+    } else {
+        (
+            format!("{registered} registered · {loaded_label}"),
+            "Metadata only. Weight bytes stay on disk and are not loaded.",
+        )
+    };
+    empty_block(ui, "Models", &model_status, model_body);
+    let (chat_title, chat_body) =
+        chat_status_text(state.inference_backend_connected(), state.chat_available());
+    empty_block(ui, "Chat", chat_title, chat_body);
 
     ui.add_space(8.0);
     ui.separator();
@@ -212,6 +220,7 @@ fn central_panel(ui: &mut Ui, state: &mut AppState) {
                 Screen::Devices => devices_view(ui, state),
             }
 
+            model_catalog_section(ui, state);
             discovery_section(ui, state);
         });
 }
@@ -701,6 +710,149 @@ fn unknown_fields_section(ui: &mut Ui, node: &crate::inventory::InventoryNode) {
     }
 }
 
+fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
+    ui.add_space(18.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.heading("GGUF catalog");
+        badge(ui, "Session only", accent_color(ui));
+    });
+    ui.label(
+        RichText::new(
+            "Enter or paste one existing readable .gguf path. The shell records metadata only: \
+             it does not copy the file, read weight bytes, scan a directory, or persist the path. \
+             Confirming a load does not load a model.",
+        )
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    ui.add_space(6.0);
+
+    let mut draft = state.model_catalog().draft().to_owned();
+    let editor = ui.add(
+        egui::TextEdit::singleline(&mut draft)
+            .hint_text("One .gguf path")
+            .desired_width(f32::INFINITY),
+    );
+    if editor.changed() {
+        state.model_catalog_mut().set_draft(&draft);
+    }
+    let busy = state.model_fs_busy();
+    if busy {
+        ui.label(
+            RichText::new("Checking that path on a background worker.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(RichText::new("Register GGUF path").strong()),
+            )
+            .clicked()
+        {
+            state.model_catalog_mut().set_draft(&draft);
+            state.request_register_model();
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Remove selected"))
+            .clicked()
+        {
+            state.remove_selected_model();
+        }
+        let can_confirm = !busy && selected_model_path(state).is_some();
+        if ui
+            .add_enabled(can_confirm, egui::Button::new("Confirm load"))
+            .clicked()
+        {
+            state.request_confirm_model_load();
+        }
+    });
+
+    if let Some(error) = state.model_catalog().error() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(error.summary())
+                .small()
+                .color(ui.visuals().warn_fg_color),
+        );
+    }
+
+    let entries = state.model_catalog().entries().to_vec();
+    let selected = state.model_catalog().selected_index();
+    let confirmation = state.model_catalog().load_confirmation().map(PathBuf::from);
+    ui.add_space(6.0);
+    if entries.is_empty() {
+        ui.label(
+            RichText::new("No GGUF path is registered in this session.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        ui.push_id(index, |ui| {
+            Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(&entry.file_name).strong());
+                    ui.label(
+                        RichText::new(redacted_path(&entry.path))
+                            .monospace()
+                            .small(),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "{} bytes · {}",
+                            entry.size_bytes,
+                            loaded_status_label(entry.loaded)
+                        ))
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                    if selected == Some(index) {
+                        badge(ui, "Selected", accent_color(ui));
+                    } else if ui.add_enabled(!busy, egui::Button::new("Select")).clicked() {
+                        state.select_registered_model(index);
+                    }
+                });
+        });
+        ui.add_space(4.0);
+    }
+    if let Some(path) = confirmation {
+        ui.add_space(4.0);
+        let (_title, chat_body) =
+            chat_status_text(state.inference_backend_connected(), state.chat_available());
+        ui.label(
+            RichText::new(format!(
+                "Load confirmed for {}. {chat_body} Status: {}.",
+                redacted_path(&path),
+                loaded_status_label(state.model_catalog().weights_loaded())
+            ))
+            .color(ui.visuals().warn_fg_color),
+        );
+        ui.label(
+            RichText::new("Chat stays unavailable until a real backend is connected.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    ui.add_space(8.0);
+}
+
+fn selected_model_path(state: &AppState) -> Option<PathBuf> {
+    let index = state.model_catalog().selected_index()?;
+    state
+        .model_catalog()
+        .entries()
+        .get(index)
+        .map(|entry| entry.path.clone())
+}
+
 fn discovery_section(ui: &mut Ui, state: &mut AppState) {
     ui.add_space(18.0);
     ui.separator();
@@ -1040,6 +1192,7 @@ fn footer(ui: &mut Ui, state: &AppState) {
     ui.label(
         RichText::new(
             "No automatic network scans, listening sockets, downloads, inference, or GPU compute. \
+             A GGUF path is registered only when you enter one, and only as session metadata. \
              Discovery runs only after an explicit click. Window rendering uses the normal OpenGL driver.",
         )
         .small()

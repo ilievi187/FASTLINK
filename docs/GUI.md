@@ -35,8 +35,16 @@ that action fails closed with a safe error until a supporting CLI is supplied.
   connectivity are never inferred.
 - Provides manual **Refresh**, local-node **selection**, and a session-only
   **opt-in** toggle for the local node only.
-- Shows honest empty states for peers, models and chat because those features
-  do not exist in this milestone.
+- Lets the user enter or paste an explicit `.gguf` path. The catalog can hold
+  several such paths. Each registration checks one path on a background worker
+  and stores the file name and byte size. It does not copy the file, read
+  weight bytes, scan a directory, or write the path to disk.
+- Offers an explicit **Confirm load** state for a future backend. The button
+  is enabled for a selected path that is not already confirmed. Confirmation
+  re-checks the file and still does not load weights.
+- Shows an honest empty state for peers. Chat stays visibly unavailable, and
+  the shell never generates tokens, until a real inference backend is connected.
+  No such backend exists in this milestone.
 
 ## What it does not do
 
@@ -45,11 +53,14 @@ that action fails closed with a safe error until a supporting CLI is supplied.
   is labelled unpaired and unverified; there is no Pair button.
 - No address, IP, endpoint, MAC, raw Tailscale peer address or raw provider
   error text is displayed, logged, persisted or committed.
-- No model catalog, model download, inference or chat.
+- No model download, weight load, inference, token generation, or chat backend.
+- No directory browser and no background scan for `.gguf` files. Only the single
+  path the user submits is checked.
+- No persistence of the GGUF catalog or its load confirmation.
 - No CUDA/ROCm compute or GPU benchmark work. The integration tests are
   CPU/software headless tests and do not launch a GUI window.
-- No persistence: selection, local opt-in, discovery results and errors are
-  discarded when the window closes.
+- No persistence: selection, local opt-in, the GGUF catalog, load confirmation,
+  discovery results and errors are discarded when the window closes.
 
 Window rendering uses the normal OpenGL driver through eframe's glow backend;
 that is UI rendering, not FASTLINK compute.
@@ -209,6 +220,91 @@ A sanitized discovery fixture lives at
 `crates/fastlink-gui/testdata/discovery-v1.json`. All provider names, candidate
 names and IDs are synthetic.
 
+## Session GGUF catalog
+
+The central panel has a **GGUF catalog** section. The user types or pastes one
+path and presses **Register GGUF path**. The shell accepts the path only when
+all of the following are true:
+
+- the trimmed path is non-empty;
+- the final extension is `.gguf`, compared case-insensitively, including when
+  the name is not valid UTF-8;
+- opening that one path succeeds and `fstat` on the opened handle reports a
+  regular file, not a directory, FIFO, socket, or other node. On Unix the open
+  uses `O_NONBLOCK`, so a path swapped to a FIFO cannot block the worker. On
+  Linux the canonical display path comes from the opened descriptor
+  (`/proc/self/fd/N`); a separate opened-file identity uses the handle's device
+  and inode on Unix. Windows and other non-Unix targets retain a best-effort
+  canonical-path identity, where a symlink swapped during the check is not
+  fully excluded. Neither identity reads or fingerprints file contents, so an
+  in-place edit to the same filesystem object is not detected. Confirmation
+  requires both the stored path and opened-file identity to match and fails
+  closed with a "path changed" error otherwise, including replacement at the
+  same pathname on Unix. On Windows, `\\.\`, `\??\`, UNC shares and
+  named pipes (`\\server\pipe\…`), and non-local `\\?\` forms are refused
+  before `CreateFile`; extended local paths such as `\\?\C:\…` and
+  `\\?\Volume{…}\…` stay accepted. DOS reserved names (`NUL.gguf`,
+  `COM1.gguf`, `LPT1.gguf`, …) are refused on Windows only, so those names stay
+  valid Linux files. The shell does not impose a timeout or cancellation on OS
+  filesystem calls. Unix `O_NONBLOCK` only prevents waiting on a FIFO open; it
+  does not bound `open`, metadata, or canonicalization on a stalled filesystem.
+  A stalled local or remote filesystem can leave the model worker busy until the
+  OS call returns. A normal Windows file open likewise cannot be cancelled.
+
+The check runs on one background worker at a time, keeping the egui frame
+responsive while the OS call runs. The check itself has no cancellation or
+timeout. The Register, Confirm, and Remove buttons and row selection are
+disabled while it runs; the path field remains editable and drafts entered during
+the check are preserved. A stalled filesystem call therefore leaves those
+actions unavailable until the OS returns.
+A result carries the
+catalog generation from when it was queued, so a removal that did race the
+worker cannot rewrite or resurrect another entry. The open handle is closed
+without a `read` call. The catalog records the path the user first submitted,
+the canonical file name (a symlink alias does not replace it), and the byte
+size from that `fstat`. A later registration of the same file refreshes the
+size and keeps the original path, identity, and file name. A successful
+registration clears the draft when it is still the submitted path. A repointed
+symlink alias refreshes that same row instead of adding a stale duplicate. The painted path
+and file name replace control, bidi, line/paragraph separator, tag, and
+invisible filler characters. Home is taken from `HOME` or `USERPROFILE`, with
+`/` and `\` treated as the same separator, and a long value keeps only its
+tail. Permission errors are not described as a missing file.
+GGUF magic, tensor headers, and weight bytes are not inspected, so a readable
+file with the right extension is registered even when it is not a valid model.
+That keeps validation from becoming a weight-content read.
+
+A second registration of the same file, including a `..` alias that resolves to
+it, selects the existing entry instead of adding a duplicate. A rejected path
+leaves the existing entries in place. Confirmation is cleared only when the
+rejected path is the confirmed one. **Remove
+selected** drops one entry from the in-memory catalog and does not delete the
+file. Sibling `.gguf` files are never added, because the shell does not list
+directories.
+
+**Confirm load** is enabled whenever a row is selected and the model worker is
+idle, including when that path is already confirmed, so the user can re-check
+it. The fresh inspection must match both the stored path and the stored
+identity; a mismatch clears the confirmation, shows a "path changed since it
+was registered" error, and does not rename the entry. A
+deleted or non-file re-check, including registering that same path again, is
+refused and any stale confirmation is cleared. Registering a different invalid
+path leaves the existing confirmation in place. A successful check stores an
+explicit pending-backend confirmation and refreshes the byte size. It does not
+allocate weights, start a runtime, or change `loaded` from false. The loaded
+and chat lines are rendered from those flags; the backend is not connected, so
+chat stays unavailable and no tokens are generated. Selecting or registering a
+different file clears that confirmation. Chat remains **Not available** in the workspace,
+with the statement that no inference backend is connected and that this window
+does not generate tokens. There is no token list and no completion stream.
+
+Registration does not start discovery, refresh, or an application-managed
+network request. However, inspecting a path on NFS/CIFS, another remote mount,
+or a mapped drive may cause OS-managed network I/O. Registration is not
+guaranteed offline for such paths; use responsive local storage when offline
+behavior is required. Closing the window drops the catalog; the next process
+starts empty.
+
 ## Requirements
 
 - Linux with X11 or Wayland and an OpenGL driver.
@@ -286,6 +382,26 @@ readers/writers that must neither block nor keep consuming capture resources.
 Additional deterministic pipe tests inject a poll interval longer than the
 timeout to prove that output from a child which completed just after the
 deadline is still drained and capped, including the `timeout=0` case.
+
+`tests/model_catalog.rs` creates temporary files and checks one explicit path
+at a time. It proves metadata registration, rejection of a non-`.gguf` path, a
+missing path, a directory (including one that contains another `.gguf`), a FIFO,
+and a symlink to a directory. The unreadable-file case expects `NotReadable`
+only when `File::open` itself fails, so a Windows read-only attribute or root
+DAC override does not fail the test. It also proves duplicate and `..` aliases
+collapse, a symlink alias keeps the canonical file name and identity, a
+repeat registration refreshes size, an already confirmed path can be re-checked,
+a failed re-registration of that path clears confirmation, a deleted file cannot
+be confirmed, an identity or path mismatch is rejected, non-UTF-8 names stay
+visible, control, bidi, line-separator, tag and filler characters are replaced
+before rendering, painted paths are redacted for both `HOME` and `USERPROFILE`,
+Windows device/UNC/NT namespace and DOS reserved names are classified by
+platform-independent helpers while Linux files with DOS-looking names still
+register, a repointed alias refreshes its row, a changed identity surfaces an
+error, a background model check does not block discovery polling
+or cancel, selection and removal are refused while that check runs, a stale
+result cannot rewrite a removed entry, and the headless UI paints the derived
+status, the confirmation, and a validation error without painting weight bytes.
 
 Discovery tests use only the sanitized fixtures and fake CLI scripts. They prove
 that launch and local refresh never invoke `discover`, an explicit action passes
@@ -369,6 +485,10 @@ the hostname, machine id or hash.
   fabricated or cleared data.
 - **Session-only consent.** Opt-in is local-node-only UI state. It does not
   pair, does not configure the CLI, is not persisted, and sends nothing.
+- **Session-only GGUF metadata.** The catalog is not a model loader. Byte size
+  is the file length reported by the operating system. Quantization, parameter
+  count, architecture, and context length stay unknown because reading them
+  would read the file. Chat cannot be used from a confirmed path.
 - **Trust boundary.** The GUI runs the executable you configure. It does not
   restrict what that executable does; use a FASTLINK binary you trust. The GUI
   itself opens no sockets. Opt-in discovery is delegated to the CLI only after
@@ -399,3 +519,6 @@ the hostname, machine id or hash.
 | `Discovery command failed` | The CLI exited unsuccessfully; raw stderr/provider text is intentionally not shown. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |
+| GGUF path rejected | The path is empty, not a `.gguf` file, missing, a directory, or not readable. On Windows, device/UNC/pipe namespaces and DOS reserved names are also refused. The shell does not search nearby files. |
+| Path changed since registration | Confirmation re-opened the file and the stored path or identity no longer matches. Nothing was confirmed; re-register the path to refresh the row. |
+| Load confirmed, chat still unavailable | Confirmation is only a session flag. No inference backend is connected, so no weights are loaded and no tokens are generated. |
