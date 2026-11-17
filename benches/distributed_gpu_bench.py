@@ -180,40 +180,58 @@ def run_completion(url, prompt, n_predict):
     }
 
 
+def _bounded_diagnostic(res):
+    """Return stderr-preferred, stdout-fallback diagnostic capped at 2,000 chars."""
+    detail = (res.stderr or "").strip() or (res.stdout or "").strip()
+    if len(detail) > 2_000:
+        detail = detail[:2_000] + "... [truncated]"
+    return detail
+
+
 def run_mmap_transport_microbench():
-    """Run cargo bench --bench mmap_transfer and parse latency percentiles and throughput."""
+    """Run cargo bench --bench mmap_transfer and parse its synthetic-safe stdout.
+
+    Returns parsed metrics and stdout only for a successful, complete run.
+    A nonzero exit or missing metric line raises instead of fabricating values.
+    """
     cmd = ["cargo", "bench", "--bench", "mmap_transfer"]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    stdout = res.stdout
+    stdout = res.stdout or ""
+    if res.returncode != 0:
+        detail = _bounded_diagnostic(res)
+        message = f"mmap_transfer benchmark failed with exit code {res.returncode}"
+        if detail:
+            message += f": {detail}"
+        raise RuntimeError(message)
 
     parsed = {
         "mmap_shm": {
-            "p50_ms": 0.001,
-            "p95_ms": 0.001,
-            "p99_ms": 0.002,
-            "min_ms": 0.001,
-            "mean_ms": 0.001,
-            "patterned_tp_mbs": 26118.3,
-            "uniform_tp_mbs": 28497.9,
+            "p50_ms": None,
+            "p95_ms": None,
+            "p99_ms": None,
+            "min_ms": None,
+            "mean_ms": None,
+            "patterned_tp_mbs": None,
+            "uniform_tp_mbs": None,
         },
         "raw_tcp": {
-            "p50_ms": 0.022,
-            "p95_ms": 0.036,
-            "p99_ms": 0.124,
-            "min_ms": 0.018,
-            "mean_ms": 0.024,
-            "patterned_tp_mbs": 8353.9,
-            "uniform_tp_mbs": 7696.7,
+            "p50_ms": None,
+            "p95_ms": None,
+            "p99_ms": None,
+            "min_ms": None,
+            "mean_ms": None,
+            "patterned_tp_mbs": None,
+            "uniform_tp_mbs": None,
         },
         "fastlink_rpc": {
-            "p50_ms": 0.107,
-            "p95_ms": 0.196,
-            "p99_ms": 0.232,
-            "min_ms": 0.092,
-            "mean_ms": 0.118,
-            "patterned_raw_mbs": 591.8,
-            "uniform_raw_mbs": 1932.8,
-            "uniform_wire_bytes": 66700,
+            "p50_ms": None,
+            "p95_ms": None,
+            "p99_ms": None,
+            "min_ms": None,
+            "mean_ms": None,
+            "patterned_raw_mbs": None,
+            "uniform_raw_mbs": None,
+            "uniform_wire_bytes": None,
         },
     }
 
@@ -278,6 +296,38 @@ def run_mmap_transport_microbench():
             for part in line.split():
                 if part.startswith("raw="):
                     parsed["fastlink_rpc"]["uniform_raw_mbs"] = float(part.split("=")[1].replace("MB/s", ""))
+                elif part.startswith("wire_bytes="):
+                    parsed["fastlink_rpc"]["uniform_wire_bytes"] = int(part.split("=")[1])
+
+    required = {
+        "mmap_shm": (
+            "min_ms", "p50_ms", "p95_ms", "p99_ms", "mean_ms",
+            "patterned_tp_mbs", "uniform_tp_mbs",
+        ),
+        "raw_tcp": (
+            "min_ms", "p50_ms", "p95_ms", "p99_ms", "mean_ms",
+            "patterned_tp_mbs", "uniform_tp_mbs",
+        ),
+        "fastlink_rpc": (
+            "min_ms", "p50_ms", "p95_ms", "p99_ms", "mean_ms",
+            "patterned_raw_mbs", "uniform_raw_mbs", "uniform_wire_bytes",
+        ),
+    }
+    missing = [
+        f"{group}.{field}"
+        for group, fields in required.items()
+        for field in fields
+        if parsed[group][field] is None
+    ]
+    if missing:
+        message = (
+            "mmap_transfer benchmark output is incomplete; missing metrics: "
+            + ", ".join(missing)
+        )
+        diagnostic = _bounded_diagnostic(res)
+        if diagnostic:
+            message += f"; diagnostic: {diagnostic}"
+        raise RuntimeError(message)
 
     return parsed, stdout
 
