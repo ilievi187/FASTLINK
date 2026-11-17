@@ -81,6 +81,9 @@ impl eframe::App for GuiApp {
         if self.state.discovery_busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        if self.state.model_fs_busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if self.state.loaded_age().is_some() {
             // Keep the relative "Updated …" footer honest without a polling loop.
             ctx.request_repaint_after(Duration::from_secs(1));
