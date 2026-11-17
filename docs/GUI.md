@@ -245,21 +245,27 @@ all of the following are true:
   before `CreateFile`; extended local paths such as `\\?\C:\…` and
   `\\?\Volume{…}\…` stay accepted. DOS reserved names (`NUL.gguf`,
   `COM1.gguf`, `LPT1.gguf`, …) are refused on Windows only, so those names stay
-  valid Linux files. A normal Windows file open cannot be cancelled and the
-  shell does not claim a timeout for it.
+  valid Linux files. The shell does not impose a timeout or cancellation on OS
+  filesystem calls. Unix `O_NONBLOCK` only prevents waiting on a FIFO open; it
+  does not bound `open`, metadata, or canonicalization on a stalled filesystem.
+  A stalled local or remote filesystem can leave the model worker busy until the
+  OS call returns. A normal Windows file open likewise cannot be cancelled.
 
-The check runs on one background worker at a time; the egui frame only queues
-it and keeps polling discovery, including cancel.
-Select and Remove are refused while that worker is busy. A result carries the
+The check runs on one background worker at a time, keeping the egui frame
+responsive while the OS call runs. The check itself has no cancellation or
+timeout. The Register, Confirm, and Remove buttons and row selection are
+disabled while it runs; the path field remains editable and drafts entered during
+the check are preserved. A stalled filesystem call therefore leaves those
+actions unavailable until the OS returns.
+A result carries the
 catalog generation from when it was queued, so a removal that did race the
 worker cannot rewrite or resurrect another entry. The open handle is closed
 without a `read` call. The catalog records the path the user first submitted,
 the canonical file name (a symlink alias does not replace it), and the byte
 size from that `fstat`. A later registration of the same file refreshes the
 size and keeps the original path, identity, and file name. A successful
-registration clears the draft when it is still the submitted path. A path typed
-while that check is running is left in the field. A repointed symlink alias
-refreshes that same row instead of adding a stale duplicate. The painted path
+registration clears the draft when it is still the submitted path. A repointed
+symlink alias refreshes that same row instead of adding a stale duplicate. The painted path
 and file name replace control, bidi, line/paragraph separator, tag, and
 invisible filler characters. Home is taken from `HOME` or `USERPROFILE`, with
 `/` and `\` treated as the same separator, and a long value keeps only its
@@ -292,8 +298,12 @@ different file clears that confirmation. Chat remains **Not available** in the w
 with the statement that no inference backend is connected and that this window
 does not generate tokens. There is no token list and no completion stream.
 
-Registration does not start discovery, refresh, or a network action. Closing
-the window drops the catalog; the next process starts empty.
+Registration does not start discovery, refresh, or an application-managed
+network request. However, inspecting a path on NFS/CIFS, another remote mount,
+or a mapped drive may cause OS-managed network I/O. Registration is not
+guaranteed offline for such paths; use responsive local storage when offline
+behavior is required. Closing the window drops the catalog; the next process
+starts empty.
 
 ## Requirements
 

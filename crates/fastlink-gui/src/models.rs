@@ -2,13 +2,15 @@
 //!
 //! Validation records file metadata only. It does not copy the file, read
 //! weight bytes, scan a directory, or persist anything. Filesystem checks run
-//! on one background worker. On Unix the open is non-blocking and the size
-//! comes from `fstat` of that handle. On Windows, device/UNC/NT namespace
-//! paths and DOS reserved names are refused before `CreateFile`; that gate is
-//! Windows-only, so `NUL.gguf` stays a valid Linux file name. A normal Windows
-//! open cannot be cancelled and this code does not claim a timeout for it. The
-//! recorded identity is the opened descriptor on Linux; other targets use a
-//! best-effort canonical path.
+//! on one background worker. Unix `O_NONBLOCK` prevents a FIFO open from
+//! waiting, but does not bound `open`, metadata, or canonicalization on a
+//! stalled filesystem; these OS calls have no cancellation or timeout here.
+//! Remote mounts may also cause OS-managed network I/O. On Windows, device/UNC/NT
+//! namespace paths and DOS reserved names are refused before `CreateFile`; that
+//! gate is Windows-only, so `NUL.gguf` stays a valid Linux file name. A normal
+//! Windows open likewise cannot be cancelled. The recorded confirmation identity
+//! uses device/inode from the opened handle on Unix and a best-effort canonical
+//! path on other targets.
 
 use std::fs::File;
 use std::io::{self, ErrorKind};
