@@ -37,3 +37,4 @@ zbus-secret-service-keyring-store = { version = "1.0.1", default-features = fals
 
 [dev-dependencies]
 tempfile = "3"
+socket2 = "0.6"

@@ -1070,6 +1070,10 @@ enum PumpEvent {
 
 #[cfg(target_os = "linux")]
 trait DrainObserver {
+    /// Override the production grace only for deterministic timing tests.
+    fn post_exit_drain_grace(&self) -> Duration {
+        POST_EXIT_DRAIN
+    }
     fn on_post_exit_read(&mut self, _child: &Child, _drain_deadline: Instant) {}
     fn on_post_exit_would_block(&mut self, _child: &Child, _drain_deadline: Instant) {}
     fn after_post_exit_drain(
@@ -1195,7 +1199,7 @@ fn capture_child_with_observer(
         }
     }
 
-    let drain_deadline = Instant::now() + POST_EXIT_DRAIN;
+    let drain_deadline = Instant::now() + observer.post_exit_drain_grace();
     let drain_result = pump_bounded_with(
         &mut stdout,
         drain_deadline,
@@ -2305,6 +2309,13 @@ mod tests {
         }
 
         impl DrainObserver for DelayedChunkObserver {
+            fn post_exit_drain_grace(&self) -> Duration {
+                // The contract is to keep reading after WouldBlock until the
+                // deadline. Give this shell-polling fixture enough scheduling
+                // slack when the full unit suite runs in parallel.
+                Duration::from_millis(250)
+            }
+
             fn on_post_exit_would_block(&mut self, child: &Child, _drain_deadline: Instant) {
                 self.would_block_hits += 1;
                 if self.would_block_hits == 1 {

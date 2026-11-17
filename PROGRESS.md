@@ -1,5 +1,14 @@
 # Development progress
 
+## 2026-11-17 — Streaming review-proof follow-up (`fix/luna-stream-review-test-proofs`)
+
+- Independent review of streaming HEAD `e99742f` confirmed the queue-cancellation, event-budget, chunk-budget, and write-deadline implementation changes, and found three P3 test-proof gaps.
+- Added a lib unit test that pre-fills a `sync_channel(1)` and verifies both internal and external cancellation release `send_event_or_cancel`; a test-only notification from the `TrySendError::Full` branch now synchronizes cancellation after the worker actually observes the full queue (the prior start signal plus sleep was insufficient). Added the SSE exact joined-byte boundary/separator-overflow pair and strengthened the write-deadline test to capture a partial request after cancellation.
+- The independent follow-up review found the queue test could cancel before the worker entered the full-queue branch. The corrected test was RED until the `#[cfg(test)]` hook was wired, then passed five consecutive runs.
+- Verification after the correction: 69 library tests, 35 `llama_rpc_test` tests, workspace lib/bin/integration tests and doctests, fmt, Linux workspace Clippy, Windows GNU all-target check and Clippy, and `git diff --check` all passed.
+
+**Status:** commander verification is green; independent re-review of the corrected follow-up is pending. The hook is compiled only for tests; no production behavior changed.
+
 ## 2026-11-17 — GGUF opened-file identity follow-up (`fix/luna-gguf-file-identity`)
 
 - Strict TDD reproduced a same-path replacement bug: the regression test failed because a replacement file at the same pathname retained the old canonical-path identity and stayed confirmed.
