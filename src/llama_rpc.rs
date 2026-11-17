@@ -5,17 +5,35 @@
 //! `GGML_RPC_FASTLINK_PACK`, `GGML_RPC_FASTLINK_RLE`), streams `/completion` SSE
 //! tokens to measure TTFT and decode throughput, and guarantees process cleanup
 //! via RAII `Drop`.
+//!
+//! The SSE client is exposed as a callback/event API ([`stream_completion`],
+//! [`spawn_completion_stream`], [`CompletionStream`]) so a GUI can render token
+//! deltas as soon as they arrive, while [`run_streaming_completion`] keeps the
+//! historical aggregate-only behavior.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::thread;
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+
 use crate::{digest, hex, Digest};
+
+/// Maximum accepted size of a single HTTP chunk payload (guards `vec!` allocation).
+const MAX_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum accepted length of an HTTP chunk-size / trailer line.
+const MAX_CHUNK_HEADER_BYTES: usize = 1024;
+/// Maximum accepted size of the HTTP response header block.
+const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+/// Bounded event queue between the worker thread and its consumer.
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlamaRpcConfig {
@@ -62,6 +80,8 @@ pub enum LlamaRpcError {
     StartupTimeout(String),
     HttpError(String),
     ParseError(String),
+    /// The consumer dropped its event receiver, so the worker stopped early.
+    StreamCancelled,
 }
 
 impl fmt::Display for LlamaRpcError {
@@ -77,6 +97,7 @@ impl fmt::Display for LlamaRpcError {
             Self::StartupTimeout(msg) => write!(f, "llama-server startup timeout: {msg}"),
             Self::HttpError(msg) => write!(f, "HTTP error: {msg}"),
             Self::ParseError(msg) => write!(f, "parse error: {msg}"),
+            Self::StreamCancelled => write!(f, "completion stream cancelled by its consumer"),
         }
     }
 }
@@ -256,59 +277,210 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-fn extract_json_number(json: &str, key: &str) -> Option<f64> {
-    let needle = format!("\"{key}\":");
-    let idx = json.find(&needle)? + needle.len();
-    let rest = json[idx..].trim_start();
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E')
-        .unwrap_or(rest.len());
-    rest[..end].parse::<f64>().ok()
+// ---------------------------------------------------------------------------
+// Streaming completion: request, options, events, errors.
+// ---------------------------------------------------------------------------
+
+/// A `llama-server` `/completion` request used by the streaming client.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompletionRequest {
+    pub prompt: String,
+    pub n_predict: u32,
+    pub temperature: f32,
+    pub seed: u32,
 }
 
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let idx = json.find(&needle)? + needle.len();
-    let mut out = String::new();
-    let mut chars = json[idx..].chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                if let Some(esc) = chars.next() {
-                    match esc {
-                        'n' => out.push('\n'),
-                        'r' => out.push('\r'),
-                        't' => out.push('\t'),
-                        '"' => out.push('"'),
-                        '\\' => out.push('\\'),
-                        other => out.push(other),
-                    }
-                }
-            }
-            '"' => return Some(out),
-            other => out.push(other),
+impl CompletionRequest {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            n_predict: 64,
+            temperature: 0.0,
+            seed: 42,
         }
     }
-    None
+
+    pub fn with_n_predict(mut self, n_predict: u32) -> Self {
+        self.n_predict = n_predict;
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Serializes the JSON body sent to `POST /completion` (`stream: true`).
+    pub fn body_json(&self) -> String {
+        serde_json::json!({
+            "prompt": self.prompt,
+            "n_predict": self.n_predict,
+            "temperature": self.temperature,
+            "seed": self.seed,
+            "stream": true,
+        })
+        .to_string()
+    }
+}
+
+/// Transport and parsing limits for one streaming completion.
+#[derive(Clone, Debug)]
+pub struct CompletionStreamOptions {
+    pub connect_timeout: Duration,
+    pub read_timeout: Duration,
+    /// Bound on a single reassembled SSE event payload; protects against
+    /// unbounded buffering from a hostile or broken server.
+    pub max_event_bytes: usize,
+}
+
+impl Default for CompletionStreamOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(120),
+            max_event_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
+/// Event emitted while a streaming completion is decoded on the calling thread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompletionEvent {
+    /// One token/text delta, delivered as soon as its SSE event arrives.
+    Delta {
+        /// 0-based ordinal of this delta within the stream.
+        index: u64,
+        text: String,
+        /// Milliseconds from request start to the first delta (the same value is
+        /// repeated for later deltas; the aggregate TTFT lives on the metrics).
+        ttft_ms: f64,
+    },
+    /// Final aggregate metrics; always the last event of a successful stream.
+    Finished { metrics: LlamaCompletionMetrics },
+}
+
+/// Ordered events plus a join handle for a worker-thread completion stream.
+///
+/// The channel is bounded (1024 events), so a slow consumer applies backpressure
+/// instead of growing memory without limit.
+#[derive(Debug)]
+pub struct CompletionStreamHandle {
+    events: Receiver<CompletionEvent>,
+    handle: JoinHandle<Result<LlamaCompletionMetrics, LlamaRpcError>>,
+}
+
+impl CompletionStreamHandle {
+    /// Receiver for deltas/final metrics; drain it from the GUI event loop.
+    pub fn events(&self) -> &Receiver<CompletionEvent> {
+        &self.events
+    }
+
+    /// Splits off the receiver and the raw worker handle (for cancellation tests
+    /// or custom joining).
+    pub fn into_parts(
+        self,
+    ) -> (
+        Receiver<CompletionEvent>,
+        JoinHandle<Result<LlamaCompletionMetrics, LlamaRpcError>>,
+    ) {
+        (self.events, self.handle)
+    }
+
+    /// Drains any remaining queued events, waits for the worker and returns the
+    /// final aggregate metrics. Consume [`events`](Self::events) first if the
+    /// deltas themselves are needed.
+    pub fn join(self) -> Result<LlamaCompletionMetrics, LlamaRpcError> {
+        let (events, handle) = self.into_parts();
+        // Keep draining so a bounded queue cannot block the worker, then join.
+        while events.recv().is_ok() {}
+        join_worker(handle)
+    }
+}
+
+fn join_worker(
+    handle: JoinHandle<Result<LlamaCompletionMetrics, LlamaRpcError>>,
+) -> Result<LlamaCompletionMetrics, LlamaRpcError> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(LlamaRpcError::ParseError(
+            "completion stream worker panicked".into(),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SSE wire types (serde, bounded).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize)]
+struct RawTimings {
+    #[serde(default)]
+    prompt_ms: Option<f64>,
+    #[serde(default)]
+    predicted_ms: Option<f64>,
+    #[serde(default)]
+    predicted_n: Option<f64>,
+    #[serde(default)]
+    predicted_per_second: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawChunk {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    stop: bool,
+    #[serde(default)]
+    timings: Option<RawTimings>,
+    // Older/alternate servers report timings at the top level.
+    #[serde(default)]
+    prompt_ms: Option<f64>,
+    #[serde(default)]
+    predicted_ms: Option<f64>,
+    #[serde(default)]
+    predicted_n: Option<f64>,
+    #[serde(default)]
+    predicted_per_second: Option<f64>,
+}
+
+impl RawChunk {
+    fn timings_quad(&self) -> (f64, f64, u64, f64) {
+        let nested = self.timings.as_ref();
+        let pick = |nested: Option<f64>, root: Option<f64>| nested.or(root).unwrap_or(0.0);
+        let prompt_ms = pick(nested.and_then(|t| t.prompt_ms), self.prompt_ms);
+        let predicted_ms = pick(nested.and_then(|t| t.predicted_ms), self.predicted_ms);
+        let predicted_n = pick(nested.and_then(|t| t.predicted_n), self.predicted_n) as u64;
+        let per_second = pick(
+            nested.and_then(|t| t.predicted_per_second),
+            self.predicted_per_second,
+        );
+        (prompt_ms, predicted_ms, predicted_n, per_second)
+    }
 }
 
 /// Parses a single SSE `data: {...}` JSON line from `llama-server /completion` (stream=true).
+///
+/// Tolerant helper for callers that already have one complete line: returns
+/// `None` for non-data lines, `[DONE]`, empty payloads and JSON that does not
+/// parse. The streaming client itself ([`CompletionStream`]) is strict and
+/// surfaces malformed payloads as [`LlamaRpcError::ParseError`].
 pub fn parse_completion_sse_line(
     line: &str,
 ) -> Option<(Option<String>, Option<LlamaCompletionMetrics>)> {
     let trimmed = line.trim();
     let json = trimmed.strip_prefix("data:")?.trim();
-    if json == "[DONE]" {
+    if json.is_empty() || json == "[DONE]" {
         return None;
     }
-    let chunk_text = extract_json_string(json, "content");
-    let is_stop = json.contains("\"stop\":true");
-    if is_stop {
-        let prompt_ms = extract_json_number(json, "prompt_ms").unwrap_or(0.0);
-        let predicted_ms = extract_json_number(json, "predicted_ms").unwrap_or(0.0);
-        let predicted_n = extract_json_number(json, "predicted_n").unwrap_or(0.0) as u64;
-        let predicted_per_second = extract_json_number(json, "predicted_per_second").unwrap_or(0.0);
-        let metrics = LlamaCompletionMetrics {
+    let chunk: RawChunk = serde_json::from_str(json).ok()?;
+    let metrics = if chunk.stop {
+        let (prompt_ms, predicted_ms, predicted_n, predicted_per_second) = chunk.timings_quad();
+        Some(LlamaCompletionMetrics {
             ttft_ms: 0.0,
             total_wall_ms: 0.0,
             prompt_ms,
@@ -317,15 +489,498 @@ pub fn parse_completion_sse_line(
             predicted_per_second,
             content: String::new(),
             content_digest: [0u8; 32],
-        };
-        Some((chunk_text, Some(metrics)))
+        })
     } else {
-        Some((chunk_text, None))
+        None
+    };
+    Some((chunk.content, metrics))
+}
+
+// ---------------------------------------------------------------------------
+// HTTP body framing + bounded line reader.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+enum Framing {
+    Chunked,
+    Length(u64),
+    CloseDelimited,
+}
+
+/// Decodes an HTTP response body (chunked, content-length, or close-delimited)
+/// and yields bounded, UTF-8 SSE lines.
+struct BodyReader {
+    reader: BufReader<TcpStream>,
+    framing: Framing,
+    buffered: VecDeque<u8>,
+    consumed: u64,
+    eof: bool,
+}
+
+impl BodyReader {
+    fn new(reader: BufReader<TcpStream>, framing: Framing) -> Self {
+        Self {
+            reader,
+            framing,
+            buffered: VecDeque::new(),
+            consumed: 0,
+            eof: false,
+        }
     }
+
+    fn read_byte(&mut self) -> Result<Option<u8>, LlamaRpcError> {
+        let mut byte = [0u8; 1];
+        loop {
+            match self.reader.read(&mut byte) {
+                Ok(0) => return Ok(None),
+                Ok(_) => return Ok(Some(byte[0])),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(LlamaRpcError::Io(e)),
+            }
+        }
+    }
+
+    fn read_exact_body(&mut self, buf: &mut [u8], what: &str) -> Result<(), LlamaRpcError> {
+        for slot in buf.iter_mut() {
+            match self.read_byte()? {
+                Some(b) => *slot = b,
+                None => {
+                    return Err(LlamaRpcError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("truncated HTTP body while reading {what}"),
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads one raw (undecoded) line from the socket, used for chunk headers.
+    fn read_raw_line(&mut self, limit: usize) -> Result<Option<String>, LlamaRpcError> {
+        let mut bytes = Vec::new();
+        loop {
+            match self.read_byte()? {
+                None => {
+                    if bytes.is_empty() {
+                        return Ok(None);
+                    }
+                    break;
+                }
+                Some(b'\n') => break,
+                Some(b) => {
+                    bytes.push(b);
+                    if bytes.len() > limit {
+                        return Err(LlamaRpcError::ParseError(format!(
+                            "HTTP chunk header exceeds {limit} bytes"
+                        )));
+                    }
+                }
+            }
+        }
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// Pulls the next framed body block into `buffered`; `false` means end of body.
+    fn fill(&mut self) -> Result<bool, LlamaRpcError> {
+        if self.eof {
+            return Ok(false);
+        }
+        match self.framing {
+            Framing::Chunked => {
+                let Some(size_line) = self.read_raw_line(MAX_CHUNK_HEADER_BYTES)? else {
+                    return Err(LlamaRpcError::ParseError(
+                        "truncated chunked body: missing chunk size".into(),
+                    ));
+                };
+                let size_text = size_line.split(';').next().unwrap_or("").trim();
+                let size = u64::from_str_radix(size_text, 16).map_err(|_| {
+                    LlamaRpcError::ParseError(format!("invalid HTTP chunk size: {size_line:?}"))
+                })?;
+                if size == 0 {
+                    // Consume optional trailers up to the terminating blank line.
+                    while let Some(trailer) = self.read_raw_line(MAX_CHUNK_HEADER_BYTES)? {
+                        if trailer.is_empty() {
+                            break;
+                        }
+                    }
+                    self.eof = true;
+                    return Ok(false);
+                }
+                if size > MAX_CHUNK_BYTES {
+                    return Err(LlamaRpcError::ParseError(format!(
+                        "HTTP chunk of {size} bytes exceeds {MAX_CHUNK_BYTES} byte limit"
+                    )));
+                }
+                let mut data = vec![0u8; size as usize];
+                self.read_exact_body(&mut data, "chunk payload")?;
+                let mut terminator = [0u8; 2];
+                self.read_exact_body(&mut terminator, "chunk terminator")?;
+                if &terminator != b"\r\n" {
+                    return Err(LlamaRpcError::ParseError(
+                        "malformed HTTP chunk terminator".into(),
+                    ));
+                }
+                self.buffered.extend(data);
+                Ok(true)
+            }
+            Framing::Length(len) => {
+                if self.consumed >= len {
+                    self.eof = true;
+                    return Ok(false);
+                }
+                match self.read_byte()? {
+                    Some(b) => {
+                        self.consumed += 1;
+                        self.buffered.push_back(b);
+                        Ok(true)
+                    }
+                    None => Err(LlamaRpcError::Io(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "truncated content-length HTTP body",
+                    ))),
+                }
+            }
+            Framing::CloseDelimited => match self.read_byte()? {
+                Some(b) => {
+                    self.buffered.push_back(b);
+                    Ok(true)
+                }
+                None => {
+                    self.eof = true;
+                    Ok(false)
+                }
+            },
+        }
+    }
+
+    /// Next line of the body without its terminator (`\n` or `\r\n`).
+    fn next_line(&mut self, limit: usize) -> Result<Option<String>, LlamaRpcError> {
+        let mut bytes = Vec::new();
+        loop {
+            if self.buffered.is_empty() && !self.fill()? {
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+            let Some(b) = self.buffered.pop_front() else {
+                continue;
+            };
+            if b == b'\n' {
+                break;
+            }
+            bytes.push(b);
+            if bytes.len() > limit {
+                return Err(LlamaRpcError::ParseError(format!(
+                    "SSE event exceeds max_event_bytes limit of {limit} bytes"
+                )));
+            }
+        }
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| LlamaRpcError::ParseError("SSE line is not valid UTF-8".into()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pull-based streaming client.
+// ---------------------------------------------------------------------------
+
+/// Incremental `/completion` SSE client.
+///
+/// [`CompletionStream::next_event`] blocks until the next delta or the final
+/// metrics arrive, so a GUI can render tokens immediately without buffering the
+/// whole response.
+pub struct CompletionStream {
+    body: BodyReader,
+    started: Instant,
+    pending: String,
+    queue: VecDeque<CompletionEvent>,
+    next_index: u64,
+    first_delta_ms: Option<f64>,
+    content: String,
+    finished: bool,
+    max_event_bytes: usize,
+}
+
+impl CompletionStream {
+    /// Connects, sends the streaming request and validates the HTTP response.
+    pub fn open(
+        addr: SocketAddr,
+        request: &CompletionRequest,
+        options: &CompletionStreamOptions,
+    ) -> Result<Self, LlamaRpcError> {
+        let started = Instant::now();
+        let mut stream = TcpStream::connect_timeout(&addr, options.connect_timeout)?;
+        stream.set_read_timeout(Some(options.read_timeout))?;
+        stream.set_nodelay(true)?;
+
+        let body = request.body_json();
+        let request_head = format!(
+            "POST /completion HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request_head.as_bytes())?;
+        stream.flush()?;
+
+        let mut reader = BufReader::new(stream);
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line)?;
+        if status_line.is_empty() {
+            return Err(LlamaRpcError::ParseError(
+                "empty HTTP response from /completion".into(),
+            ));
+        }
+        let code = status_line.split_whitespace().nth(1).unwrap_or("");
+        if code != "200" {
+            return Err(LlamaRpcError::HttpError(status_line.trim().to_string()));
+        }
+
+        let mut content_length: Option<u64> = None;
+        let mut chunked = false;
+        let mut header_bytes = 0usize;
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line)?;
+            if read == 0 {
+                return Err(LlamaRpcError::ParseError(
+                    "truncated HTTP response headers".into(),
+                ));
+            }
+            header_bytes += read;
+            if header_bytes > MAX_HTTP_HEADER_BYTES {
+                return Err(LlamaRpcError::ParseError(format!(
+                    "HTTP response headers exceed {MAX_HTTP_HEADER_BYTES} bytes"
+                )));
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(value) = lower.strip_prefix("content-length:") {
+                content_length = Some(value.trim().parse::<u64>().map_err(|_| {
+                    LlamaRpcError::ParseError(format!("invalid Content-Length header: {line:?}"))
+                })?);
+            }
+            if let Some(value) = lower.strip_prefix("transfer-encoding:") {
+                if value.contains("chunked") {
+                    chunked = true;
+                }
+            }
+        }
+
+        let framing = if chunked {
+            Framing::Chunked
+        } else if let Some(len) = content_length {
+            Framing::Length(len)
+        } else {
+            Framing::CloseDelimited
+        };
+
+        Ok(Self {
+            body: BodyReader::new(reader, framing),
+            started,
+            pending: String::new(),
+            queue: VecDeque::new(),
+            next_index: 0,
+            first_delta_ms: None,
+            content: String::new(),
+            finished: false,
+            max_event_bytes: options.max_event_bytes,
+        })
+    }
+
+    /// True once the final `stop:true` event has been decoded.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// Blocks until the next event; `Ok(None)` after the final event.
+    pub fn next_event(&mut self) -> Result<Option<CompletionEvent>, LlamaRpcError> {
+        loop {
+            if let Some(event) = self.queue.pop_front() {
+                return Ok(Some(event));
+            }
+            if self.finished {
+                return Ok(None);
+            }
+            let Some(line) = self.body.next_line(self.max_event_bytes)? else {
+                if !self.pending.is_empty() {
+                    let payload = std::mem::take(&mut self.pending);
+                    self.dispatch(&payload)?;
+                    continue;
+                }
+                return Err(LlamaRpcError::ParseError(
+                    "completion stream ended before the final stop:true event".into(),
+                ));
+            };
+
+            if line.is_empty() {
+                if !self.pending.is_empty() {
+                    let payload = std::mem::take(&mut self.pending);
+                    self.dispatch(&payload)?;
+                }
+                continue;
+            }
+            if line.starts_with(':') {
+                continue; // SSE comment / keep-alive
+            }
+            let Some(rest) = line.strip_prefix("data:") else {
+                continue; // event:, id:, retry: and unknown fields are ignored
+            };
+            let payload = rest.strip_prefix(' ').unwrap_or(rest);
+            if payload.trim().is_empty() {
+                continue;
+            }
+            if payload.trim() == "[DONE]" {
+                // End-of-stream marker; the final stop event must have been seen.
+                continue;
+            }
+
+            if self.pending.is_empty() && serde_json::from_str::<serde_json::Value>(payload).is_ok()
+            {
+                // Fast path: complete single-line event.
+                self.dispatch(payload)?;
+                continue;
+            }
+            if !self.pending.is_empty() {
+                self.pending.push('\n');
+            }
+            self.pending.push_str(payload);
+            if self.pending.len() > self.max_event_bytes {
+                return Err(LlamaRpcError::ParseError(format!(
+                    "SSE event exceeds max_event_bytes limit of {} bytes",
+                    self.max_event_bytes
+                )));
+            }
+            // A multi-line event is complete once the payload parses as JSON.
+            if serde_json::from_str::<serde_json::Value>(&self.pending).is_ok() {
+                let payload = std::mem::take(&mut self.pending);
+                self.dispatch(&payload)?;
+            }
+        }
+    }
+
+    fn dispatch(&mut self, payload: &str) -> Result<(), LlamaRpcError> {
+        if payload.len() > self.max_event_bytes {
+            return Err(LlamaRpcError::ParseError(format!(
+                "SSE event exceeds max_event_bytes limit of {} bytes",
+                self.max_event_bytes
+            )));
+        }
+        let chunk: RawChunk = serde_json::from_str(payload).map_err(|e| {
+            LlamaRpcError::ParseError(format!("invalid SSE JSON payload: {e}: {payload:?}"))
+        })?;
+
+        if let Some(text) = chunk.content.as_deref() {
+            if !text.is_empty() {
+                let ttft_ms = match self.first_delta_ms {
+                    Some(ttft) => ttft,
+                    None => {
+                        let ttft = self.started.elapsed().as_secs_f64() * 1000.0;
+                        self.first_delta_ms = Some(ttft);
+                        ttft
+                    }
+                };
+                self.content.push_str(text);
+                let index = self.next_index;
+                self.next_index += 1;
+                self.queue.push_back(CompletionEvent::Delta {
+                    index,
+                    text: text.to_string(),
+                    ttft_ms,
+                });
+            }
+        }
+
+        if chunk.stop {
+            let (prompt_ms, predicted_ms, predicted_n, predicted_per_second) = chunk.timings_quad();
+            let total_wall_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+            let mut metrics = LlamaCompletionMetrics {
+                ttft_ms: self.first_delta_ms.unwrap_or(total_wall_ms),
+                total_wall_ms,
+                prompt_ms,
+                predicted_ms,
+                predicted_n,
+                predicted_per_second,
+                content: std::mem::take(&mut self.content),
+                content_digest: [0u8; 32],
+            };
+            metrics.content_digest = digest(metrics.content.as_bytes());
+            self.finished = true;
+            self.queue.push_back(CompletionEvent::Finished { metrics });
+        }
+        Ok(())
+    }
+}
+
+/// Streams a completion and invokes `on_event` for every delta and the final
+/// metrics, returning the same aggregate metrics as [`run_streaming_completion`].
+///
+/// `on_event` runs synchronously on the calling thread, so keep it cheap (for a
+/// GUI, prefer [`spawn_completion_stream`] and drain the channel from the UI loop).
+pub fn stream_completion<F>(
+    addr: SocketAddr,
+    request: &CompletionRequest,
+    options: &CompletionStreamOptions,
+    mut on_event: F,
+) -> Result<LlamaCompletionMetrics, LlamaRpcError>
+where
+    F: FnMut(CompletionEvent),
+{
+    let mut stream = CompletionStream::open(addr, request, options)?;
+    let mut metrics = None;
+    while let Some(event) = stream.next_event()? {
+        if let CompletionEvent::Finished { metrics: done } = &event {
+            metrics = Some(done.clone());
+        }
+        on_event(event);
+    }
+    metrics.ok_or_else(|| {
+        LlamaRpcError::ParseError("completion stream ended without final metrics".into())
+    })
+}
+
+/// Runs a streaming completion on a worker thread and forwards events through a
+/// channel, for GUIs that must not block their event loop.
+///
+/// Errors during streaming are returned by [`CompletionStreamHandle::join`];
+/// dropping the receiver cancels the worker with [`LlamaRpcError::StreamCancelled`].
+pub fn spawn_completion_stream(
+    addr: SocketAddr,
+    request: &CompletionRequest,
+    options: &CompletionStreamOptions,
+) -> Result<CompletionStreamHandle, LlamaRpcError> {
+    let mut stream = CompletionStream::open(addr, request, options)?;
+    let (sender, events) = mpsc::sync_channel(EVENT_CHANNEL_CAPACITY);
+    let handle = thread::spawn(move || -> Result<LlamaCompletionMetrics, LlamaRpcError> {
+        let mut metrics = None;
+        while let Some(event) = stream.next_event()? {
+            if let CompletionEvent::Finished { metrics: done } = &event {
+                metrics = Some(done.clone());
+            }
+            if sender.send(event).is_err() {
+                return Err(LlamaRpcError::StreamCancelled);
+            }
+        }
+        metrics.ok_or_else(|| {
+            LlamaRpcError::ParseError("completion stream ended without final metrics".into())
+        })
+    });
+    Ok(CompletionStreamHandle { events, handle })
 }
 
 /// Sends a streaming `/completion` request to a running `llama-server` and measures
 /// TTFT, total wall time, decode throughput, and BLAKE3 output digest.
+///
+/// Kept as the aggregate-only convenience wrapper around [`stream_completion`];
+/// deltas are accumulated exactly as before and no callback is required.
 pub fn run_streaming_completion(
     addr: SocketAddr,
     prompt: &str,
@@ -333,64 +988,18 @@ pub fn run_streaming_completion(
     temperature: f32,
     seed: u32,
 ) -> Result<LlamaCompletionMetrics, LlamaRpcError> {
-    let body = format!(
-        "{{\"prompt\":{},\"n_predict\":{n_predict},\"temperature\":{temperature},\"seed\":{seed},\"stream\":true}}",
-        json_escape(prompt)
-    );
-    let req = format!(
-        "POST /completion HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let started = Instant::now();
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
-    stream.set_read_timeout(Some(Duration::from_secs(120)))?;
-    stream.write_all(req.as_bytes())?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line)?;
-    if !status_line.contains("200") {
-        return Err(LlamaRpcError::HttpError(status_line.trim().to_string()));
-    }
-    loop {
-        let mut header_line = String::new();
-        reader.read_line(&mut header_line)?;
-        if header_line == "\r\n" || header_line.is_empty() {
-            break;
-        }
-    }
-
-    let mut ttft_ms: Option<f64> = None;
-    let mut full_content = String::new();
-    let mut final_metrics: Option<LlamaCompletionMetrics> = None;
-
-    for line_res in reader.lines() {
-        let line = line_res?;
-        if let Some((maybe_text, maybe_done)) = parse_completion_sse_line(&line) {
-            if let Some(text) = maybe_text {
-                if !text.is_empty() {
-                    if ttft_ms.is_none() {
-                        ttft_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    full_content.push_str(&text);
-                }
-            }
-            if let Some(m) = maybe_done {
-                final_metrics = Some(m);
-                break;
-            }
-        }
-    }
-
-    let total_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let mut metrics = final_metrics
-        .ok_or_else(|| LlamaRpcError::ParseError("missing final stop:true SSE event".into()))?;
-    metrics.ttft_ms = ttft_ms.unwrap_or(total_wall_ms);
-    metrics.total_wall_ms = total_wall_ms;
-    metrics.content_digest = digest(full_content.as_bytes());
-    metrics.content = full_content;
-    Ok(metrics)
+    let request = CompletionRequest {
+        prompt: prompt.to_string(),
+        n_predict,
+        temperature,
+        seed,
+    };
+    stream_completion(
+        addr,
+        &request,
+        &CompletionStreamOptions::default(),
+        |_event| {},
+    )
 }
 
 fn extract_u64_after(line: &str, key: &str) -> Option<u64> {
