@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use fastlink::digest;
 use fastlink::llama_rpc::{
     build_fastlink_env, build_server_args, parse_completion_sse_line, parse_fastlink_telemetry,
-    run_streaming_completion, spawn_completion_stream, stream_completion, CompletionEvent,
-    CompletionRequest, CompletionStream, CompletionStreamOptions, LlamaRpcConfig, LlamaRpcError,
+    run_streaming_completion, spawn_completion_stream, spawn_completion_stream_with_cancel,
+    stream_completion, CompletionEvent, CompletionRequest, CompletionStream,
+    CompletionStreamOptions, LlamaRpcConfig, LlamaRpcError,
 };
 
 fn sample_config(fastlink_v4: bool) -> LlamaRpcConfig {
@@ -95,6 +96,52 @@ where
         handler(stream, request);
     });
     (addr, handle)
+}
+
+/// Accepts one loopback connection (if any), never reads it while the client is
+/// running, and reports whatever bytes the client managed to enqueue.
+fn spawn_stalled_loopback_server(accept_wait: Duration) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
+    let addr = listener.local_addr().expect("local addr");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let deadline = Instant::now() + accept_wait;
+        let accepted = loop {
+            match listener.accept() {
+                Ok((stream, _peer)) => break Some(stream),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break None;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break None,
+            }
+        };
+        let Some(mut stream) = accepted else {
+            let _ = tx.send(Vec::new());
+            return;
+        };
+        // A stalled peer: it deliberately does not read while the client runs.
+        thread::sleep(Duration::from_millis(150));
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
+        let mut captured = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => captured.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(captured);
+    });
+    (addr, rx)
 }
 
 fn options() -> CompletionStreamOptions {
@@ -285,6 +332,35 @@ fn errors_never_echo_prompt_output_or_raw_server_lines() {
     assert!(matches!(err, LlamaRpcError::ParseError(_)), "{err:?}");
     let text = err.to_string();
     assert!(!text.contains("OUTPUT-SECRET"), "{text}");
+}
+
+#[test]
+fn json_type_mismatch_errors_never_quote_untrusted_values() {
+    let sentinel = "SENTINEL-TYPE-MISMATCH-OUTPUT-7731";
+    let payload = format!("data: {{\"stop\":\"{sentinel}\"}}\n\n");
+    let (addr, server) = spawn_fake_server(move |mut stream, _req| {
+        let mut out = close_delimited_ok_headers().to_string();
+        out.push_str(&sse_delta("ok"));
+        out.push_str(&payload);
+        stream.write_all(out.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+
+    let err = stream_completion(addr, &CompletionRequest::new("type"), &options(), |_| {})
+        .expect_err("type mismatch must fail the stream");
+    server.join().expect("server script");
+    assert!(matches!(err, LlamaRpcError::ParseError(_)), "{err:?}");
+    let display = err.to_string();
+    let debug = format!("{err:?}");
+    assert!(display.to_lowercase().contains("json"), "{display}");
+    assert!(
+        !display.contains(sentinel),
+        "Display leaked the untrusted value: {display}"
+    );
+    assert!(
+        !debug.contains(sentinel),
+        "Debug leaked the untrusted value: {debug}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +992,64 @@ fn spawn_returns_before_connect_and_cancel_interrupts_a_stalled_read() {
 
     release_tx.send(()).expect("release server");
     server.join().expect("server script");
+}
+
+#[test]
+fn cancel_before_request_bytes_sends_no_prompt_to_a_non_reading_server() {
+    let prompt = "PROMPT-SENTINEL-MUST-NOT-BE-SENT-9031";
+    let (addr, captured) = spawn_stalled_loopback_server(Duration::from_millis(600));
+    let cancel = Arc::new(AtomicBool::new(true));
+
+    let started = Instant::now();
+    let handle = spawn_completion_stream_with_cancel(
+        addr,
+        &CompletionRequest::new(prompt).with_n_predict(4),
+        &options(),
+        Arc::clone(&cancel),
+    )
+    .expect("loopback endpoint accepted");
+    let err = handle.join().expect_err("cancelled stream must not run");
+    assert!(
+        matches!(err, LlamaRpcError::StreamCancelled),
+        "expected StreamCancelled, got {err:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancellation must finish within the documented bound"
+    );
+    assert!(!err.to_string().contains(prompt), "{err}");
+
+    let captured = captured
+        .recv_timeout(Duration::from_secs(3))
+        .expect("server capture result");
+    let text = String::from_utf8_lossy(&captured);
+    assert!(
+        captured.is_empty(),
+        "server received {} request bytes after cancellation: {text:?}",
+        captured.len()
+    );
+    assert!(!text.contains(prompt));
+}
+
+#[test]
+fn dropping_a_handle_does_not_cancel_a_caller_owned_token() {
+    // The handle is dropped immediately, so the worker may never dial; use a
+    // server that times out its non-blocking accept instead of `accept()`.
+    let (addr, _captured) = spawn_stalled_loopback_server(Duration::from_millis(200));
+    let external = Arc::new(AtomicBool::new(false));
+    let handle = spawn_completion_stream_with_cancel(
+        addr,
+        &CompletionRequest::new("drop").with_n_predict(1),
+        &options(),
+        Arc::clone(&external),
+    )
+    .expect("spawn stream");
+    drop(handle);
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        !external.load(Ordering::SeqCst),
+        "dropping the handle must not set a shared caller token"
+    );
 }
 
 #[test]

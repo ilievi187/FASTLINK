@@ -16,8 +16,12 @@
 //! dialing. Error text never echoes the remote address, prompt, model output or
 //! raw server lines, and `Debug` implementations of request/event/metrics types
 //! redact prompt and completion text. HTTP status/header lines, chunks and the
-//! total response size are bounded, SSE is parsed at event boundaries, and
-//! worker-thread runs can be cancelled even while the socket is stalled.
+//! total response size are bounded, and SSE is parsed at event boundaries.
+//! Worker-thread runs check the cancellation token before dialing, immediately
+//! after `connect` (before any request byte), and on every 50 ms read/write
+//! slice. `connect` is not interruptible and is bounded by `connect_timeout`;
+//! a cancel that lands mid-write may deliver a request prefix already handed to
+//! the kernel, but no byte is written after the token is observed.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -324,6 +328,8 @@ const MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
 const MAX_TRAILER_LINES: usize = 32;
 /// Socket read slice; cancellation and the idle timeout are checked this often.
 const READ_SLICE: Duration = Duration::from_millis(50);
+/// Socket write slice; cancellation is checked between these writes.
+const WRITE_SLICE: Duration = Duration::from_millis(50);
 
 /// A `llama-server` `/completion` request used by the streaming client.
 ///
@@ -454,13 +460,18 @@ impl fmt::Debug for CompletionEvent {
 /// The channel is bounded (1024 events), so a slow consumer applies backpressure
 /// instead of growing memory without limit.
 ///
-/// Cancellation: [`cancel`](Self::cancel) (or dropping the handle) interrupts a
-/// stalled socket read within one read slice. Dropping only the event receiver
-/// stops delivery at the next event, but does **not** interrupt an idle read;
-/// use `cancel` or rely on `read_timeout` for that.
+/// Cancellation: [`cancel`](Self::cancel) (or dropping the handle) is observed
+/// before dialing, immediately after `connect` and on every 50 ms socket
+/// read/write slice, so a stalled read or request write ends promptly. The
+/// `connect` call itself is not interruptible and is bounded by
+/// `connect_timeout`. Dropping only the event receiver stops delivery at the
+/// next event, but does **not** interrupt an idle read; use `cancel` or rely on
+/// `read_timeout` for that.
 pub struct CompletionStreamHandle {
     events: Option<Receiver<CompletionEvent>>,
     cancel: Arc<AtomicBool>,
+    /// Caller-owned token (if any); the handle never sets it.
+    external: Option<Arc<AtomicBool>>,
     worker: Option<JoinHandle<Result<LlamaCompletionMetrics, LlamaRpcError>>>,
 }
 
@@ -486,7 +497,10 @@ impl CompletionStreamHandle {
             .expect("completion stream receiver is present until join/into_parts")
     }
 
-    /// Requests cancellation; a blocked socket read returns within one slice.
+    /// Requests cancellation; blocked read/write slices return within one slice.
+    ///
+    /// Only this handle's own token is set; a caller-owned token passed to
+    /// [`spawn_completion_stream_with_cancel`] is left untouched.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
@@ -494,6 +508,10 @@ impl CompletionStreamHandle {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+            || self
+                .external
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 
     /// Splits off the receiver, cancellation flag and raw worker handle.
@@ -543,6 +561,31 @@ fn join_worker(
     }
 }
 
+/// Combined cancellation state: the handle's own token plus an optional
+/// caller-owned token (for host shutdown flags).
+#[derive(Clone)]
+struct Cancellation {
+    internal: Arc<AtomicBool>,
+    external: Option<Arc<AtomicBool>>,
+}
+
+impl Cancellation {
+    fn internal_only(flag: Arc<AtomicBool>) -> Self {
+        Self {
+            internal: flag,
+            external: None,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.internal.load(Ordering::SeqCst)
+            || self
+                .external
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    }
+}
+
 /// The plain-HTTP client refuses to talk to anything that is not loopback.
 fn ensure_loopback(addr: SocketAddr) -> Result<(), LlamaRpcError> {
     if addr.ip().is_loopback() {
@@ -563,7 +606,7 @@ struct SocketReader {
     buffer: [u8; 8192],
     pos: usize,
     filled: usize,
-    cancel: Arc<AtomicBool>,
+    cancel: Cancellation,
     idle_timeout: Duration,
     idle_deadline: Instant,
     bytes_read: u64,
@@ -573,7 +616,7 @@ struct SocketReader {
 impl SocketReader {
     fn new(
         stream: TcpStream,
-        cancel: Arc<AtomicBool>,
+        cancel: Cancellation,
         options: &CompletionStreamOptions,
     ) -> Result<Self, LlamaRpcError> {
         stream.set_nodelay(true)?;
@@ -597,7 +640,7 @@ impl SocketReader {
     /// Refills the buffer; `false` means the peer closed the response.
     fn fill(&mut self) -> Result<bool, LlamaRpcError> {
         loop {
-            if self.cancel.load(Ordering::SeqCst) {
+            if self.cancel.is_cancelled() {
                 return Err(LlamaRpcError::StreamCancelled);
             }
             if Instant::now() >= self.idle_deadline {
@@ -696,6 +739,53 @@ impl SocketReader {
         }
         Ok(out)
     }
+}
+
+/// Writes the request in short slices so cancellation is honoured even when the
+/// peer never reads. A cancel that lands mid-write may deliver a prefix that
+/// was already handed to the kernel, but no further byte is written once the
+/// token is observed. The whole write is also bounded by `write_deadline`.
+fn write_request_cancellable(
+    stream: &mut TcpStream,
+    data: &[u8],
+    cancel: &Cancellation,
+    write_deadline: Duration,
+) -> Result<(), LlamaRpcError> {
+    let deadline = Instant::now()
+        .checked_add(write_deadline)
+        .unwrap_or_else(Instant::now);
+    let mut written = 0usize;
+    while written < data.len() {
+        if cancel.is_cancelled() {
+            return Err(LlamaRpcError::StreamCancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(LlamaRpcError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "completion request write stalled past the write deadline",
+            )));
+        }
+        match stream.write(&data[written..]) {
+            Ok(0) => {
+                return Err(LlamaRpcError::Io(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "completion request write made no progress",
+                )))
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(LlamaRpcError::Io(e)),
+        }
+    }
+    Ok(())
 }
 
 fn parse_status_code(line: &str) -> Result<u16, LlamaRpcError> {
@@ -1012,26 +1102,45 @@ impl CompletionStream {
         request: &CompletionRequest,
         options: &CompletionStreamOptions,
     ) -> Result<Self, LlamaRpcError> {
-        Self::open_with_cancel(addr, request, options, Arc::new(AtomicBool::new(false)))
+        Self::open_with_cancel(
+            addr,
+            request,
+            options,
+            Cancellation::internal_only(Arc::new(AtomicBool::new(false))),
+        )
     }
 
     fn open_with_cancel(
         addr: SocketAddr,
         request: &CompletionRequest,
         options: &CompletionStreamOptions,
-        cancel: Arc<AtomicBool>,
+        cancel: Cancellation,
     ) -> Result<Self, LlamaRpcError> {
         ensure_loopback(addr)?;
+        if cancel.is_cancelled() {
+            return Err(LlamaRpcError::StreamCancelled);
+        }
         let started = Instant::now();
+        // `connect` itself is not interruptible; it is bounded by
+        // `connect_timeout`. Cancellation is therefore honoured immediately
+        // after it returns and before any request byte is written.
         let mut stream = TcpStream::connect_timeout(&addr, options.connect_timeout)?;
-        stream.set_write_timeout(Some(options.connect_timeout))?;
+        if cancel.is_cancelled() {
+            return Err(LlamaRpcError::StreamCancelled);
+        }
+        stream.set_write_timeout(Some(WRITE_SLICE))?;
 
         let body = request.body_json();
         let request_head = format!(
             "POST /completion HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        stream.write_all(request_head.as_bytes())?;
+        write_request_cancellable(
+            &mut stream,
+            request_head.as_bytes(),
+            &cancel,
+            options.connect_timeout,
+        )?;
         stream.flush()?;
 
         let mut reader = SocketReader::new(stream, cancel, options)?;
@@ -1193,8 +1302,10 @@ impl CompletionStream {
                 self.max_event_bytes
             )));
         }
+        // Deliberately fixed text: serde_json type-mismatch errors quote the
+        // offending value, which may be model output or other untrusted data.
         let chunk: RawChunk = serde_json::from_str(payload)
-            .map_err(|e| LlamaRpcError::ParseError(format!("invalid SSE JSON payload ({e})")))?;
+            .map_err(|_| LlamaRpcError::ParseError("invalid SSE JSON payload".into()))?;
         if chunk.error.is_some() {
             return Err(LlamaRpcError::CompletionError);
         }
@@ -1275,19 +1386,40 @@ where
 /// response-header parsing all happen on the worker, so this call returns
 /// immediately for an accepted endpoint. Stream errors are returned by
 /// [`CompletionStreamHandle::join`]. Use [`CompletionStreamHandle::cancel`] (or
-/// drop the handle) to abort a stalled socket read; dropping only the receiver
-/// stops delivery but leaves an idle read running until `read_timeout`. The
-/// connect phase itself is bounded only by `connect_timeout`.
+/// drop the handle) to abort a stalled socket read or request write; dropping
+/// only the receiver stops delivery but leaves an idle read running until
+/// `read_timeout`. `connect` is not interruptible and is bounded by
+/// `connect_timeout`; cancellation is checked immediately after it returns and
+/// before the first request byte.
 pub fn spawn_completion_stream(
     addr: SocketAddr,
     request: &CompletionRequest,
     options: &CompletionStreamOptions,
 ) -> Result<CompletionStreamHandle, LlamaRpcError> {
+    spawn_completion_stream_with_cancel(addr, request, options, Arc::new(AtomicBool::new(false)))
+}
+
+/// Same as [`spawn_completion_stream`] with a caller-owned cancellation flag,
+/// so a host can share one shutdown token across streams.
+///
+/// The flag may already be set; in that case the worker returns
+/// [`LlamaRpcError::StreamCancelled`] without dialing or writing the request.
+/// Dropping or cancelling the returned handle does **not** set this flag, so it
+/// can be shared across streams as a shutdown token.
+pub fn spawn_completion_stream_with_cancel(
+    addr: SocketAddr,
+    request: &CompletionRequest,
+    options: &CompletionStreamOptions,
+    external: Arc<AtomicBool>,
+) -> Result<CompletionStreamHandle, LlamaRpcError> {
     ensure_loopback(addr)?;
     let request = request.clone();
     let options = options.clone();
     let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = Arc::clone(&cancel);
+    let worker_cancel = Cancellation {
+        internal: Arc::clone(&cancel),
+        external: Some(Arc::clone(&external)),
+    };
     let (sender, events) = mpsc::sync_channel(EVENT_CHANNEL_CAPACITY);
     let worker = thread::spawn(move || -> Result<LlamaCompletionMetrics, LlamaRpcError> {
         let mut stream =
@@ -1308,6 +1440,7 @@ pub fn spawn_completion_stream(
     Ok(CompletionStreamHandle {
         events: Some(events),
         cancel,
+        external: Some(external),
         worker: Some(worker),
     })
 }
