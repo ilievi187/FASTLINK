@@ -1,10 +1,19 @@
 # Development progress
 
+## 2026-11-17 — GGUF opened-file identity follow-up (`fix/luna-gguf-file-identity`)
+
+- Strict TDD reproduced a same-path replacement bug: the regression test failed because a replacement file at the same pathname retained the old canonical-path identity and stayed confirmed.
+- Added `OpenedFileIdentity`, captured from the opened handle's device/inode metadata on Unix. Catalog deduplication and load confirmation now compare the submitted path, canonical display path, and opened-file identity. Non-Unix targets retain a documented canonical-path fallback.
+- The regression proves a distinct inode atomically replacing the registered path clears confirmation; explicit re-registration updates the same row and keeps confirmation cleared. No file contents or weights are read.
+- Verified focused RED then GREEN; `cargo test -p fastlink-gui --offline --locked --lib` (66 passed), `cargo test -p fastlink-gui --offline --locked --test model_catalog` (38 passed), `cargo fmt --all -- --check`, `cargo clippy -p fastlink-gui --all-targets --offline --locked -- -D warnings`, and `git diff --check`.
+
+**Explicit limitation:** the identity is filesystem-object metadata, not a content fingerprint. In-place edits to the same object are not detected; non-Unix identity is best-effort path-based.
+
 ## 2026-11-17 — GGUF catalog recovery review fixes (`fix/luna-gguf-model-ui-recovery`)
 
 - Windows directory opens (ERROR_ACCESS_DENIED without `FILE_FLAG_BACKUP_SEMANTICS`) are classified from the path again, so a directory reports `NotAFile`; access-denied on a regular file stays `NotReadable`.
 - Device/UNC/NT namespace checks and DOS reserved-name checks are pure helpers tested on every host. They run only on Windows; `\\?\C:\…`/Volume-GUID extended local paths stay valid and Linux files named `NUL.gguf`/`COM1.gguf` register normally.
-- Opened-file identity is described as Linux-exact and best effort elsewhere; confirmation mismatches clear the confirmation, set a `Changed` error, and never rename or refresh the row.
+- Unix opened-file identity is captured as device/inode metadata from the opened handle; non-Unix targets use a best-effort canonical-path identity. Confirmation mismatches clear the confirmation, set a `Changed` error, and never rename or refresh the row.
 - A repointed symlink alias refreshes the existing row instead of adding an unreachable duplicate.
 - Rendered names and paths also replace U+2028/U+2029, interlinear/tag characters, and invisible fillers. The unused `MODEL_WORKER_JOB_LIMIT` constant was removed and the worker limit is described without it.
 - Tests: workspace lib/tests/doctests, focused model_catalog/headless_ui/command_runner, Clippy, GUI build, and a Windows-GNU all-target check.

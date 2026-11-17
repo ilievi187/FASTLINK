@@ -872,6 +872,9 @@ fn in_flight_model_job_cannot_be_retargeted_by_selection_or_removal() {
                 outcome: Ok(fastlink_gui::models::RegisteredGguf {
                     path: stale_path,
                     identity: PathBuf::from("/tmp/fastlink-stale-identity.gguf"),
+                    opened_identity: fastlink_gui::models::OpenedFileIdentity::Path(PathBuf::from(
+                        "/tmp/fastlink-stale-identity.gguf",
+                    )),
                     file_name: "hijack.gguf".to_owned(),
                     size_bytes: 1,
                     loaded: false,
@@ -1127,6 +1130,62 @@ fn confirmation_rejects_an_identity_or_path_mismatch() {
     assert!(catalog.load_confirmation().is_none());
     assert_eq!(catalog.entries()[0].file_name, "real-name.gguf");
     assert_eq!(catalog.entries()[0].path, real);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn replacing_the_file_at_the_same_path_invalidates_confirmation() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = scratch_dir("samepath-replacement");
+    let path = write_named(&dir, "model.gguf", b"original model");
+    let replacement = write_named(&dir, "replacement.gguf", b"replacement model is larger");
+    let original_meta = fs::metadata(&path).expect("original metadata");
+    let replacement_meta = fs::metadata(&replacement).expect("replacement metadata");
+    assert_ne!(
+        (original_meta.dev(), original_meta.ino()),
+        (replacement_meta.dev(), replacement_meta.ino()),
+        "the test must replace the opened file with a distinct filesystem object"
+    );
+
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(path.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert!(catalog.confirm_load());
+    assert!(catalog.load_confirmation().is_some());
+
+    fs::rename(&replacement, &path).expect("atomically replace the same pathname");
+    let replaced_meta = fs::metadata(&path).expect("replacement at original path");
+    assert_ne!(
+        (original_meta.dev(), original_meta.ino()),
+        (replaced_meta.dev(), replaced_meta.ino())
+    );
+
+    assert!(
+        !catalog.confirm_load(),
+        "rechecking a replacement file at the same pathname must fail closed"
+    );
+    assert_eq!(catalog.error(), Some(&ModelPathError::Changed));
+    assert!(catalog.load_confirmation().is_none());
+    assert_eq!(
+        catalog.entries()[0].size_bytes,
+        b"original model".len() as u64
+    );
+
+    catalog.set_draft(path.to_str().expect("utf8"));
+    assert!(
+        catalog.register_draft(),
+        "explicit re-registration refreshes the row"
+    );
+    assert_eq!(catalog.entries().len(), 1);
+    assert_eq!(
+        catalog.entries()[0].size_bytes,
+        b"replacement model is larger".len() as u64
+    );
+    assert!(catalog.load_confirmation().is_none());
+    assert!(catalog.error().is_none());
 
     let _ = fs::remove_dir_all(&dir);
 }

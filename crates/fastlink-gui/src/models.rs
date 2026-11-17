@@ -14,14 +14,25 @@ use std::fs::File;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
+/// Filesystem object identity captured from an opened `.gguf` handle.
+///
+/// Unix uses device and inode numbers. Other targets retain the canonical path
+/// as a best-effort key; neither variant fingerprints file contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenedFileIdentity {
+    Unix { device: u64, inode: u64 },
+    Path(PathBuf),
+}
+
 /// Metadata recorded for one user-supplied `.gguf` path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredGguf {
     /// Path the user submitted. Later aliases do not replace it.
     pub path: PathBuf,
-    /// Canonical path when the OS can resolve one. Compared without a new
-    /// filesystem call on the UI thread.
+    /// Canonical path used for display and alias deduplication.
     pub identity: PathBuf,
+    /// Object identity captured from the opened handle for later confirmation.
+    pub opened_identity: OpenedFileIdentity,
     pub file_name: String,
     pub size_bytes: u64,
     /// Always false: this shell never loads weights.
@@ -238,9 +249,11 @@ pub fn inspect_gguf_path(path: &Path) -> Result<RegisteredGguf, ModelPathError> 
         return Err(ModelPathError::NotAFile);
     }
     let identity = identity_of_opened(&file, path);
+    let opened_identity = opened_file_identity(&meta, &identity);
     Ok(RegisteredGguf {
         path: path.to_path_buf(),
         identity: identity.clone(),
+        opened_identity,
         file_name: sanitize_rendered_text(&display_file_name(&identity)),
         size_bytes: meta.len(),
         loaded: false,
@@ -326,10 +339,10 @@ fn display_file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-/// Identity of the opened file, best effort per platform.
+/// Canonical display path of the opened file, best effort per platform.
 ///
 /// On Linux `/proc/self/fd/N` names the file that `open` returned, so a symlink
-/// swapped after that open cannot change the recorded identity. Other Unix
+/// swapped after that open cannot change the recorded path. Other Unix
 /// targets and Windows fall back to a second `canonicalize` walk of the
 /// submitted path, where the alias race is not fully excluded.
 #[cfg(unix)]
@@ -345,6 +358,26 @@ fn identity_of_opened(file: &File, fallback: &Path) -> PathBuf {
 #[cfg(not(unix))]
 fn identity_of_opened(_file: &File, fallback: &Path) -> PathBuf {
     std::fs::canonicalize(fallback).unwrap_or_else(|_| fallback.to_path_buf())
+}
+
+#[cfg(unix)]
+fn opened_file_identity(
+    metadata: &std::fs::Metadata,
+    _canonical_path: &Path,
+) -> OpenedFileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    OpenedFileIdentity::Unix {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(not(unix))]
+fn opened_file_identity(
+    _metadata: &std::fs::Metadata,
+    canonical_path: &Path,
+) -> OpenedFileIdentity {
+    OpenedFileIdentity::Path(canonical_path.to_path_buf())
 }
 
 #[cfg(unix)]
@@ -454,11 +487,9 @@ impl ModelCatalog {
     /// Insert or refresh one already-inspected entry. No filesystem access.
     pub fn accept_registration(&mut self, entry: RegisteredGguf) -> bool {
         let submitted = entry.path.clone();
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|existing| existing.identity == entry.identity)
-        {
+        if let Some(index) = self.entries.iter().position(|existing| {
+            existing.identity == entry.identity && existing.opened_identity == entry.opened_identity
+        }) {
             self.entries[index].size_bytes = entry.size_bytes;
             self.select_index(index);
         } else if let Some(index) = self
@@ -591,7 +622,10 @@ impl ModelCatalog {
         let Some(current) = self.entries.get(index) else {
             return false;
         };
-        if current.identity != fresh.identity || current.path != fresh.path {
+        if current.identity != fresh.identity
+            || current.opened_identity != fresh.opened_identity
+            || current.path != fresh.path
+        {
             self.confirmation = None;
             self.error = Some(ModelPathError::Changed);
             return false;

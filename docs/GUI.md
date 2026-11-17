@@ -232,11 +232,15 @@ all of the following are true:
 - opening that one path succeeds and `fstat` on the opened handle reports a
   regular file, not a directory, FIFO, socket, or other node. On Unix the open
   uses `O_NONBLOCK`, so a path swapped to a FIFO cannot block the worker. On
-  Linux the recorded identity is the opened descriptor (`/proc/self/fd/N`); on
-  Windows and other Unix targets it is a best-effort canonical path, where a
-  symlink swapped during the check is not fully excluded. Confirmation requires
-  both the stored path and the stored identity to match and fails closed with a
-  "path changed" error otherwise. On Windows, `\\.\`, `\??\`, UNC shares and
+  Linux the canonical display path comes from the opened descriptor
+  (`/proc/self/fd/N`); a separate opened-file identity uses the handle's device
+  and inode on Unix. Windows and other non-Unix targets retain a best-effort
+  canonical-path identity, where a symlink swapped during the check is not
+  fully excluded. Neither identity reads or fingerprints file contents, so an
+  in-place edit to the same filesystem object is not detected. Confirmation
+  requires both the stored path and opened-file identity to match and fails
+  closed with a "path changed" error otherwise, including replacement at the
+  same pathname on Unix. On Windows, `\\.\`, `\??\`, UNC shares and
   named pipes (`\\server\pipe\…`), and non-local `\\?\` forms are refused
   before `CreateFile`; extended local paths such as `\\?\C:\…` and
   `\\?\Volume{…}\…` stay accepted. DOS reserved names (`NUL.gguf`,
