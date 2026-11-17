@@ -561,6 +561,48 @@ fn join_worker(
     }
 }
 
+/// Opens the loopback connection for the streaming client.
+///
+/// `connect_timeout` is the only phase that cancellation cannot interrupt. The
+/// test-only seam pauses here after the TCP handshake, before the stream is
+/// handed back, so a unit regression can cancel "during connect" and prove that
+/// no request byte leaves afterwards.
+fn connect_loopback(addr: SocketAddr, timeout: Duration) -> Result<TcpStream, LlamaRpcError> {
+    let stream = TcpStream::connect_timeout(&addr, timeout)?;
+    #[cfg(test)]
+    seam::pause_after_connect();
+    Ok(stream)
+}
+
+/// Private, test-only connector seam.
+#[cfg(test)]
+mod seam {
+    use std::sync::Mutex;
+
+    type Hook = Box<dyn FnOnce() + Send + 'static>;
+
+    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+
+    /// Installs a one-shot pause that runs after a loopback connect completes
+    /// and before the stream is returned to the streaming client.
+    pub(super) fn install(hook: Hook) {
+        *HOOK.lock().expect("connect seam lock") = Some(hook);
+    }
+
+    pub(super) fn clear() {
+        *HOOK.lock().expect("connect seam lock") = None;
+    }
+
+    /// Takes the hook out before running it, so the mutex is never held across
+    /// the blocking pause.
+    pub(super) fn pause_after_connect() {
+        let hook = HOOK.lock().expect("connect seam lock").take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
 /// Combined cancellation state: the handle's own token plus an optional
 /// caller-owned token (for host shutdown flags).
 #[derive(Clone)]
@@ -1124,7 +1166,7 @@ impl CompletionStream {
         // `connect` itself is not interruptible; it is bounded by
         // `connect_timeout`. Cancellation is therefore honoured immediately
         // after it returns and before any request byte is written.
-        let mut stream = TcpStream::connect_timeout(&addr, options.connect_timeout)?;
+        let mut stream = connect_loopback(addr, options.connect_timeout)?;
         if cancel.is_cancelled() {
             return Err(LlamaRpcError::StreamCancelled);
         }
@@ -1647,4 +1689,100 @@ pub fn run_rpc_bench_cli(args: &[String]) -> Result<String, LlamaRpcError> {
     }
     srv.stop();
     Ok(format!("[{}]\n", lines.join(",")))
+}
+
+#[cfg(test)]
+mod connect_seam_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct SeamReset;
+
+    impl Drop for SeamReset {
+        fn drop(&mut self) {
+            seam::clear();
+        }
+    }
+
+    #[test]
+    fn cancel_after_connect_before_request_bytes_sends_no_http_request() {
+        const PROMPT_SENTINEL: &str = "PROMPT-AFTER-CONNECT-MUST-NOT-BE-SENT-5521";
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (captured_tx, captured_rx) = mpsc::channel::<Vec<u8>>();
+        let server = thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept fake client");
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .ok();
+            // The peer deliberately never reads while the connector is paused.
+            thread::sleep(Duration::from_millis(200));
+            let mut captured = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => captured.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = captured_tx.send(captured);
+        });
+
+        let (paused_tx, paused_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let _reset = SeamReset;
+        seam::install(Box::new(move || {
+            let _ = paused_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        }));
+
+        let options = CompletionStreamOptions {
+            read_timeout: Duration::from_millis(500),
+            ..CompletionStreamOptions::default()
+        };
+        let external = Arc::new(AtomicBool::new(false));
+        let handle = spawn_completion_stream_with_cancel(
+            addr,
+            &CompletionRequest::new(PROMPT_SENTINEL).with_n_predict(1),
+            &options,
+            Arc::clone(&external),
+        )
+        .expect("loopback endpoint accepted");
+
+        paused_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the connector must pause only after the TCP handshake completes");
+
+        // Cancellation lands while the connector still owns the stream: the
+        // connection is already accepted, but no request byte has been written.
+        external.store(true, Ordering::SeqCst);
+        release_tx.send(()).expect("release connector");
+
+        let err = handle.join().expect_err("cancelled stream must not run");
+        assert!(
+            matches!(err, LlamaRpcError::StreamCancelled),
+            "expected StreamCancelled, got {err:?}"
+        );
+        assert!(!err.to_string().contains(PROMPT_SENTINEL), "{err}");
+
+        let captured = captured_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server capture result");
+        let text = String::from_utf8_lossy(&captured);
+        assert!(
+            captured.is_empty(),
+            "server received {} HTTP bytes after post-connect cancellation: {text:?}",
+            captured.len()
+        );
+        assert!(!text.contains(PROMPT_SENTINEL));
+        server.join().expect("server thread");
+    }
 }
