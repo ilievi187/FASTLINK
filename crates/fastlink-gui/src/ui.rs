@@ -757,13 +757,13 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
             state.model_catalog_mut().set_draft(&draft);
             state.request_register_model();
         }
-        if ui.button("Remove selected").clicked() {
-            state.model_catalog_mut().remove_selected();
+        if ui
+            .add_enabled(!busy, egui::Button::new("Remove selected"))
+            .clicked()
+        {
+            state.remove_selected_model();
         }
-        let selected_path = selected_model_path(state);
-        let confirmed = state.model_catalog().load_confirmation().map(PathBuf::from);
-        let can_confirm =
-            !busy && selected_path.is_some() && confirmed.as_ref() != selected_path.as_ref();
+        let can_confirm = !busy && selected_model_path(state).is_some();
         if ui
             .add_enabled(can_confirm, egui::Button::new("Confirm load"))
             .clicked()
@@ -816,8 +816,8 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
                     );
                     if selected == Some(index) {
                         badge(ui, "Selected", accent_color(ui));
-                    } else if ui.button("Select").clicked() {
-                        state.model_catalog_mut().select(index);
+                    } else if ui.add_enabled(!busy, egui::Button::new("Select")).clicked() {
+                        state.select_registered_model(index);
                     }
                 });
         });

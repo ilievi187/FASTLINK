@@ -139,6 +139,8 @@ pub struct AppState {
     discovery_at: Option<Instant>,
     model_catalog: ModelCatalog,
     model_loader: ModelLoader,
+    /// Generation of the catalog when the current model job was queued.
+    model_job_generation: Option<u64>,
 }
 
 impl AppState {
@@ -161,6 +163,7 @@ impl AppState {
             discovery_at: None,
             model_catalog: ModelCatalog::new(),
             model_loader: ModelLoader::new(),
+            model_job_generation: None,
         }
     }
 
@@ -229,20 +232,41 @@ impl AppState {
         else {
             return false;
         };
-        if self.model_catalog.load_confirmation() == Some(path.as_path()) {
-            return false;
-        }
         self.start_model_job(ModelJob::Confirm, path)
     }
 
+    /// Change the selected catalog row. Refused while a model check is running.
+    pub fn select_registered_model(&mut self, index: usize) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.select(index)
+    }
+
+    /// Drop the selected catalog row. Refused while a model check is running.
+    pub fn remove_selected_model(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.remove_selected()
+    }
+
     fn start_model_job(&mut self, job: ModelJob, path: PathBuf) -> bool {
+        let generation = self.model_catalog.generation();
+        let inspected = path.clone();
         match self.model_loader.start_with(move || {
             Ok(ModelJobResult {
                 job,
-                outcome: inspect_gguf_path(&path),
+                generation,
+                path: inspected.clone(),
+                outcome: inspect_gguf_path(&inspected),
             })
         }) {
-            Ok(started) => started,
+            Ok(true) => {
+                self.model_job_generation = Some(generation);
+                true
+            }
+            Ok(false) => false,
             Err(_) => {
                 self.model_catalog
                     .note_failure(ModelPathError::Unavailable, false);
@@ -252,12 +276,16 @@ impl AppState {
     }
 
     fn apply_model_job(&mut self, result: ModelJobResult) {
+        if result.generation != self.model_catalog.generation() {
+            return;
+        }
         match (result.job, result.outcome) {
             (ModelJob::Register, Ok(entry)) => {
                 self.model_catalog.accept_registration(entry);
             }
             (ModelJob::Register, Err(error)) => {
-                self.model_catalog.note_failure(error, false);
+                let clear = self.model_catalog.load_confirmation() == Some(result.path.as_path());
+                self.model_catalog.note_failure(error, clear);
             }
             (ModelJob::Confirm, Ok(entry)) => {
                 self.model_catalog.accept_confirmation(entry);
@@ -507,11 +535,17 @@ impl AppState {
             changed = true;
         }
         if let Some(result) = self.model_loader.poll() {
+            let queued = self.model_job_generation.take();
             match result {
                 Ok(job) => self.apply_model_job(job),
-                Err(_) => self
-                    .model_catalog
-                    .note_failure(ModelPathError::Unavailable, false),
+                Err(_) => {
+                    if queued
+                        .is_some_and(|generation| generation == self.model_catalog.generation())
+                    {
+                        self.model_catalog
+                            .note_failure(ModelPathError::Unavailable, false);
+                    }
+                }
             }
             changed = true;
         }

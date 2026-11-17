@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastlink_gui::inventory::InventoryCommand;
 use fastlink_gui::models::{
-    chat_status_text, loaded_status_label, map_metadata_error, redacted_path, register_gguf_path,
-    ModelCatalog, ModelPathError,
+    chat_status_text, loaded_status_label, map_metadata_error, redacted_path,
+    refused_windows_file_name, refused_windows_namespace, register_gguf_path,
+    sanitize_rendered_text, ModelCatalog, ModelPathError,
 };
 use fastlink_gui::state::AppState;
 
@@ -75,6 +76,126 @@ fn non_gguf_extension_is_rejected_without_registering_it() {
     let error = register_gguf_path(&path).expect_err("only .gguf paths register");
 
     assert_eq!(error, ModelPathError::NotGguf);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn windows_namespace_forms_are_classified_without_touching_the_filesystem() {
+    for raw in [
+        r"\\.\pipe\fastlink.gguf",
+        r"\\.\C:\models\x.gguf",
+        r"\\?\pipe\fastlink.gguf",
+        r"\\?\UNC\server\share\x.gguf",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\x.gguf",
+        r"\??\pipe\fastlink.gguf",
+        r"\\server\share\x.gguf",
+        r"\\server\pipe\fastlink.gguf",
+        "//server/pipe/fastlink.gguf",
+    ] {
+        assert!(refused_windows_namespace(Path::new(raw)), "{raw}");
+    }
+
+    for raw in [
+        r"C:\models\model.gguf",
+        r"c:models\model.gguf",
+        r"\\?\C:\models\model.gguf",
+        r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\models\model.gguf",
+        "/tmp/model.gguf",
+        "models/model.gguf",
+    ] {
+        assert!(!refused_windows_namespace(Path::new(raw)), "{raw}");
+    }
+}
+
+#[test]
+fn windows_reserved_names_are_flagged_independently_of_the_host() {
+    for raw in [
+        "NUL.gguf",
+        "nul",
+        "CON.gguf",
+        "con .gguf",
+        "PRN.gguf",
+        "AUX.gguf",
+        "COM1.gguf",
+        "lpt9.gguf",
+        "COM\u{00b9}.gguf",
+    ] {
+        assert!(refused_windows_file_name(Path::new(raw)), "{raw}");
+    }
+    for raw in ["model.gguf", "auxiliary.gguf", "com10.gguf", "console.gguf"] {
+        assert!(!refused_windows_file_name(Path::new(raw)), "{raw}");
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn dos_looking_names_remain_valid_linux_files() {
+    let dir = scratch_dir("doslinux");
+    for name in [
+        "NUL.gguf",
+        "COM1.gguf",
+        "LPT9.gguf",
+        "AUX.gguf",
+        "con .gguf",
+    ] {
+        let path = write_named(&dir, name, b"weights");
+        let entry = register_gguf_path(&path).expect("a Linux file with a DOS-looking name");
+        assert_eq!(entry.size_bytes, 7, "{name}");
+        assert_eq!(entry.path, path, "{name}");
+        assert!(!entry.loaded, "{name}");
+    }
+
+    let mut catalog = ModelCatalog::new();
+    let nul = dir.join("NUL.gguf");
+    catalog.set_draft(nul.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.entries().len(), 1);
+    assert_eq!(catalog.entries()[0].path, nul);
+
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(nul.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(wait_until(&mut state, |state| {
+        state.model_catalog().entries().len() == 1 && !state.model_fs_busy()
+    }));
+    assert!(state.model_catalog().error().is_none());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_namespace_and_reserved_names_are_refused_before_open() {
+    for raw in [
+        r"\\.\pipe\fastlink.gguf",
+        r"\\?\pipe\fastlink.gguf",
+        r"\??\pipe\fastlink.gguf",
+        r"\\localhost\pipe\fastlink.gguf",
+        r"\\server\share\fastlink.gguf",
+        "NUL.gguf",
+        "COM1.gguf",
+        "LPT9.gguf",
+    ] {
+        assert_eq!(
+            register_gguf_path(Path::new(raw)),
+            Err(ModelPathError::NotAFile),
+            "{raw}"
+        );
+    }
+
+    // A valid extended-length local path must still register.
+    let dir = scratch_dir("extended");
+    let file = write_named(&dir, "extended.gguf", b"abcd");
+    let canonical = fs::canonicalize(&file).expect("canonical extended path");
+    assert!(
+        canonical.to_string_lossy().starts_with(r"\\?\"),
+        "expected an extended-length canonical path: {}",
+        canonical.display()
+    );
+    let entry = register_gguf_path(&canonical).expect("extended local path stays valid");
+    assert_eq!(entry.size_bytes, 4);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -178,6 +299,40 @@ fn catalog_registers_only_the_explicit_path_and_ignores_siblings() {
     assert!(!catalog.entries()[0].loaded);
     assert!(catalog.error().is_none());
     assert!(catalog.load_confirmation().is_none());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn successful_registration_clears_the_draft_and_a_failure_keeps_it() {
+    let dir = scratch_dir("draft");
+    let path = write_named(&dir, "kept.gguf", b"abcd");
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(path.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.draft(), "");
+
+    let rejected = dir.join("notes.txt");
+    catalog.set_draft(rejected.to_str().expect("utf8"));
+    assert!(!catalog.register_draft());
+    assert_eq!(catalog.draft(), rejected.to_str().expect("utf8"));
+    assert_eq!(catalog.entries().len(), 1);
+
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(path.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    state
+        .model_catalog_mut()
+        .set_draft(rejected.to_str().expect("utf8"));
+    assert!(wait_until(&mut state, |state| !state.model_fs_busy()));
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert_eq!(
+        state.model_catalog().draft(),
+        rejected.to_str().expect("utf8"),
+        "a draft typed while the check runs must stay"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -470,6 +625,82 @@ fn same_file_through_dotdot_collapses_to_one_catalog_entry() {
 }
 
 #[test]
+fn rendered_name_and_path_replace_control_and_bidi_characters() {
+    use fastlink_gui::models::sanitize_rendered_text;
+
+    let spoofed = "safe\u{202E}\u{0007}name.gguf";
+    let cleaned = sanitize_rendered_text(spoofed);
+    assert!(!cleaned.contains('\u{202E}'));
+    assert!(!cleaned.contains('\u{0007}'));
+    assert!(cleaned.contains('\u{FFFD}'));
+    assert!(!cleaned.chars().any(|c| c.is_control()));
+
+    let dir = scratch_dir("bidi");
+    let path = write_named(&dir, "ok\u{202E}name.gguf", b"abcd");
+    let registered = register_gguf_path(&path).expect("bidi name");
+    assert!(!registered.file_name.contains('\u{202E}'));
+    assert!(registered.file_name.contains('\u{FFFD}'));
+    let shown = redacted_path(&path);
+    assert!(!shown.contains('\u{202E}'));
+    assert!(!shown.chars().any(|c| c.is_control()));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sanitizer_replaces_line_separators_tags_and_invisible_fillers() {
+    let raw = "a\u{2028}b\u{2029}c\u{FFF9}d\u{E0001}e\u{E0041}f\u{034F}g\u{115F}h\u{3164}i\u{FFA0}j\u{2800}k";
+    let cleaned = sanitize_rendered_text(raw);
+    for bad in [
+        '\u{2028}',
+        '\u{2029}',
+        '\u{FFF9}',
+        '\u{E0001}',
+        '\u{E0041}',
+        '\u{034F}',
+        '\u{115F}',
+        '\u{3164}',
+        '\u{FFA0}',
+        '\u{2800}',
+    ] {
+        assert!(!cleaned.contains(bad), "{bad:?} survived: {cleaned:?}");
+    }
+    assert_eq!(cleaned.chars().filter(|c| *c == '\u{FFFD}').count(), 10);
+    assert!(cleaned.contains('a') && cleaned.contains('k'));
+
+    let dir = scratch_dir("linechars");
+    let path = write_named(&dir, "line\u{2028}name.gguf", b"abcd");
+    let registered = register_gguf_path(&path).expect("line separator in the name");
+    assert!(!registered.file_name.contains('\u{2028}'));
+    assert!(registered.file_name.contains('\u{FFFD}'));
+    let shown = redacted_path(&path);
+    assert!(!shown.contains('\u{2028}'));
+    assert!(!shown.chars().any(char::is_control));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn redaction_strips_either_home_separator_and_truncates() {
+    use fastlink_gui::models::redact_path_text;
+
+    let shown = redact_path_text(r"C:\Users\secret\models\unit.gguf", &[r"C:\Users\secret"]);
+    assert!(!shown.to_ascii_lowercase().contains("secret"), "{shown}");
+    assert!(shown.starts_with('~'), "{shown}");
+    assert!(shown.contains("unit.gguf"), "{shown}");
+
+    let long = format!("D:/Users/secret/{}", "a".repeat(80));
+    let shown = redact_path_text(&long, &["d:/users/secret"]);
+    assert!(!shown.to_ascii_lowercase().contains("secret"), "{shown}");
+    assert!(
+        shown.chars().count() <= 48,
+        "{shown} len {}",
+        shown.chars().count()
+    );
+    assert!(shown.starts_with('…'), "{shown}");
+}
+
+#[test]
 fn redacted_path_drops_the_absolute_prefix_and_home_directory() {
     let marker = "SECRETMARKER";
     let path = PathBuf::from(format!("/{marker}/{:a<80}/visible.gguf", ""));
@@ -524,6 +755,77 @@ fn duplicate_registration_refreshes_size_and_confirm_rejects_a_deleted_file() {
 }
 
 #[test]
+fn confirmed_path_can_be_rechecked_and_failed_reregistration_clears_it() {
+    let dir = scratch_dir("recheck");
+    let path = write_named(&dir, "live.gguf", b"old");
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(path.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(wait_until(&mut state, |state| {
+        state.model_catalog().entries().len() == 1 && !state.model_fs_busy()
+    }));
+    assert!(state.request_confirm_model_load());
+    assert!(wait_until(&mut state, |state| {
+        !state.model_fs_busy() && state.model_catalog().load_confirmation().is_some()
+    }));
+
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("append");
+    file.write_all(b"MORE").expect("grow");
+    drop(file);
+    assert!(
+        state.request_confirm_model_load(),
+        "an already confirmed path must be re-checked"
+    );
+    assert!(wait_until(&mut state, |state| {
+        !state.model_fs_busy()
+            && state
+                .model_catalog()
+                .entries()
+                .first()
+                .map(|entry| entry.size_bytes)
+                == Some(7)
+    }));
+    assert_eq!(
+        state.model_catalog().load_confirmation(),
+        Some(path.as_path())
+    );
+    assert!(!state.model_catalog().entries()[0].loaded);
+
+    fs::remove_file(&path).expect("delete");
+    state
+        .model_catalog_mut()
+        .set_draft(path.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(wait_until(&mut state, |state| !state.model_fs_busy()));
+    assert_eq!(
+        state.model_catalog().error(),
+        Some(&ModelPathError::Missing)
+    );
+    assert!(state.model_catalog().load_confirmation().is_none());
+    assert_eq!(state.model_catalog().entries().len(), 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn wait_until(state: &mut AppState, mut ready: impl FnMut(&AppState) -> bool) -> bool {
+    use std::thread;
+    use std::time::Duration;
+    for _ in 0..50 {
+        state.poll();
+        if ready(state) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
 fn chat_and_loaded_labels_follow_explicit_flags() {
     assert_eq!(loaded_status_label(false), "Not loaded");
     assert_eq!(loaded_status_label(true), "Loaded");
@@ -533,6 +835,70 @@ fn chat_and_loaded_labels_follow_explicit_flags() {
     assert!(body.contains("does not generate tokens"));
     let (title, _) = chat_status_text(true, true);
     assert_eq!(title, "Available");
+}
+
+#[test]
+fn in_flight_model_job_cannot_be_retargeted_by_selection_or_removal() {
+    use std::sync::mpsc;
+
+    use fastlink_gui::models::{ModelJob, ModelJobResult};
+
+    let dir = scratch_dir("inflight");
+    let first = write_named(&dir, "first.gguf", b"aaaa");
+    let second = write_named(&dir, "second.gguf", b"bbbb");
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(first.to_str().expect("utf8"));
+    assert!(state.model_catalog_mut().register_draft());
+    state
+        .model_catalog_mut()
+        .set_draft(second.to_str().expect("utf8"));
+    assert!(state.model_catalog_mut().register_draft());
+    assert_eq!(state.model_catalog().entries().len(), 2);
+    assert!(state.model_catalog_mut().select(0));
+
+    let generation = state.model_catalog().generation();
+    let (release, gate) = mpsc::channel();
+    let stale_path = first.clone();
+    assert!(state
+        .model_loader_mut()
+        .start_with(move || {
+            let _ = gate.recv();
+            Ok(ModelJobResult {
+                job: ModelJob::Register,
+                path: stale_path.clone(),
+                generation,
+                outcome: Ok(fastlink_gui::models::RegisteredGguf {
+                    path: stale_path,
+                    identity: PathBuf::from("/tmp/fastlink-stale-identity.gguf"),
+                    file_name: "hijack.gguf".to_owned(),
+                    size_bytes: 1,
+                    loaded: false,
+                }),
+            })
+        })
+        .expect("hold model worker"));
+    assert!(state.model_fs_busy());
+    assert!(!state.select_registered_model(1));
+    assert_eq!(state.model_catalog().selected_index(), Some(0));
+    assert!(!state.remove_selected_model());
+    assert_eq!(state.model_catalog().entries().len(), 2);
+
+    assert!(state.model_catalog_mut().remove_selected());
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert_eq!(state.model_catalog().entries()[0].path, second);
+    release.send(()).expect("release");
+    assert!(wait_until(&mut state, |state| !state.model_fs_busy()));
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert_eq!(state.model_catalog().entries()[0].path, second);
+    assert_eq!(state.model_catalog().entries()[0].file_name, "second.gguf");
+    assert!(
+        state.model_catalog().error().is_none(),
+        "a stale success must not surface an error"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -552,6 +918,8 @@ fn background_model_check_does_not_stall_discovery_poll_or_cancel() {
             let _ = gate.recv();
             Ok(ModelJobResult {
                 job: ModelJob::Register,
+                generation: 0,
+                path: PathBuf::new(),
                 outcome: Err(ModelPathError::Unavailable),
             })
         })
@@ -671,6 +1039,194 @@ fn fifo_and_directory_symlink_are_not_regular_files() {
         register_gguf_path(&link).expect_err("symlink dir"),
         ModelPathError::NotAFile
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_alias_keeps_the_canonical_file_name_and_identity() {
+    use std::os::unix::fs::symlink;
+
+    let dir = scratch_dir("alias");
+    let real = write_named(&dir, "real-name.gguf", b"abcd");
+    let link = dir.join("alias-name.gguf");
+    symlink(&real, &link).expect("symlink");
+    let canonical = fs::canonicalize(&real).expect("canonical");
+
+    let via_link = register_gguf_path(&link).expect("symlink registers");
+    assert_eq!(via_link.path, link);
+    assert_eq!(via_link.identity, canonical);
+    assert_eq!(via_link.file_name, "real-name.gguf");
+    assert_eq!(via_link.size_bytes, 4);
+    assert!(!via_link.loaded);
+
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(real.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    catalog.set_draft(link.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.entries().len(), 1);
+    assert_eq!(catalog.entries()[0].path, real);
+    assert_eq!(catalog.entries()[0].identity, canonical);
+    assert_eq!(catalog.entries()[0].file_name, "real-name.gguf");
+    assert_eq!(catalog.entries()[0].size_bytes, 4);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmation_rejects_an_identity_or_path_mismatch() {
+    use std::os::unix::fs::symlink;
+
+    let dir = scratch_dir("mismatch");
+    let real = write_named(&dir, "real-name.gguf", b"abcd");
+    let other = write_named(&dir, "other-name.gguf", b"zzzz");
+    let link = dir.join("alias-name.gguf");
+    symlink(&real, &link).expect("symlink");
+
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(real.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.entries()[0].file_name, "real-name.gguf");
+
+    let mut swapped = catalog.entries()[0].clone();
+    swapped.identity = fs::canonicalize(&other).expect("other identity");
+    swapped.file_name = "other-name.gguf".to_owned();
+    swapped.size_bytes = 99;
+    assert!(!catalog.accept_confirmation(swapped));
+    assert!(catalog.load_confirmation().is_none());
+    assert_eq!(catalog.error(), Some(&ModelPathError::Changed));
+    assert!(ModelPathError::Changed.summary().contains("changed"));
+    assert_eq!(catalog.entries()[0].file_name, "real-name.gguf");
+    assert_eq!(catalog.entries()[0].size_bytes, 4);
+    assert_eq!(
+        catalog.entries()[0].identity,
+        fs::canonicalize(&real).expect("real")
+    );
+
+    assert!(catalog.confirm_load());
+    assert!(catalog.load_confirmation().is_some());
+    assert!(
+        catalog.error().is_none(),
+        "a clean confirmation clears the error"
+    );
+    let mut swapped_again = catalog.entries()[0].clone();
+    swapped_again.identity = fs::canonicalize(&other).expect("other identity");
+    assert!(!catalog.accept_confirmation(swapped_again));
+    assert!(
+        catalog.load_confirmation().is_none(),
+        "a mismatched re-check must clear the stale confirmation"
+    );
+    assert_eq!(catalog.error(), Some(&ModelPathError::Changed));
+
+    let alias = register_gguf_path(&link).expect("alias inspection");
+    assert_ne!(alias.path, catalog.entries()[0].path);
+    assert!(!catalog.accept_confirmation(alias));
+    assert!(catalog.load_confirmation().is_none());
+    assert_eq!(catalog.entries()[0].file_name, "real-name.gguf");
+    assert_eq!(catalog.entries()[0].path, real);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn repointed_alias_replaces_the_stale_row_instead_of_duplicating() {
+    use std::os::unix::fs::symlink;
+
+    let dir = scratch_dir("repoint");
+    let first = write_named(&dir, "first-target.gguf", b"aaaa");
+    let second = write_named(&dir, "second-target.gguf", b"bbbbbb");
+    let link = dir.join("alias.gguf");
+    symlink(&first, &link).expect("symlink");
+
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(link.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert!(catalog.confirm_load());
+    assert!(catalog.load_confirmation().is_some());
+    assert_eq!(catalog.entries()[0].file_name, "first-target.gguf");
+
+    fs::remove_file(&link).expect("remove link");
+    symlink(&second, &link).expect("repoint");
+    catalog.set_draft(link.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+
+    assert_eq!(
+        catalog.entries().len(),
+        1,
+        "a repointed alias must refresh the row, not add a duplicate"
+    );
+    let entry = &catalog.entries()[0];
+    assert_eq!(entry.path, link);
+    assert_eq!(entry.identity, fs::canonicalize(&second).expect("second"));
+    assert_eq!(entry.file_name, "second-target.gguf");
+    assert_eq!(entry.size_bytes, 6);
+    assert!(
+        catalog.load_confirmation().is_none(),
+        "the stale confirmation for the old target must be cleared"
+    );
+    assert!(!entry.loaded);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn state_confirm_surfaces_a_changed_identity_and_keeps_the_row() {
+    use std::os::unix::fs::symlink;
+
+    let dir = scratch_dir("statechanged");
+    let first = write_named(&dir, "first-target.gguf", b"aaaa");
+    let second = write_named(&dir, "second-target.gguf", b"bbbb");
+    let link = dir.join("alias.gguf");
+    symlink(&first, &link).expect("symlink");
+
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(link.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(wait_until(&mut state, |state| {
+        state.model_catalog().entries().len() == 1 && !state.model_fs_busy()
+    }));
+    assert!(state.request_confirm_model_load());
+    assert!(wait_until(&mut state, |state| {
+        !state.model_fs_busy() && state.model_catalog().load_confirmation().is_some()
+    }));
+
+    fs::remove_file(&link).expect("remove link");
+    symlink(&second, &link).expect("repoint");
+    assert!(state.request_confirm_model_load());
+    assert!(wait_until(&mut state, |state| !state.model_fs_busy()));
+
+    assert_eq!(
+        state.model_catalog().error(),
+        Some(&ModelPathError::Changed),
+        "a changed identity must surface an actionable error"
+    );
+    assert!(state.model_catalog().load_confirmation().is_none());
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert_eq!(
+        state.model_catalog().entries()[0].file_name,
+        "first-target.gguf"
+    );
+    assert_eq!(state.model_catalog().entries()[0].size_bytes, 4);
+
+    // Re-registering the repointed alias refreshes the same row and clears the error.
+    state
+        .model_catalog_mut()
+        .set_draft(link.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(wait_until(&mut state, |state| !state.model_fs_busy()));
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert_eq!(
+        state.model_catalog().entries()[0].file_name,
+        "second-target.gguf"
+    );
+    assert!(state.model_catalog().error().is_none());
 
     let _ = fs::remove_dir_all(&dir);
 }

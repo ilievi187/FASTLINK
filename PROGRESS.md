@@ -1,5 +1,27 @@
 # Development progress
 
+## 2026-11-17 — GGUF catalog recovery review fixes (`fix/luna-gguf-model-ui-recovery`)
+
+- Windows directory opens (ERROR_ACCESS_DENIED without `FILE_FLAG_BACKUP_SEMANTICS`) are classified from the path again, so a directory reports `NotAFile`; access-denied on a regular file stays `NotReadable`.
+- Device/UNC/NT namespace checks and DOS reserved-name checks are pure helpers tested on every host. They run only on Windows; `\\?\C:\…`/Volume-GUID extended local paths stay valid and Linux files named `NUL.gguf`/`COM1.gguf` register normally.
+- Opened-file identity is described as Linux-exact and best effort elsewhere; confirmation mismatches clear the confirmation, set a `Changed` error, and never rename or refresh the row.
+- A repointed symlink alias refreshes the existing row instead of adding an unreachable duplicate.
+- Rendered names and paths also replace U+2028/U+2029, interlinear/tag characters, and invisible fillers. The unused `MODEL_WORKER_JOB_LIMIT` constant was removed and the worker limit is described without it.
+- Tests: workspace lib/tests/doctests, focused model_catalog/headless_ui/command_runner, Clippy, GUI build, and a Windows-GNU all-target check.
+
+**Explicit limitation:** the model worker still cannot interrupt a Windows file open that has already started; the bound remains one background job, not a timeout.
+
+## 2026-11-17 — GGUF catalog confirmation and path-privacy fixes (`feat/luna-gguf-model-ui`)
+
+- Confirmation now requires both the stored path and the opened-file identity. A symlink alias refreshes size only and keeps the original path, canonical identity, and canonical file name.
+- An already confirmed path can be re-checked. A failed re-registration or identity/path mismatch clears that confirmation. A different invalid path does not.
+- Select and Remove are refused while the single model worker is busy. Each result carries the catalog generation from queue time, so a stale success or error cannot rewrite a removed or different entry.
+- Unix identity comes from the opened descriptor. Windows named-pipe and DOS-device paths are rejected before open. A normal Windows `CreateFile` is not cancellable and is not described as having a hard timeout.
+- Successful registration clears the draft. Painted paths recognize `HOME` and `USERPROFILE` with either separator, truncate the tail, and replace control, bidi, and format characters in the name and path.
+- No weight bytes are read and no model is loaded. Chat stays unavailable.
+
+**Explicit limitation:** the model worker still cannot interrupt a Windows file open that has already started. The bound is one queued job on a background thread, not a timeout.
+
 ## 2026-11-17 — Session GGUF catalog review fixes (`feat/luna-gguf-model-ui`)
 
 - The Linux GUI can register more than one explicit `.gguf` path. Each check runs on a bounded background worker, so a stalled filesystem call does not stop discovery polling or cancellation.

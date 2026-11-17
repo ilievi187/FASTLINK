@@ -5,7 +5,9 @@
 //! consumes the opt-in `fastlink.discover.v1` contract; discovery never starts
 //! on launch or local refresh. A session catalog can hold several explicit
 //! `.gguf` paths. Each registration checks one path on a background worker and
-//! stores metadata only. It does not load weights or enable chat.
+//! stores metadata only. A symlink keeps the canonical name. The draft is
+//! cleared after success, and painted names drop control and bidi characters.
+//! It does not load weights or enable chat.
 //!
 //! This crate contains no network code, model download, inference or GPU use.
 
