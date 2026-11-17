@@ -9,6 +9,7 @@ use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Scroll
 
 use crate::discovery::{CandidateNode, DiscoveryInventory, ProviderStatus, DISCOVERY_SCOPE};
 use crate::inventory::GpuDevice;
+use crate::models::{chat_status_text, loaded_status_label, redacted_path};
 use crate::state::{AppState, Screen};
 use crate::view::{self, FieldRow};
 
@@ -134,6 +135,7 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     empty_block(ui, "Paired peers", &peer_status, peer_body);
 
     let registered = state.model_catalog().entries().len();
+    let loaded_label = loaded_status_label(state.model_catalog().weights_loaded());
     let (model_status, model_body) = if registered == 0 {
         (
             "None registered".to_owned(),
@@ -141,17 +143,14 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
         )
     } else {
         (
-            format!("{registered} registered · not loaded"),
+            format!("{registered} registered · {loaded_label}"),
             "Metadata only. Weight bytes stay on disk and are not loaded.",
         )
     };
     empty_block(ui, "Models", &model_status, model_body);
-    empty_block(
-        ui,
-        "Chat",
-        "Not available",
-        "No inference backend is connected. This window does not generate tokens.",
-    );
+    let (chat_title, chat_body) =
+        chat_status_text(state.inference_backend_connected(), state.chat_available());
+    empty_block(ui, "Chat", chat_title, chat_body);
 
     ui.add_space(8.0);
     ui.separator();
@@ -739,25 +738,37 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
     if editor.changed() {
         state.model_catalog_mut().set_draft(&draft);
     }
+    let busy = state.model_fs_busy();
+    if busy {
+        ui.label(
+            RichText::new("Checking that path on a background worker.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
     ui.horizontal(|ui| {
         if ui
-            .button(RichText::new("Register GGUF path").strong())
+            .add_enabled(
+                !busy,
+                egui::Button::new(RichText::new("Register GGUF path").strong()),
+            )
             .clicked()
         {
             state.model_catalog_mut().set_draft(&draft);
-            state.model_catalog_mut().register_draft();
+            state.request_register_model();
         }
         if ui.button("Remove selected").clicked() {
             state.model_catalog_mut().remove_selected();
         }
         let selected_path = selected_model_path(state);
         let confirmed = state.model_catalog().load_confirmation().map(PathBuf::from);
-        let can_confirm = selected_path.is_some() && confirmed.as_ref() != selected_path.as_ref();
+        let can_confirm =
+            !busy && selected_path.is_some() && confirmed.as_ref() != selected_path.as_ref();
         if ui
             .add_enabled(can_confirm, egui::Button::new("Confirm load"))
             .clicked()
         {
-            state.model_catalog_mut().confirm_load();
+            state.request_confirm_model_load();
         }
     });
 
@@ -790,14 +801,18 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
                 .show(ui, |ui| {
                     ui.label(RichText::new(&entry.file_name).strong());
                     ui.label(
-                        RichText::new(entry.path.display().to_string())
+                        RichText::new(redacted_path(&entry.path))
                             .monospace()
                             .small(),
                     );
                     ui.label(
-                        RichText::new(format!("{} bytes · Not loaded", entry.size_bytes))
-                            .small()
-                            .color(ui.visuals().weak_text_color()),
+                        RichText::new(format!(
+                            "{} bytes · {}",
+                            entry.size_bytes,
+                            loaded_status_label(entry.loaded)
+                        ))
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
                     );
                     if selected == Some(index) {
                         badge(ui, "Selected", accent_color(ui));
@@ -810,10 +825,13 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
     }
     if let Some(path) = confirmation {
         ui.add_space(4.0);
+        let (_title, chat_body) =
+            chat_status_text(state.inference_backend_connected(), state.chat_available());
         ui.label(
             RichText::new(format!(
-                "Load confirmed for {}. No inference backend is connected. Weights were not loaded and this window does not generate tokens.",
-                path.display()
+                "Load confirmed for {}. {chat_body} Status: {}.",
+                redacted_path(&path),
+                loaded_status_label(state.model_catalog().weights_loaded())
             ))
             .color(ui.visuals().warn_fg_color),
         );

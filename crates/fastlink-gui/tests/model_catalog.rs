@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastlink_gui::inventory::InventoryCommand;
-use fastlink_gui::models::{register_gguf_path, ModelCatalog, ModelPathError};
+use fastlink_gui::models::{
+    chat_status_text, loaded_status_label, map_metadata_error, redacted_path, register_gguf_path,
+    ModelCatalog, ModelPathError,
+};
 use fastlink_gui::state::AppState;
 
 fn scratch_dir(label: &str) -> PathBuf {
@@ -100,31 +103,62 @@ fn directory_named_gguf_is_rejected_and_children_are_not_registered() {
 }
 
 #[test]
-fn unreadable_gguf_is_rejected() {
+fn metadata_errors_keep_not_found_permission_and_other_distinct() {
+    use std::io::{Error, ErrorKind};
+
+    assert_eq!(
+        map_metadata_error(&Error::new(ErrorKind::NotFound, "gone")),
+        ModelPathError::Missing
+    );
+    assert_eq!(
+        map_metadata_error(&Error::new(ErrorKind::PermissionDenied, "denied")),
+        ModelPathError::NotReadable
+    );
+    let other = Error::other("io");
+    assert_eq!(map_metadata_error(&other), ModelPathError::Unavailable);
+    assert!(!ModelPathError::Unavailable
+        .summary()
+        .contains("does not exist"));
+    assert!(ModelPathError::NotReadable
+        .summary()
+        .contains("not readable"));
+}
+
+#[test]
+fn unreadable_result_follows_actual_open_not_a_readonly_bit() {
     let dir = scratch_dir("mode");
     let path = write_named(&dir, "secret.gguf", b"weights");
-    let mut permissions = fs::metadata(&path).expect("meta").permissions();
+    let original = fs::metadata(&path).expect("meta").permissions();
+    let mut denied = original.clone();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o000);
+        denied.set_mode(0o000);
     }
     #[cfg(not(unix))]
     {
-        permissions.set_readonly(true);
+        denied.set_readonly(true);
     }
-    fs::set_permissions(&path, permissions).expect("chmod");
+    fs::set_permissions(&path, denied).expect("restrict");
 
-    let error = register_gguf_path(&path).expect_err("unreadable file");
-
-    assert_eq!(error, ModelPathError::NotReadable);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut restore = fs::metadata(&path).expect("meta").permissions();
-        restore.set_mode(0o600);
-        fs::set_permissions(&path, restore).expect("restore");
+    let opened = File::open(&path);
+    let registered = register_gguf_path(&path);
+    match opened {
+        Ok(_) => {
+            let entry = registered.expect("an openable file stays registrable");
+            assert_eq!(entry.size_bytes, b"weights".len() as u64);
+            assert!(!entry.loaded);
+        }
+        Err(err) => {
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                registered.expect_err("open failure"),
+                ModelPathError::NotReadable
+            );
+        }
     }
+
+    let _ = fs::set_permissions(&path, original);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -430,6 +464,242 @@ fn same_file_through_dotdot_collapses_to_one_catalog_entry() {
     assert_eq!(catalog.entries().len(), 1);
     assert_eq!(catalog.entries()[0].path, path);
     assert_eq!(catalog.selected_index(), Some(0));
+    assert!(!catalog.select(4));
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn redacted_path_drops_the_absolute_prefix_and_home_directory() {
+    let marker = "SECRETMARKER";
+    let path = PathBuf::from(format!("/{marker}/{:a<80}/visible.gguf", ""));
+    let shown = redacted_path(&path);
+    assert!(!shown.contains(marker), "{shown}");
+    assert!(shown.starts_with('…'), "{shown}");
+    assert!(shown.contains("visible.gguf"), "{shown}");
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_text = home.to_string_lossy().into_owned();
+        if !home_text.is_empty() {
+            let under = PathBuf::from(&home).join("models").join("unit.gguf");
+            let shown_home = redacted_path(&under);
+            assert!(!shown_home.contains(&home_text), "{shown_home}");
+            assert!(
+                shown_home.starts_with('~') || shown_home.starts_with('…'),
+                "{shown_home}"
+            );
+        }
+    }
+}
+
+#[test]
+fn duplicate_registration_refreshes_size_and_confirm_rejects_a_deleted_file() {
+    let dir = scratch_dir("stale");
+    let path = write_named(&dir, "live.gguf", b"old");
+    let mut catalog = ModelCatalog::new();
+    catalog.set_draft(path.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.entries()[0].size_bytes, 3);
+
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("append");
+    file.write_all(b"MORE").expect("grow");
+    drop(file);
+    catalog.set_draft(path.to_str().expect("utf8"));
+    assert!(catalog.register_draft());
+    assert_eq!(catalog.entries().len(), 1);
+    assert_eq!(catalog.entries()[0].size_bytes, 7);
+    assert_eq!(catalog.entries()[0].path, path);
+
+    fs::remove_file(&path).expect("delete");
+    assert!(!catalog.confirm_load());
+    assert_eq!(catalog.error(), Some(&ModelPathError::Missing));
+    assert!(catalog.load_confirmation().is_none());
+    assert!(!catalog.entries()[0].loaded);
+    assert_eq!(loaded_status_label(catalog.weights_loaded()), "Not loaded");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn chat_and_loaded_labels_follow_explicit_flags() {
+    assert_eq!(loaded_status_label(false), "Not loaded");
+    assert_eq!(loaded_status_label(true), "Loaded");
+    let (title, body) = chat_status_text(false, true);
+    assert_eq!(title, "Not available");
+    assert!(body.contains("No inference backend is connected"));
+    assert!(body.contains("does not generate tokens"));
+    let (title, _) = chat_status_text(true, true);
+    assert_eq!(title, "Available");
+}
+
+#[test]
+fn background_model_check_does_not_stall_discovery_poll_or_cancel() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use fastlink_gui::discovery::parse_discovery_json;
+    use fastlink_gui::models::{ModelJob, ModelJobResult};
+
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    let (release, gate) = mpsc::channel();
+    assert!(state
+        .model_loader_mut()
+        .start_with(move || {
+            let _ = gate.recv();
+            Ok(ModelJobResult {
+                job: ModelJob::Register,
+                outcome: Err(ModelPathError::Unavailable),
+            })
+        })
+        .expect("model worker starts"));
+    assert!(state.model_fs_busy());
+    assert!(!state.request_register_model());
+    assert!(!state.request_confirm_model_load());
+
+    let fixture = include_str!("../testdata/discovery-v1.json");
+    assert!(state
+        .discovery_loader_mut()
+        .start_with(move || Ok(parse_discovery_json(fixture).expect("fixture")))
+        .expect("discovery worker starts"));
+    let mut saw = false;
+    for _ in 0..50 {
+        state.poll();
+        if state.discovery().is_some() {
+            saw = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        saw,
+        "discovery result must apply while the model worker is blocked"
+    );
+    assert!(state.discovery_error().is_none());
+    assert!(state.model_fs_busy());
+
+    let (done, hold) = mpsc::channel();
+    let fixture = include_str!("../testdata/discovery-v1.json");
+    assert!(state
+        .discovery_loader_mut()
+        .start_with(move || {
+            let _ = hold.recv();
+            Ok(parse_discovery_json(fixture).expect("fixture"))
+        })
+        .expect("second discovery"));
+    assert!(state.bind_discovery_cancel());
+    assert!(state.cancel_discovery());
+    assert!(state.discovery_cancelling());
+    assert!(state.model_fs_busy());
+    done.send(()).expect("release discovery");
+    release.send(()).expect("release model");
+    for _ in 0..50 {
+        state.poll();
+        if !state.model_fs_busy() && !state.discovery_busy() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!state.model_fs_busy());
+    assert!(!state.discovery_busy());
+}
+
+#[test]
+fn worker_registration_keeps_metadata_across_a_successful_inventory_refresh() {
+    use std::thread;
+    use std::time::Duration;
+
+    use fastlink_gui::inventory::parse_inventory_json;
+
+    let dir = scratch_dir("refresh");
+    let path = write_named(&dir, "kept.gguf", b"abcd");
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state
+        .model_catalog_mut()
+        .set_draft(path.to_str().expect("utf8"));
+    assert!(state.request_register_model());
+    assert!(state.discovery().is_none());
+    assert!(!state.discovery_busy());
+    let mut ready = false;
+    for _ in 0..50 {
+        state.poll();
+        if state.model_catalog().entries().len() == 1 && !state.model_fs_busy() {
+            ready = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready);
+    assert_eq!(state.model_catalog().entries()[0].size_bytes, 4);
+    assert!(!state.model_catalog().entries()[0].loaded);
+
+    let inventory =
+        parse_inventory_json(include_str!("../testdata/devices-v1.json")).expect("device fixture");
+    state.apply_result(Ok(inventory));
+    assert_eq!(state.model_catalog().entries().len(), 1);
+    assert!(state.model_catalog().load_confirmation().is_none());
+    assert!(!state.chat_available());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_and_directory_symlink_are_not_regular_files() {
+    use std::os::unix::fs::symlink;
+    use std::time::Instant;
+
+    let dir = scratch_dir("fifo");
+    let fifo = dir.join("queue.gguf");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).expect("path");
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o644) }, 0);
+    let started = Instant::now();
+    assert_eq!(
+        register_gguf_path(&fifo).expect_err("fifo"),
+        ModelPathError::NotAFile
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+    let folder = dir.join("subdir");
+    fs::create_dir(&folder).expect("dir");
+    let link = dir.join("link.gguf");
+    symlink(&folder, &link).expect("symlink");
+    assert_eq!(
+        register_gguf_path(&link).expect_err("symlink dir"),
+        ModelPathError::NotAFile
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_gguf_name_is_visible_lossy_text() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = scratch_dir("rawname");
+    let mut bytes = dir.as_os_str().as_encoded_bytes().to_vec();
+    bytes.push(b'/');
+    bytes.extend_from_slice(&[0xff, 0xfe]);
+    bytes.extend_from_slice(b".gguf");
+    let path = PathBuf::from(OsString::from_vec(bytes));
+    write_named_os(&path, b"raw");
+
+    let registered = register_gguf_path(&path).expect("non-utf8 name");
+    assert!(!registered.file_name.is_empty());
+    assert!(registered.file_name.contains('\u{FFFD}'));
+    assert_eq!(registered.size_bytes, 3);
+    assert!(!registered.loaded);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+fn write_named_os(path: &Path, bytes: &[u8]) {
+    let mut file = File::create(path).expect("create raw name");
+    file.write_all(bytes).expect("write");
 }

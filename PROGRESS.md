@@ -1,5 +1,16 @@
 # Development progress
 
+## 2026-11-17 — Session GGUF catalog review fixes (`feat/luna-gguf-model-ui`)
+
+- The Linux GUI can register more than one explicit `.gguf` path. Each check runs on a bounded background worker, so a stalled filesystem call does not stop discovery polling or cancellation.
+- A path is accepted only when a non-blocking open (Unix) and `fstat` show a regular readable file. Directories, FIFOs, and directory symlinks are refused. Metadata errors stay distinct: not found, not readable, and other failures.
+- The catalog stores the submitted path, a lossy file name (non-UTF-8 names are not blank), and the byte size. Re-registering the same file refreshes the size. Confirm load re-checks the file and refuses a deleted path. Nothing is copied, scanned, persisted, or loaded.
+- The window shows a shortened path (`~` for the home directory, ellipsis for a long prefix) and takes the loaded/chat lines from `loaded` plus the disconnected-backend flags. Chat stays unavailable and no tokens are generated.
+- The unreadable-file test follows whether `File::open` actually fails, so Windows read-only attributes and root (DAC override) do not fail the suite.
+- Verified with `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, focused `model_catalog` tests, `cargo test --workspace --lib --bins --tests` (benches excluded), `cargo build -p fastlink-gui`, and a Windows-target check when that target is installed. No GUI window, GPU, model load, or network scan.
+
+**Explicit limitation:** confirmation is a session flag only. There is still no inference backend, so weights are never loaded and chat cannot run. Unix non-blocking open is the FIFO guard; other platforms open through the standard library on the same worker. The catalog is memory-only and disappears when the process exits.
+
 ## 2026-11-15 — Post-exit capture drain race (final review)
 
 - Fixed the final P3 finding: `capture_child_unix` used `min(now + POST_EXIT_DRAIN, overall_deadline)` for the post-exit drain. If a completed child was observed after the deadline, buffered valid JSON was skipped and reported as empty/malformed.

@@ -35,12 +35,13 @@ that action fails closed with a safe error until a supporting CLI is supplied.
   connectivity are never inferred.
 - Provides manual **Refresh**, local-node **selection**, and a session-only
   **opt-in** toggle for the local node only.
-- Lets the user enter or paste **one** `.gguf` path and registers it only when
-  that path is an existing readable file. The catalog stores the path, file
-  name and byte size. It does not copy the file, read weight bytes, scan a
-  directory, or write the path to disk.
-- Offers an explicit **Confirm load** state for a future backend. Confirmation
-  does not load weights.
+- Lets the user enter or paste an explicit `.gguf` path. The catalog can hold
+  several such paths. Each registration checks one path on a background worker
+  and stores the file name and byte size. It does not copy the file, read
+  weight bytes, scan a directory, or write the path to disk.
+- Offers an explicit **Confirm load** state for a future backend. The button
+  is enabled for a selected path that is not already confirmed. Confirmation
+  re-checks the file and still does not load weights.
 - Shows an honest empty state for peers. Chat stays visibly unavailable, and
   the shell never generates tokens, until a real inference backend is connected.
   No such backend exists in this milestone.
@@ -226,12 +227,19 @@ path and presses **Register GGUF path**. The shell accepts the path only when
 all of the following are true:
 
 - the trimmed path is non-empty;
-- the final extension is `.gguf`, compared case-insensitively;
-- `metadata` reports an existing file, not a directory, socket, or other node;
-- opening the file for reading succeeds.
+- the final extension is `.gguf`, compared case-insensitively, including when
+  the name is not valid UTF-8;
+- opening that one path succeeds and `fstat` on the opened handle reports a
+  regular file, not a directory, FIFO, socket, or other node. On Unix the open
+  uses `O_NONBLOCK`, so a path swapped to a FIFO cannot block the worker.
 
-The open handle is closed without a `read` call. The catalog records the path
-the user first submitted, the file name, and the byte size from `metadata`.
+The check runs on a single background worker. The egui frame only queues it
+and keeps polling discovery, including cancel. The open handle is closed
+without a `read` call. The catalog records the path the user first submitted,
+a lossy display name, and the byte size from that `fstat`. A later registration
+of the same file refreshes the size and keeps the original path. The painted
+path replaces the home directory with `~` and truncates a long prefix. Permission
+errors are not described as a missing file.
 GGUF magic, tensor headers, and weight bytes are not inspected, so a readable
 file with the right extension is registered even when it is not a valid model.
 That keeps validation from becoming a weight-content read.
@@ -243,10 +251,14 @@ selected** drops one entry from the in-memory catalog and does not delete the
 file. Sibling `.gguf` files are never added, because the shell does not list
 directories.
 
-**Confirm load** is enabled for the selected entry. It stores an explicit
-pending-backend confirmation for that path. It does not allocate weights, start
-a runtime, or change `loaded` from false. Selecting or registering a different
-file clears that confirmation. Chat remains **Not available** in the workspace,
+**Confirm load** is enabled only when a selected entry is not already confirmed
+and the model worker is idle. It re-checks the file on that worker. A deleted
+or non-file path is refused and any stale confirmation is cleared. A successful
+check stores an explicit pending-backend confirmation and refreshes the byte
+size. It does not allocate weights, start a runtime, or change `loaded` from
+false. The loaded and chat lines are rendered from those flags; the backend is
+not connected, so chat stays unavailable and no tokens are generated. Selecting
+or registering a different file clears that confirmation. Chat remains **Not available** in the workspace,
 with the statement that no inference backend is connected and that this window
 does not generate tokens. There is no token list and no completion stream.
 
@@ -333,11 +345,16 @@ deadline is still drained and capped, including the `timeout=0` case.
 
 `tests/model_catalog.rs` creates temporary files and checks one explicit path
 at a time. It proves metadata registration, rejection of a non-`.gguf` path, a
-missing path, a directory (including one that contains another `.gguf`), and an
-unreadable file. It also proves duplicate and `..` aliases collapse, load
-confirmation does not load weights or enable chat, discovery stays idle, and
-the headless UI paints the path metadata, the confirmation, the unavailable
-chat state, and a validation error without painting weight bytes.
+missing path, a directory (including one that contains another `.gguf`), a FIFO,
+and a symlink to a directory. The unreadable-file case expects `NotReadable`
+only when `File::open` itself fails, so a Windows read-only attribute or root
+DAC override does not fail the test. It also proves duplicate and `..` aliases
+collapse, a repeat registration refreshes size, a deleted file cannot be
+confirmed, non-UTF-8 names stay visible, painted paths are redacted, load
+confirmation does not load weights or enable chat, a background model check
+does not block discovery polling or cancel, and the headless UI paints the
+derived status, the confirmation, and a validation error without painting
+weight bytes.
 
 Discovery tests use only the sanitized fixtures and fake CLI scripts. They prove
 that launch and local refresh never invoke `discover`, an explicit action passes
