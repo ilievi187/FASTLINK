@@ -590,14 +590,14 @@ fn connect_loopback(addr: SocketAddr, timeout: Duration) -> Result<TcpStream, Ll
     }
     let stream = TcpStream::connect_timeout(&addr, timeout)?;
     #[cfg(test)]
-    seam::pause_after_connect();
+    seam::pause_after_connect(addr);
     Ok(stream)
 }
 
 /// Private, test-only connector seam.
 #[cfg(test)]
 mod seam {
-    use std::net::TcpStream;
+    use std::net::{SocketAddr, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -610,18 +610,23 @@ mod seam {
         std::sync::mpsc::Sender<()>,
     );
 
-    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    static HOOKS: Mutex<Vec<(SocketAddr, Hook)>> = Mutex::new(Vec::new());
     static REQUEST_WRITE_HOOK: Mutex<Option<RequestWriteHookState>> = Mutex::new(None);
     static NON_LOOPBACK_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
     /// Installs a one-shot pause that runs after a loopback connect completes
     /// and before the stream is returned to the streaming client.
-    pub(super) fn install(hook: Hook) {
-        *HOOK.lock().expect("connect seam lock") = Some(hook);
+    pub(super) fn install(addr: SocketAddr, hook: Hook) {
+        let mut hooks = HOOKS.lock().expect("connect seam lock");
+        hooks.retain(|(registered_addr, _)| *registered_addr != addr);
+        hooks.push((addr, hook));
     }
 
-    pub(super) fn clear() {
-        *HOOK.lock().expect("connect seam lock") = None;
+    pub(super) fn clear(addr: SocketAddr) {
+        HOOKS
+            .lock()
+            .expect("connect seam lock")
+            .retain(|(registered_addr, _)| *registered_addr != addr);
     }
 
     pub(super) fn clear_request_write_hook() {
@@ -680,8 +685,14 @@ mod seam {
 
     /// Takes the hook out before running it, so the mutex is never held across
     /// the blocking pause.
-    pub(super) fn pause_after_connect() {
-        let hook = HOOK.lock().expect("connect seam lock").take();
+    pub(super) fn pause_after_connect(addr: SocketAddr) {
+        let hook = {
+            let mut hooks = HOOKS.lock().expect("connect seam lock");
+            hooks
+                .iter()
+                .position(|(registered_addr, _)| *registered_addr == addr)
+                .map(|index| hooks.remove(index).1)
+        };
         if let Some(hook) = hook {
             hook();
         }
@@ -1844,12 +1855,36 @@ mod connect_seam_tests {
     use std::thread;
     use std::time::Duration;
 
-    struct SeamReset;
+    struct SeamReset(SocketAddr);
 
     impl Drop for SeamReset {
         fn drop(&mut self) {
-            seam::clear();
+            seam::clear(self.0);
         }
+    }
+
+    #[test]
+    fn connect_hook_only_runs_for_its_registered_endpoint() {
+        let target: SocketAddr = "127.0.0.1:19121".parse().expect("target address");
+        let unrelated: SocketAddr = "127.0.0.1:19122".parse().expect("unrelated address");
+        let called = Arc::new(AtomicBool::new(false));
+        let called_by_hook = Arc::clone(&called);
+        let _reset = SeamReset(target);
+        seam::install(
+            target,
+            Box::new(move || called_by_hook.store(true, Ordering::SeqCst)),
+        );
+
+        seam::pause_after_connect(unrelated);
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "an unrelated connection must not consume the hook"
+        );
+        seam::pause_after_connect(target);
+        assert!(
+            called.load(Ordering::SeqCst),
+            "the registered connection must run the hook"
+        );
     }
 
     struct RequestWriteHookReset;
@@ -2146,11 +2181,14 @@ mod connect_seam_tests {
 
         let (paused_tx, paused_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
-        let _reset = SeamReset;
-        seam::install(Box::new(move || {
-            let _ = paused_tx.send(());
-            let _ = release_rx.recv_timeout(Duration::from_secs(5));
-        }));
+        let _reset = SeamReset(addr);
+        seam::install(
+            addr,
+            Box::new(move || {
+                let _ = paused_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            }),
+        );
 
         let options = CompletionStreamOptions {
             read_timeout: Duration::from_millis(500),
