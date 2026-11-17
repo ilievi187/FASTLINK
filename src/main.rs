@@ -52,6 +52,14 @@ fn create_staging_file(output_dir: &Path, output: &Path) -> io::Result<(PathBuf,
         if candidate == output {
             continue;
         }
+        if let (Some(candidate_name), Some(output_name)) = (
+            candidate.file_name().and_then(|name| name.to_str()),
+            output.file_name().and_then(|name| name.to_str()),
+        ) {
+            if candidate_name.eq_ignore_ascii_case(output_name) {
+                continue;
+            }
+        }
         match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -416,5 +424,32 @@ mod tests {
             sentinel,
             "a valid output named like the old staging suffix must not be clobbered"
         );
+    }
+
+    #[test]
+    fn staging_skips_ascii_case_folded_final_output_alias() {
+        let root = tempfile::tempdir().expect("temp root");
+        let outputs = root.path().join("outputs");
+        fs::create_dir_all(&outputs).expect("outputs dir");
+
+        let final_name = format!(".FASTLINK-PARTIAL-{}-0", std::process::id());
+        let output = outputs.join(&final_name);
+        let (staging, handle) = create_staging_file(&outputs, &output).expect("staging file");
+        let staging_name = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("ASCII staging name");
+
+        assert!(
+            !staging_name.eq_ignore_ascii_case(&final_name),
+            "staging basename {staging_name:?} must not alias final basename {final_name:?}"
+        );
+        assert!(
+            !output.exists(),
+            "the final output path must not exist while its staging handle is open"
+        );
+
+        drop(handle);
+        fs::remove_file(&staging).expect("remove staging file");
     }
 }
