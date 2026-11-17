@@ -5,7 +5,8 @@
 //! `node_id` is the only identity used for selection and opt-in.
 //!
 //! Opt-in state is intentionally session-only: this milestone creates no
-//! pairing, listener or persisted consent.
+//! pairing, listener or persisted consent. The GGUF catalog is also
+//! session-only metadata and never loads a model.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::discovery::{DiscoveryCommand, DiscoveryInventory};
 use crate::inventory::{DeviceInventory, InventoryCommand, InventoryNode, LoadError};
+use crate::models::ModelCatalog;
 
 /// What the central panel should show right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +135,7 @@ pub struct AppState {
     discovery: Option<DiscoveryInventory>,
     discovery_error: Option<LoadError>,
     discovery_at: Option<Instant>,
+    model_catalog: ModelCatalog,
 }
 
 impl AppState {
@@ -153,7 +156,37 @@ impl AppState {
             discovery: None,
             discovery_error: None,
             discovery_at: None,
+            model_catalog: ModelCatalog::new(),
         }
+    }
+
+    #[must_use]
+    pub fn model_catalog(&self) -> &ModelCatalog {
+        &self.model_catalog
+    }
+
+    pub fn model_catalog_mut(&mut self) -> &mut ModelCatalog {
+        &mut self.model_catalog
+    }
+
+    /// Chat stays closed until a real inference backend is connected.
+    ///
+    /// Registration and load confirmation never connect a backend.
+    #[must_use]
+    pub fn chat_available(&self) -> bool {
+        self.inference_backend_connected()
+    }
+
+    /// This shell has no inference backend.
+    #[must_use]
+    pub fn inference_backend_connected(&self) -> bool {
+        false
+    }
+
+    /// No token stream exists. The shell never fabricates completions.
+    #[must_use]
+    pub fn generated_tokens(&self) -> &'static [&'static str] {
+        &[]
     }
 
     #[must_use]

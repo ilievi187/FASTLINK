@@ -35,8 +35,15 @@ that action fails closed with a safe error until a supporting CLI is supplied.
   connectivity are never inferred.
 - Provides manual **Refresh**, local-node **selection**, and a session-only
   **opt-in** toggle for the local node only.
-- Shows honest empty states for peers, models and chat because those features
-  do not exist in this milestone.
+- Lets the user enter or paste **one** `.gguf` path and registers it only when
+  that path is an existing readable file. The catalog stores the path, file
+  name and byte size. It does not copy the file, read weight bytes, scan a
+  directory, or write the path to disk.
+- Offers an explicit **Confirm load** state for a future backend. Confirmation
+  does not load weights.
+- Shows an honest empty state for peers. Chat stays visibly unavailable, and
+  the shell never generates tokens, until a real inference backend is connected.
+  No such backend exists in this milestone.
 
 ## What it does not do
 
@@ -45,11 +52,14 @@ that action fails closed with a safe error until a supporting CLI is supplied.
   is labelled unpaired and unverified; there is no Pair button.
 - No address, IP, endpoint, MAC, raw Tailscale peer address or raw provider
   error text is displayed, logged, persisted or committed.
-- No model catalog, model download, inference or chat.
+- No model download, weight load, inference, token generation, or chat backend.
+- No directory browser and no background scan for `.gguf` files. Only the single
+  path the user submits is checked.
+- No persistence of the GGUF catalog or its load confirmation.
 - No CUDA/ROCm compute or GPU benchmark work. The integration tests are
   CPU/software headless tests and do not launch a GUI window.
-- No persistence: selection, local opt-in, discovery results and errors are
-  discarded when the window closes.
+- No persistence: selection, local opt-in, the GGUF catalog, load confirmation,
+  discovery results and errors are discarded when the window closes.
 
 Window rendering uses the normal OpenGL driver through eframe's glow backend;
 that is UI rendering, not FASTLINK compute.
@@ -209,6 +219,40 @@ A sanitized discovery fixture lives at
 `crates/fastlink-gui/testdata/discovery-v1.json`. All provider names, candidate
 names and IDs are synthetic.
 
+## Session GGUF catalog
+
+The central panel has a **GGUF catalog** section. The user types or pastes one
+path and presses **Register GGUF path**. The shell accepts the path only when
+all of the following are true:
+
+- the trimmed path is non-empty;
+- the final extension is `.gguf`, compared case-insensitively;
+- `metadata` reports an existing file, not a directory, socket, or other node;
+- opening the file for reading succeeds.
+
+The open handle is closed without a `read` call. The catalog records the path
+the user first submitted, the file name, and the byte size from `metadata`.
+GGUF magic, tensor headers, and weight bytes are not inspected, so a readable
+file with the right extension is registered even when it is not a valid model.
+That keeps validation from becoming a weight-content read.
+
+A second registration of the same file, including a `..` alias that resolves to
+it, selects the existing entry instead of adding a duplicate. A rejected path
+leaves the existing entries and any load confirmation in place. **Remove
+selected** drops one entry from the in-memory catalog and does not delete the
+file. Sibling `.gguf` files are never added, because the shell does not list
+directories.
+
+**Confirm load** is enabled for the selected entry. It stores an explicit
+pending-backend confirmation for that path. It does not allocate weights, start
+a runtime, or change `loaded` from false. Selecting or registering a different
+file clears that confirmation. Chat remains **Not available** in the workspace,
+with the statement that no inference backend is connected and that this window
+does not generate tokens. There is no token list and no completion stream.
+
+Registration does not start discovery, refresh, or a network action. Closing
+the window drops the catalog; the next process starts empty.
+
 ## Requirements
 
 - Linux with X11 or Wayland and an OpenGL driver.
@@ -286,6 +330,14 @@ readers/writers that must neither block nor keep consuming capture resources.
 Additional deterministic pipe tests inject a poll interval longer than the
 timeout to prove that output from a child which completed just after the
 deadline is still drained and capped, including the `timeout=0` case.
+
+`tests/model_catalog.rs` creates temporary files and checks one explicit path
+at a time. It proves metadata registration, rejection of a non-`.gguf` path, a
+missing path, a directory (including one that contains another `.gguf`), and an
+unreadable file. It also proves duplicate and `..` aliases collapse, load
+confirmation does not load weights or enable chat, discovery stays idle, and
+the headless UI paints the path metadata, the confirmation, the unavailable
+chat state, and a validation error without painting weight bytes.
 
 Discovery tests use only the sanitized fixtures and fake CLI scripts. They prove
 that launch and local refresh never invoke `discover`, an explicit action passes
@@ -369,6 +421,10 @@ the hostname, machine id or hash.
   fabricated or cleared data.
 - **Session-only consent.** Opt-in is local-node-only UI state. It does not
   pair, does not configure the CLI, is not persisted, and sends nothing.
+- **Session-only GGUF metadata.** The catalog is not a model loader. Byte size
+  is the file length reported by the operating system. Quantization, parameter
+  count, architecture, and context length stay unknown because reading them
+  would read the file. Chat cannot be used from a confirmed path.
 - **Trust boundary.** The GUI runs the executable you configure. It does not
   restrict what that executable does; use a FASTLINK binary you trust. The GUI
   itself opens no sockets. Opt-in discovery is delegated to the CLI only after
@@ -399,3 +455,5 @@ the hostname, machine id or hash.
 | `Discovery command failed` | The CLI exited unsuccessfully; raw stderr/provider text is intentionally not shown. |
 | `did not finish within 20 s` | The CLI hung; the GUI killed it. Run the command in a terminal to diagnose. |
 | Blank/black window on a remote session | No working OpenGL context. Try a local session, `LIBGL_ALWAYS_SOFTWARE=1`, or verify `glxinfo`. |
+| GGUF path rejected | The path is empty, not a `.gguf` file, missing, a directory, or not readable. The shell does not search nearby files. |
+| Load confirmed, chat still unavailable | Confirmation is only a session flag. No inference backend is connected, so no weights are loaded and no tokens are generated. |
