@@ -20,7 +20,9 @@ jobs:
       - name: Build
         run: cargo build --all-targets
       - name: Test
-        run: cargo test --workspace --lib --bins --tests
+        run: cargo test --workspace --lib --bins --tests --examples
+      - name: Doc tests
+        run: cargo test --workspace --doc
       - name: Feature-gated transport integration tests
         run: cargo test -p fastlink --features rpc-v3-transport --test transport_integration --test status_cli
       - name: Doc coherence (M-5)

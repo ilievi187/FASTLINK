@@ -99,8 +99,14 @@ fn ci_automatic_tests_do_not_execute_benchmarks() {
         "CI must expose manual workflow_dispatch"
     );
     assert!(
-        workflow.contains("cargo test --workspace --lib --bins --tests"),
-        "CI automatic tests must target lib, bins, and tests only"
+        workflow.contains("cargo test --workspace --lib --bins --tests --examples"),
+        "CI automatic tests must cover lib, bins, tests, and examples"
+    );
+    // Cargo rejects --doc combined with target-selecting options, so doctests
+    // must remain a separate benchmark-free step.
+    assert!(
+        workflow.contains("cargo test --workspace --doc"),
+        "CI automatic tests must cover doctests separately"
     );
     assert!(
         !workflow.contains("cargo test --all-targets"),
@@ -115,8 +121,20 @@ fn ci_automatic_tests_do_not_execute_benchmarks() {
         .next()
         .expect("Test step body");
     assert!(
-        test_step.contains("run: cargo test --workspace --lib --bins --tests"),
-        "automatic Test step must not run benchmarks"
+        test_step.contains("run: cargo test --workspace --lib --bins --tests --examples"),
+        "automatic Test step must cover examples without benchmarks"
+    );
+
+    let doc_step = workflow
+        .split("- name: Doc tests")
+        .nth(1)
+        .expect("Doc tests step")
+        .split("- name:")
+        .next()
+        .expect("Doc tests step body");
+    assert!(
+        doc_step.contains("run: cargo test --workspace --doc"),
+        "automatic Doc tests step must run doctests without benchmarks"
     );
 
     let benchmark_step = workflow
