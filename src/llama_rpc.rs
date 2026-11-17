@@ -16,12 +16,17 @@
 //! dialing. Error text never echoes the remote address, prompt, model output or
 //! raw server lines, and `Debug` implementations of request/event/metrics types
 //! redact prompt and completion text. HTTP status/header lines, chunks and the
-//! total response size are bounded, and SSE is parsed at event boundaries.
-//! Worker-thread runs check the cancellation token before dialing, immediately
-//! after `connect` (before any request byte), and on every 50 ms read/write
-//! slice. `connect` is not interruptible and is bounded by `connect_timeout`;
-//! a cancel that lands mid-write may deliver a request prefix already handed to
-//! the kernel, but no byte is written after the token is observed.
+//! total response size are bounded; a chunk declaration larger than the
+//! remaining response budget is rejected before its payload buffer is
+//! allocated, and every SSE data line is budgeted together with the separator
+//! that joining will insert. Worker-thread runs check the cancellation token
+//! before dialing, immediately after `connect` (before any request byte), on
+//! every 50 ms read/write slice, and every 2 ms while the bounded event queue
+//! is full. `connect` is not interruptible and is bounded by `connect_timeout`;
+//! the request write has its own fixed 10 s bound, independent of
+//! `connect_timeout`. A cancel that lands mid-write may deliver a request
+//! prefix already handed to the kernel, but no byte is written after the token
+//! is observed.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -31,7 +36,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -330,6 +335,10 @@ const MAX_TRAILER_LINES: usize = 32;
 const READ_SLICE: Duration = Duration::from_millis(50);
 /// Socket write slice; cancellation is checked between these writes.
 const WRITE_SLICE: Duration = Duration::from_millis(50);
+/// Full event-queue retry slice; cancellation is re-checked this often.
+const SEND_RETRY_SLICE: Duration = Duration::from_millis(2);
+/// Request-write bound, deliberately independent of `connect_timeout`.
+const REQUEST_WRITE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// A `llama-server` `/completion` request used by the streaming client.
 ///
@@ -461,12 +470,13 @@ impl fmt::Debug for CompletionEvent {
 /// instead of growing memory without limit.
 ///
 /// Cancellation: [`cancel`](Self::cancel) (or dropping the handle) is observed
-/// before dialing, immediately after `connect` and on every 50 ms socket
-/// read/write slice, so a stalled read or request write ends promptly. The
-/// `connect` call itself is not interruptible and is bounded by
-/// `connect_timeout`. Dropping only the event receiver stops delivery at the
-/// next event, but does **not** interrupt an idle read; use `cancel` or rely on
-/// `read_timeout` for that.
+/// before dialing, immediately after `connect`, on every 50 ms socket
+/// read/write slice, and every 2 ms while the bounded event queue is full, so a
+/// stalled read, request write or full queue ends promptly. The `connect` call
+/// itself is not interruptible and is bounded by `connect_timeout`; the request
+/// write has its own fixed 10 s bound. Dropping only the event receiver stops
+/// delivery at the next event, but does **not** interrupt an idle read; use
+/// `cancel` or rely on `read_timeout` for that.
 pub struct CompletionStreamHandle {
     events: Option<Receiver<CompletionEvent>>,
     cancel: Arc<AtomicBool>,
@@ -568,6 +578,14 @@ fn join_worker(
 /// handed back, so a unit regression can cancel "during connect" and prove that
 /// no request byte leaves afterwards.
 fn connect_loopback(addr: SocketAddr, timeout: Duration) -> Result<TcpStream, LlamaRpcError> {
+    #[cfg(test)]
+    if !addr.ip().is_loopback() {
+        // Tests must never dial outside loopback. Record the attempt and fail
+        // closed here so a missing pre-check trips the unit regression instead
+        // of opening a real socket.
+        seam::note_non_loopback_attempt();
+        return Err(LlamaRpcError::NonLoopbackEndpoint);
+    }
     let stream = TcpStream::connect_timeout(&addr, timeout)?;
     #[cfg(test)]
     seam::pause_after_connect();
@@ -577,11 +595,13 @@ fn connect_loopback(addr: SocketAddr, timeout: Duration) -> Result<TcpStream, Ll
 /// Private, test-only connector seam.
 #[cfg(test)]
 mod seam {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     type Hook = Box<dyn FnOnce() + Send + 'static>;
 
     static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    static NON_LOOPBACK_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
     /// Installs a one-shot pause that runs after a loopback connect completes
     /// and before the stream is returned to the streaming client.
@@ -591,6 +611,19 @@ mod seam {
 
     pub(super) fn clear() {
         *HOOK.lock().expect("connect seam lock") = None;
+    }
+
+    /// Records a test-visible attempt to connect outside loopback.
+    pub(super) fn note_non_loopback_attempt() {
+        NON_LOOPBACK_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn non_loopback_attempts() -> usize {
+        NON_LOOPBACK_ATTEMPTS.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn reset_non_loopback_attempts() {
+        NON_LOOPBACK_ATTEMPTS.store(0, Ordering::SeqCst);
     }
 
     /// Takes the hook out before running it, so the mutex is never held across
@@ -677,6 +710,11 @@ impl SocketReader {
             bytes_read: 0,
             max_response_bytes: options.max_response_bytes,
         })
+    }
+
+    /// Bytes still allowed before the total response budget is exhausted.
+    fn remaining_response_bytes(&self) -> u64 {
+        self.max_response_bytes.saturating_sub(self.bytes_read)
     }
 
     /// Refills the buffer; `false` means the peer closed the response.
@@ -930,7 +968,8 @@ impl HttpBody {
                     self.eof = true;
                     return Ok(false);
                 }
-                let ceiling = MAX_CHUNK_BYTES.min(self.reader.max_response_bytes);
+                let remaining = self.reader.remaining_response_bytes();
+                let ceiling = MAX_CHUNK_BYTES.min(remaining);
                 if size > ceiling {
                     return Err(LlamaRpcError::ParseError(format!(
                         "HTTP chunk of {size} bytes exceeds {ceiling} byte limit"
@@ -1181,7 +1220,7 @@ impl CompletionStream {
             &mut stream,
             request_head.as_bytes(),
             &cancel,
-            options.connect_timeout,
+            REQUEST_WRITE_DEADLINE,
         )?;
         stream.flush()?;
 
@@ -1304,13 +1343,17 @@ impl CompletionStream {
                             "completion stream ended before the final stop:true event".into(),
                         ));
                     }
-                    if self.event.data_bytes.saturating_add(value.len()) > self.max_event_bytes {
+                    // `join("\n")` inserts one separator before every line after
+                    // the first, so account for it before storing the line.
+                    let separator = usize::from(!self.event.data.is_empty());
+                    let added = value.len().saturating_add(separator);
+                    if self.event.data_bytes.saturating_add(added) > self.max_event_bytes {
                         return Err(LlamaRpcError::ParseError(format!(
                             "SSE event exceeds max_event_bytes limit of {} bytes",
                             self.max_event_bytes
                         )));
                     }
-                    self.event.data_bytes += value.len();
+                    self.event.data_bytes += added;
                     self.event.data.push(value.to_owned());
                 }
                 _ => {} // id:, retry: and unknown fields are ignored
@@ -1432,13 +1475,37 @@ where
 /// only the receiver stops delivery but leaves an idle read running until
 /// `read_timeout`. `connect` is not interruptible and is bounded by
 /// `connect_timeout`; cancellation is checked immediately after it returns and
-/// before the first request byte.
+/// before the first request byte. The request write has its own fixed 10 s
+/// bound rather than reusing `connect_timeout`, and a full bounded event queue
+/// re-checks cancellation every 2 ms instead of blocking indefinitely.
 pub fn spawn_completion_stream(
     addr: SocketAddr,
     request: &CompletionRequest,
     options: &CompletionStreamOptions,
 ) -> Result<CompletionStreamHandle, LlamaRpcError> {
     spawn_completion_stream_with_cancel(addr, request, options, Arc::new(AtomicBool::new(false)))
+}
+
+/// Sends one event with bounded backpressure, re-checking cancellation while
+/// the queue is full so a kept receiver cannot block the worker forever.
+fn send_event_or_cancel(
+    sender: &SyncSender<CompletionEvent>,
+    mut event: CompletionEvent,
+    cancel: &Cancellation,
+) -> Result<(), LlamaRpcError> {
+    loop {
+        if cancel.is_cancelled() {
+            return Err(LlamaRpcError::StreamCancelled);
+        }
+        match sender.try_send(event) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(returned)) => {
+                event = returned;
+                thread::sleep(SEND_RETRY_SLICE);
+            }
+            Err(TrySendError::Disconnected(_)) => return Err(LlamaRpcError::StreamCancelled),
+        }
+    }
 }
 
 /// Same as [`spawn_completion_stream`] with a caller-owned cancellation flag,
@@ -1464,6 +1531,7 @@ pub fn spawn_completion_stream_with_cancel(
     };
     let (sender, events) = mpsc::sync_channel(EVENT_CHANNEL_CAPACITY);
     let worker = thread::spawn(move || -> Result<LlamaCompletionMetrics, LlamaRpcError> {
+        let send_cancel = worker_cancel.clone();
         let mut stream =
             CompletionStream::open_with_cancel(addr, &request, &options, worker_cancel)?;
         let mut metrics = None;
@@ -1471,9 +1539,7 @@ pub fn spawn_completion_stream_with_cancel(
             if let CompletionEvent::Finished { metrics: done } = &event {
                 metrics = Some(done.clone());
             }
-            if sender.send(event).is_err() {
-                return Err(LlamaRpcError::StreamCancelled);
-            }
+            send_event_or_cancel(&sender, event, &send_cancel)?;
         }
         metrics.ok_or_else(|| {
             LlamaRpcError::ParseError("completion stream ended without final metrics".into())
@@ -1707,6 +1773,47 @@ mod connect_seam_tests {
         fn drop(&mut self) {
             seam::clear();
         }
+    }
+
+    #[test]
+    fn non_loopback_endpoints_are_refused_before_any_connect_call() {
+        seam::reset_non_loopback_attempts();
+        let request = CompletionRequest::new("PROMPT-MUST-NOT-BE-DIALED");
+        let options = CompletionStreamOptions::default();
+        let addrs: [SocketAddr; 2] = [
+            "192.0.2.10:8080".parse().expect("test-net ipv4"),
+            "[2001:db8::1]:8080".parse().expect("documentation ipv6"),
+        ];
+
+        for addr in addrs {
+            let errors = [
+                stream_completion(addr, &request, &options, |_event| {})
+                    .expect_err("stream_completion must refuse"),
+                CompletionStream::open(addr, &request, &options)
+                    .err()
+                    .expect("open must refuse"),
+                spawn_completion_stream(addr, &request, &options).expect_err("spawn must refuse"),
+                run_streaming_completion(addr, "PROMPT-MUST-NOT-BE-DIALED", 1, 0.0, 1)
+                    .expect_err("aggregate run must refuse"),
+            ];
+            for err in errors {
+                assert!(
+                    matches!(err, LlamaRpcError::NonLoopbackEndpoint),
+                    "expected NonLoopbackEndpoint, got {err:?}"
+                );
+                let text = format!("{err} {err:?}");
+                assert!(!text.contains("192.0.2.10"), "{text}");
+                assert!(!text.contains("2001:db8"), "{text}");
+                assert!(!text.contains("PROMPT-MUST-NOT-BE-DIALED"), "{text}");
+            }
+        }
+
+        assert_eq!(
+            seam::non_loopback_attempts(),
+            0,
+            "non-loopback rejection must happen before any connect call"
+        );
+        seam::reset_non_loopback_attempts();
     }
 
     #[test]

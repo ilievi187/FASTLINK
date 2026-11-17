@@ -98,6 +98,21 @@ where
     (addr, handle)
 }
 
+/// Accepts one loopback connection and never reads it until released, keeping a
+/// request write blocked without any non-loopback traffic.
+fn spawn_non_reading_loopback_server() -> (SocketAddr, mpsc::Sender<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        if let Ok((stream, _peer)) = listener.accept() {
+            stream.set_nodelay(true).ok();
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        }
+    });
+    (addr, release_tx)
+}
+
 /// Accepts one loopback connection (if any), never reads it while the client is
 /// running, and reports whatever bytes the client managed to enqueue.
 fn spawn_stalled_loopback_server(accept_wait: Duration) -> (SocketAddr, mpsc::Receiver<Vec<u8>>) {
@@ -229,39 +244,6 @@ fn parses_fastlink_rpc_telemetry_lines() {
 // ---------------------------------------------------------------------------
 // Security: loopback-only plain HTTP, redacted Debug, sanitized errors.
 // ---------------------------------------------------------------------------
-
-#[test]
-fn plain_http_client_refuses_non_loopback_endpoints_without_dialing() {
-    let request = CompletionRequest::new("PROMPT-MUST-NOT-LEAK");
-    let remote: SocketAddr = "192.0.2.10:8080".parse().expect("test-net ipv4");
-    let remote_v6: SocketAddr = "[2001:db8::1]:8080".parse().expect("doc ipv6");
-
-    for addr in [remote, remote_v6] {
-        let err = stream_completion(addr, &request, &options(), |_event| {})
-            .expect_err("non-loopback endpoint must be refused");
-        assert!(
-            matches!(err, LlamaRpcError::NonLoopbackEndpoint),
-            "expected NonLoopbackEndpoint, got {err:?}"
-        );
-        let text = err.to_string();
-        assert!(!text.contains("192.0.2.10"), "{text}");
-        assert!(!text.contains("2001:db8"), "{text}");
-        assert!(!text.contains("PROMPT-MUST-NOT-LEAK"), "{text}");
-
-        assert!(matches!(
-            CompletionStream::open(addr, &request, &options()),
-            Err(LlamaRpcError::NonLoopbackEndpoint)
-        ));
-        assert!(matches!(
-            spawn_completion_stream(addr, &request, &options()),
-            Err(LlamaRpcError::NonLoopbackEndpoint)
-        ));
-        assert!(matches!(
-            run_streaming_completion(addr, "PROMPT-MUST-NOT-LEAK", 4, 0.0, 1),
-            Err(LlamaRpcError::NonLoopbackEndpoint)
-        ));
-    }
-}
 
 #[test]
 fn completion_request_debug_redacts_the_prompt() {
@@ -417,7 +399,13 @@ fn total_response_bytes_are_capped_before_buffering() {
         .expect_err("response cap must fail");
     server.join().expect("server script");
     assert!(matches!(err, LlamaRpcError::ParseError(_)), "{err:?}");
-    assert!(err.to_string().contains("512"), "{err}");
+    let text = err.to_string();
+    // Either the total cap or the remaining-budget chunk check ends the stream;
+    // both derive from the 512-byte total budget.
+    assert!(
+        text.contains("512") || text.contains("HTTP chunk"),
+        "expected a response budget error, got {text}"
+    );
 
     // A chunk declaration beyond the cap must fail before allocating it.
     let (addr, server) = spawn_fake_server(|mut stream, _req| {
@@ -1205,4 +1193,205 @@ fn atomic_flag_is_shared_with_into_parts() {
         .expect("stream");
     assert_eq!(metrics.content, "");
     let _: Arc<AtomicBool> = cancel;
+}
+
+// ---------------------------------------------------------------------------
+// Review follow-ups: queue backpressure, event budget, chunk budget, write bound.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn full_event_queue_sends_observe_internal_and_external_cancellation() {
+    for use_internal in [false, true] {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (addr, server) = spawn_fake_server(move |mut stream, _req| {
+            if stream.write_all(chunked_ok_headers().as_bytes()).is_err() {
+                return;
+            }
+            for _ in 0..4096 {
+                if stream
+                    .write_all(&http_chunk(&sse_delta("flood-token")))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            stream.flush().ok();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+
+        let external = Arc::new(AtomicBool::new(false));
+        let handle = spawn_completion_stream_with_cancel(
+            addr,
+            &CompletionRequest::new("flood").with_n_predict(4096),
+            &options(),
+            Arc::clone(&external),
+        )
+        .expect("spawn stream");
+        let (_events, internal, worker) = handle.into_parts();
+        // Keep the receiver alive but unread so the bounded queue fills and the
+        // worker would otherwise block in `SyncSender::send`.
+        thread::sleep(Duration::from_millis(200));
+        if use_internal {
+            internal.store(true, Ordering::SeqCst);
+        } else {
+            external.store(true, Ordering::SeqCst);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "worker stayed blocked on a full event queue (internal={use_internal}); \
+                 cancellation must be observed while sending"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let err = worker
+            .join()
+            .expect("worker thread did not panic")
+            .expect_err("cancelled stream reports an error");
+        assert!(
+            matches!(err, LlamaRpcError::StreamCancelled),
+            "expected StreamCancelled, got {err:?}"
+        );
+
+        let _ = release_tx.send(());
+        server.join().expect("server script");
+    }
+}
+
+#[test]
+fn empty_data_lines_count_against_the_event_budget_before_the_boundary() {
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (addr, server) = spawn_fake_server(move |mut stream, _req| {
+        if stream
+            .write_all(close_delimited_ok_headers().as_bytes())
+            .is_err()
+        {
+            return;
+        }
+        for _ in 0..32 {
+            if stream.write_all(b"data:\n").is_err() {
+                return;
+            }
+        }
+        stream.flush().ok();
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+    });
+
+    let tight = CompletionStreamOptions {
+        max_event_bytes: 8,
+        ..options()
+    };
+    let handle = spawn_completion_stream(addr, &CompletionRequest::new("empty-data-lines"), &tight)
+        .expect("spawn stream");
+    let (_events, _cancel, worker) = handle.into_parts();
+
+    let mut finished = false;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if worker.is_finished() {
+            finished = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    // Release the peer so a RED run still cleans up instead of hanging.
+    let _ = release_tx.send(());
+    let result = worker.join().expect("worker thread did not panic");
+    server.join().expect("server script");
+
+    assert!(
+        finished,
+        "empty data lines must be budgeted before the event boundary; got {result:?}"
+    );
+    let err = result.expect_err("event budget must fail the stream");
+    assert!(
+        matches!(err, LlamaRpcError::ParseError(ref message) if message.contains("exceed")),
+        "expected an SSE event budget error, got {err:?}"
+    );
+}
+
+#[test]
+fn chunk_beyond_remaining_response_budget_is_rejected_before_reading_payload() {
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (addr, server) = spawn_fake_server(move |mut stream, _req| {
+        if stream.write_all(chunked_ok_headers().as_bytes()).is_err() {
+            return;
+        }
+        // 250-byte chunk payload, below max_response_bytes (256) but above the
+        // budget left after the response headers.
+        if stream.write_all(b"fa\r\n").is_err() {
+            return;
+        }
+        stream.flush().ok();
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+    });
+
+    let tight = CompletionStreamOptions {
+        max_response_bytes: 256,
+        ..options()
+    };
+    let handle = spawn_completion_stream(addr, &CompletionRequest::new("chunk"), &tight)
+        .expect("spawn stream");
+    let (_events, _cancel, worker) = handle.into_parts();
+
+    let mut finished = false;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if worker.is_finished() {
+            finished = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let _ = release_tx.send(());
+    let result = worker.join().expect("worker thread did not panic");
+    server.join().expect("server script");
+
+    assert!(
+        finished,
+        "a chunk above the remaining response budget must be rejected before allocation; \
+         got {result:?}"
+    );
+    let err = result.expect_err("chunk budget must fail the stream");
+    assert!(
+        matches!(err, LlamaRpcError::ParseError(ref message) if message.contains("HTTP chunk")),
+        "expected an HTTP chunk budget error, got {err:?}"
+    );
+}
+
+#[test]
+fn request_write_deadline_is_independent_of_connect_timeout() {
+    let (addr, release) = spawn_non_reading_loopback_server();
+    let big_prompt = "P".repeat(8 * 1024 * 1024);
+    let tight = CompletionStreamOptions {
+        connect_timeout: Duration::from_millis(50),
+        read_timeout: Duration::from_millis(500),
+        ..options()
+    };
+    let external = Arc::new(AtomicBool::new(false));
+    let handle = spawn_completion_stream_with_cancel(
+        addr,
+        &CompletionRequest::new(big_prompt).with_n_predict(1),
+        &tight,
+        Arc::clone(&external),
+    )
+    .expect("spawn stream");
+    let (_events, _cancel, worker) = handle.into_parts();
+
+    thread::sleep(Duration::from_millis(300));
+    let still_writing = !worker.is_finished();
+    external.store(true, Ordering::SeqCst);
+    let _ = release.send(());
+    let result = worker.join().expect("worker thread did not panic");
+
+    assert!(
+        still_writing,
+        "a request write must not be bounded by connect_timeout; got {result:?}"
+    );
+    assert!(
+        matches!(result, Err(LlamaRpcError::StreamCancelled)),
+        "expected cancellation to end the blocked write, got {result:?}"
+    );
 }
