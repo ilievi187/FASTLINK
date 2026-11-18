@@ -74,7 +74,7 @@ impl GuiApp {
         state.refresh();
         Self {
             state,
-            chat: Chat::default(),
+            chat: Chat::new(),
             show_chat: false,
         }
     }
@@ -120,6 +120,20 @@ impl eframe::App for GuiApp {
                 .filter(|entry| catalog.load_confirmation() == Some(entry.path.as_path()));
             self.chat.draw(ui, model);
         } else {
+            #[cfg(target_os = "linux")]
+            {
+                if !self.chat.device_status().is_empty() {
+                    ui.label(self.chat.device_status());
+                }
+                ui::draw_with_device_action(
+                    ui,
+                    &mut self.state,
+                    Some(&mut |candidate| {
+                        self.chat.add_device(candidate);
+                    }),
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
             ui::draw(ui, &mut self.state);
         }
     }

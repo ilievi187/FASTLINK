@@ -6,11 +6,38 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Worker {
     login: String,
     ssh_port: u16,
     rpc_port: u16,
+}
+
+pub(crate) fn discovered_worker(user: &str, host: Ipv4Addr) -> Result<Worker, String> {
+    if user.is_empty()
+        || user
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte == b'@')
+    {
+        return Err("Enter a valid SSH username in Chat.".into());
+    }
+    parse_workers(&format!("{user}@{host} 22 50052")).map(|mut workers| workers.remove(0))
+}
+
+pub(crate) fn merge_workers(
+    manual: &str,
+    added: impl Iterator<Item = Worker>,
+) -> Result<Vec<Worker>, String> {
+    let mut workers = parse_workers(manual)?;
+    for worker in added {
+        if !workers.contains(&worker) {
+            workers.push(worker);
+        }
+    }
+    if workers.len() > 16 {
+        return Err("Configure at most 16 worker endpoints.".into());
+    }
+    Ok(workers)
 }
 
 pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
@@ -187,6 +214,15 @@ impl Drop for Tunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovered_workers_share_the_normal_load_path_without_duplicates() {
+        let selected = discovered_worker("alice", "192.0.2.5".parse().unwrap()).unwrap();
+        let workers =
+            merge_workers("alice@192.0.2.5 22 50052", [selected.clone()].into_iter()).unwrap();
+        assert_eq!(workers, vec![selected]);
+        assert!(discovered_worker("alice\nbob", "192.0.2.5".parse().unwrap()).is_err());
+    }
 
     #[test]
     fn validates_every_worker_before_starting_and_rejects_ssh_options() {

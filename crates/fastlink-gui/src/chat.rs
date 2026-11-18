@@ -13,7 +13,7 @@ use fastlink::llama_rpc::{
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
 #[cfg(target_os = "linux")]
-use crate::workers::{known_hosts_file, parse_workers, Tunnel, Worker};
+use crate::workers::{discovered_worker, known_hosts_file, merge_workers, Tunnel, Worker};
 
 #[cfg(not(target_os = "linux"))]
 struct Worker;
@@ -31,8 +31,29 @@ struct Startup {
     worker: JoinHandle<Result<Session, String>>,
 }
 
+#[cfg(target_os = "linux")]
+struct AddedDevice {
+    id: String,
+    name: String,
+    address: std::net::Ipv4Addr,
+}
+
+#[cfg(target_os = "linux")]
+struct AddDeviceJob {
+    cancel: Arc<AtomicBool>,
+    worker: JoinHandle<Result<AddedDevice, &'static str>>,
+}
+
 #[derive(Default)]
 pub(crate) struct Chat {
+    #[cfg(target_os = "linux")]
+    ssh_user: String,
+    #[cfg(target_os = "linux")]
+    added_devices: Vec<AddedDevice>,
+    #[cfg(target_os = "linux")]
+    add_job: Option<AddDeviceJob>,
+    #[cfg(target_os = "linux")]
+    device_status: String,
     executable: String,
     #[cfg(target_os = "linux")]
     workers: String,
@@ -48,7 +69,109 @@ pub(crate) struct Chat {
 }
 
 impl Chat {
+    pub(crate) fn new() -> Self {
+        let mut chat = Self::default();
+        #[cfg(target_os = "linux")]
+        {
+            chat.ssh_user = std::env::var("USER").unwrap_or_default();
+        }
+        chat.executable = std::env::var_os("FASTLINK_LLAMA_SERVER")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|path| {
+                    std::env::split_paths(&path)
+                        .map(|dir| {
+                            dir.join(if cfg!(windows) {
+                                "llama-server.exe"
+                            } else {
+                                "llama-server"
+                            })
+                        })
+                        .find(|candidate| candidate.is_file())
+                })
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        chat
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn add_device(&mut self, candidate: &fastlink_gui::discovery::CandidateNode) {
+        let Some(id) = &candidate.node_id else { return };
+        if self.add_job.is_some() || self.startup.is_some() || self.session.is_some() {
+            self.device_status = "Finish the current device action or stop the model first.".into();
+            return;
+        }
+        if self.added_devices.iter().any(|device| device.id == *id) {
+            self.device_status = "This device is already added.".into();
+            return;
+        }
+        if self.added_devices.len() == 16 {
+            self.device_status = "Remove a device before adding another.".into();
+            return;
+        }
+        let id = id.clone();
+        let name = candidate
+            .display_name
+            .clone()
+            .unwrap_or_else(|| "Discovered device".into());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancel);
+        match thread::Builder::new()
+            .name("fastlink-add-device".into())
+            .spawn(move || {
+                use fastlink::discovery::{resolve_selected_ipv4, DiscoveryConfig};
+                let address = resolve_selected_ipv4(&DiscoveryConfig::default(), &id, &signal)?;
+                Ok(AddedDevice { id, name, address })
+            }) {
+            Ok(worker) => {
+                self.add_job = Some(AddDeviceJob { cancel, worker });
+                self.device_status = "Locating selected device…".into();
+            }
+            Err(error) => self.device_status = error.to_string(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn device_status(&self) -> &str {
+        &self.device_status
+    }
+
+    #[cfg(target_os = "linux")]
+    fn poll_added_device(&mut self) -> bool {
+        if self
+            .add_job
+            .as_ref()
+            .is_some_and(|job| job.worker.is_finished())
+        {
+            let job = self.add_job.take().unwrap();
+            match job.worker.join() {
+                Ok(Ok(device)) => {
+                    if self
+                        .added_devices
+                        .iter()
+                        .any(|added| added.address == device.address)
+                    {
+                        self.device_status = "That SSH address is already added.".into();
+                    } else {
+                        self.device_status =
+                            format!("Added {}. Open Chat to load the model.", device.name);
+                        self.added_devices.push(device);
+                    }
+                }
+                Ok(Err(error)) => self.device_status = error.into(),
+                Err(_) => self.device_status = "Could not finish adding the device.".into(),
+            }
+            return true;
+        }
+        self.add_job.is_some()
+    }
+
     pub(crate) fn poll(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        let adding_device = self.poll_added_device();
+        #[cfg(not(target_os = "linux"))]
+        let adding_device = false;
         if self
             .startup
             .as_ref()
@@ -107,21 +230,52 @@ impl Chat {
                 }
             }
         }
-        self.startup.is_some() || self.session.is_some()
+        adding_device || self.startup.is_some() || self.session.is_some()
     }
 
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
         ui.heading("Chat");
         let active = self.startup.is_some() || self.session.is_some();
         #[cfg(target_os = "linux")]
+        let adding = self.add_job.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let adding = false;
+        if adding {
+            ui.label("Locating selected device…");
+        }
+        #[cfg(target_os = "linux")]
         {
-            ui.label("SSH workers (optional)");
+            if !self.added_devices.is_empty() {
+                ui.heading("Added devices");
+                ui.horizontal(|ui| {
+                    ui.label("SSH username");
+                    ui.add_enabled(!active, egui::TextEdit::singleline(&mut self.ssh_user));
+                });
+                let mut remove = None;
+                for (index, device) in self.added_devices.iter().enumerate() {
+                    ui.push_id(index, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} · {}", device.name, device.address));
+                            if ui
+                                .add_enabled(!active, egui::Button::new("Remove"))
+                                .clicked()
+                            {
+                                remove = Some(index);
+                            }
+                        });
+                    });
+                }
+                if let Some(index) = remove {
+                    self.added_devices.remove(index);
+                }
+            }
+            ui.label("Manual SSH workers (optional)");
             ui.add_enabled(
                 !active,
                 egui::TextEdit::multiline(&mut self.workers)
                     .hint_text("user@host SSH_PORT RPC_PORT"),
             );
-            if !self.workers.trim().is_empty() {
+            if !self.workers.trim().is_empty() || !self.added_devices.is_empty() {
                 ui.add_enabled(
                     !active,
                     egui::TextEdit::singleline(&mut self.known_hosts)
@@ -132,7 +286,7 @@ impl Chat {
             }
         }
         #[cfg(target_os = "linux")]
-        let distributed = !self.workers.trim().is_empty();
+        let distributed = !self.workers.trim().is_empty() || !self.added_devices.is_empty();
         #[cfg(not(target_os = "linux"))]
         let distributed = false;
         ui.horizontal(|ui| {
@@ -143,7 +297,7 @@ impl Chat {
             );
             if ui
                 .add_enabled(
-                    !active && model.is_some() && !self.executable.trim().is_empty(),
+                    !active && !adding && model.is_some() && !self.executable.trim().is_empty(),
                     egui::Button::new(if distributed {
                         "Distribute and load model"
                     } else {
@@ -235,7 +389,13 @@ impl Chat {
 
     fn start(&mut self, model: RegisteredGguf) {
         #[cfg(target_os = "linux")]
-        let workers = match parse_workers(&self.workers) {
+        let workers = match self
+            .added_devices
+            .iter()
+            .map(|device| discovered_worker(self.ssh_user.trim(), device.address))
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|added| merge_workers(&self.workers, added.into_iter()))
+        {
             Ok(workers) => workers,
             Err(error) => {
                 self.status = error;
@@ -289,6 +449,11 @@ impl Chat {
 
 impl Drop for Chat {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(job) = self.add_job.take() {
+            job.cancel.store(true, Ordering::Release);
+            let _ = job.worker.join();
+        }
         self.stop();
         if let Some(job) = self.startup.take() {
             let _ = job.worker.join();
