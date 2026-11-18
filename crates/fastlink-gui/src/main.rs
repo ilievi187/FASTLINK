@@ -1,6 +1,6 @@
 //! `fastlink-gui` — FASTLINK Linux desktop shell (pre-alpha).
 //!
-//! First milestone: local device overview and local device management only.
+//! Local device management and managed llama.cpp inference.
 
 use std::time::Duration;
 mod chat;
