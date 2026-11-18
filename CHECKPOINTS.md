@@ -254,3 +254,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - PR #13 was independently security-reviewed with no findings and merged into `integrate/fastlink-team` at `a5f1cd7545738c20c0eb59165ec90119e45be340`. Exact merge-commit CI `43914979069` passed Ubuntu and Windows; PR merge-ref checks `43914199921` also passed. Main remains unchanged at `3606637ca41d07f60562d536a8b9559f751c1f24`.
 - Candidate head `1bf247bb192ed5a000869bb3d24485a744cf66a0` passed 244 workspace tests, five doctests, fmt, Linux Clippy, GUI build, Windows GNU check/Clippy, diff-check, targeted Semgrep (0), and exact feature CI `43913532911`. Review confirmed both earlier P2s closed and the external test seam private.
 - The integration now contains Linux Secret Service-backed TrustStore persistence with identity-consistency validation and fail-closed revocation. Real D-Bus/Secret Service behavior remains untested; do not call this production security. No live keyring, LAN discovery, model, GPU, or service interruption occurred.
+
+## 2026-11-18 — Local desktop inference
+
+- Chat launches a user-selected llama-server with a confirmed GGUF and CPU-only layers on loopback. It renders streamed completion deltas, allows cancellation, and calculates throughput from llama.cpp's final token count and decode timing.
+- Discovery remains an explicit action. Secure desktop pairing and distributed inference are pending.
+- Regression coverage includes replaced GGUF paths and cancelled startup. Live model and physical multi-machine verification are pending.

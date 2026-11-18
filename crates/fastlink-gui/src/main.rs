@@ -3,6 +3,8 @@
 //! First milestone: local device overview and local device management only.
 
 use std::time::Duration;
+mod chat;
+use chat::Chat;
 
 use eframe::egui;
 use fastlink_gui::cli::Options;
@@ -33,7 +35,7 @@ fn main() -> eframe::Result {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FASTLINK — Local devices")
+            .with_title("FASTLINK")
             .with_inner_size([1120.0, 760.0])
             .with_min_inner_size([780.0, 520.0]),
         ..Default::default()
@@ -60,18 +62,27 @@ fn configure_style(ctx: &egui::Context) {
 
 struct GuiApp {
     state: AppState,
+    chat: Chat,
+    show_chat: bool,
 }
 
 impl GuiApp {
     fn new(command: InventoryCommand) -> Self {
         let mut state = AppState::new(command);
         state.refresh();
-        Self { state }
+        Self {
+            state,
+            chat: Chat::default(),
+            show_chat: false,
+        }
     }
 }
 
 impl eframe::App for GuiApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.chat.poll() {
+            ctx.request_repaint_after(Duration::from_millis(30));
+        }
         if self.state.poll() {
             ctx.request_repaint();
         }
@@ -95,6 +106,19 @@ impl eframe::App for GuiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui::draw(ui, &mut self.state);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.show_chat, false, "Devices and models");
+            ui.selectable_value(&mut self.show_chat, true, "Chat");
+        });
+        if self.show_chat {
+            let catalog = self.state.model_catalog();
+            let model = catalog
+                .selected_index()
+                .and_then(|index| catalog.entries().get(index))
+                .filter(|entry| catalog.load_confirmation() == Some(entry.path.as_path()));
+            self.chat.draw(ui, model);
+        } else {
+            ui::draw(ui, &mut self.state);
+        }
     }
 }

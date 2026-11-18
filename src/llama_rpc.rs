@@ -169,6 +169,9 @@ pub fn build_server_args(cfg: &LlamaRpcConfig) -> Vec<String> {
         cfg.ctx_size.to_string(),
         "--no-webui".into(),
     ];
+    if cfg.rpc_servers.is_empty() && cfg.n_gpu_layers == 0 {
+        args.extend(["--device".into(), "none".into()]);
+    }
     if !cfg.rpc_servers.is_empty() {
         args.push("--rpc".into());
         args.push(cfg.rpc_servers.join(","));
@@ -221,6 +224,7 @@ impl ManagedLlamaServer {
 
         let mut cmd = Command::new(&cfg.server_bin);
         cmd.args(build_server_args(cfg))
+            .env_remove("LLAMA_ARG_RPC")
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err));
 
@@ -255,8 +259,23 @@ impl ManagedLlamaServer {
     }
 
     pub fn wait_ready(&mut self, timeout: Duration) -> Result<(), LlamaRpcError> {
+        self.wait_ready_with_cancel(timeout, &AtomicBool::new(false))
+    }
+
+    pub fn is_running(&mut self) -> io::Result<bool> {
+        Ok(self.child.try_wait()?.is_none())
+    }
+
+    pub fn wait_ready_with_cancel(
+        &mut self,
+        timeout: Duration,
+        cancel: &AtomicBool,
+    ) -> Result<(), LlamaRpcError> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(LlamaRpcError::StreamCancelled);
+            }
             if let Some(status) = self.child.try_wait()? {
                 let tail = fs::read_to_string(&self.log_path).unwrap_or_default();
                 return Err(LlamaRpcError::StartupTimeout(format!(
@@ -271,10 +290,16 @@ impl ManagedLlamaServer {
                     "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
                     self.addr
                 );
-                if stream.write_all(req.as_bytes()).is_ok() {
-                    let mut resp = String::new();
-                    let _ = stream.read_to_string(&mut resp);
-                    if resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200") {
+                let budget = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(250));
+                if !budget.is_zero() {
+                    stream.set_read_timeout(Some(budget))?;
+                    stream.set_write_timeout(Some(budget))?;
+                    if stream.write_all(req.as_bytes()).is_ok()
+                        && health_status_ok(stream, Instant::now() + budget, cancel)
+                        && self.is_running()?
+                    {
                         return Ok(());
                     }
                 }
@@ -295,6 +320,25 @@ impl ManagedLlamaServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn health_status_ok(mut stream: TcpStream, deadline: Instant, cancel: &AtomicBool) -> bool {
+    let mut status = [0; 13];
+    let mut read = 0;
+    while read < status.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero()
+            || cancel.load(Ordering::Relaxed)
+            || stream.set_read_timeout(Some(remaining)).is_err()
+        {
+            return false;
+        }
+        match stream.read(&mut status[read..]) {
+            Ok(0) | Err(_) => return false,
+            Ok(count) => read += count,
+        }
+    }
+    (&status == b"HTTP/1.1 200 " || &status == b"HTTP/1.0 200 ") && !cancel.load(Ordering::Relaxed)
 }
 
 impl Drop for ManagedLlamaServer {
