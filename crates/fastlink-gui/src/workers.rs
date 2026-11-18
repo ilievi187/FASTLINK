@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -86,7 +86,7 @@ pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
     Ok(workers)
 }
 
-pub(crate) fn known_hosts_file(input: &str) -> Result<Option<String>, String> {
+pub(crate) fn ssh_file(input: &str, label: &str) -> Result<Option<String>, String> {
     if input.is_empty() {
         return Ok(None);
     }
@@ -97,17 +97,31 @@ pub(crate) fn known_hosts_file(input: &str) -> Result<Option<String>, String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
     {
-        return Err("Enter an absolute known-hosts path using letters, numbers, dots, underscores, and hyphens.".into());
+        return Err(format!("Enter an absolute {label} path using letters, numbers, dots, underscores, and hyphens."));
     }
     Ok(Some(input.into()))
 }
 
-fn ssh_args(worker: &Worker, local_port: u16, known_hosts: Option<&str>) -> Vec<String> {
+#[derive(Default)]
+pub(crate) struct SshOptions {
+    pub known_hosts: Option<String>,
+    pub identity_file: Option<String>,
+    pub start_rpc: bool,
+}
+
+fn rpc_command(port: u16) -> String {
+    format!(
+        "exec /bin/sh -c 'if ! command -v ggml-rpc-server >/dev/null 2>&1; then PATH=\"$HOME/.local/bin:$PATH\"; export PATH; fi; \
+        command -v ggml-rpc-server >/dev/null 2>&1 || {{ echo \"ggml-rpc-server is missing on this worker\"; exit 127; }}; \
+        exec ggml-rpc-server --host 127.0.0.1 --port {port} --device CPU --threads 2'"
+    )
+}
+
+fn ssh_args(worker: &Worker, local_port: u16, options: &SshOptions) -> Vec<String> {
     let mut args: Vec<String> = [
         "-F",
         "/dev/null",
-        "-N",
-        "-T",
+        "-vv",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -130,7 +144,22 @@ fn ssh_args(worker: &Worker, local_port: u16, known_hosts: Option<&str>) -> Vec<
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if let Some(path) = known_hosts {
+    if options.start_rpc {
+        // A remote foreground process tied to a PTY gets SIGHUP when the SSH
+        // session closes. No detached worker or broad process cleanup.
+        args.push("-tt".into());
+    } else {
+        args.extend(["-N".into(), "-T".into()]);
+    }
+    if let Some(path) = &options.identity_file {
+        args.extend([
+            "-i".into(),
+            path.clone(),
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+        ]);
+    }
+    if let Some(path) = &options.known_hosts {
         args.extend([
             "-o".into(),
             format!("UserKnownHostsFile={path}"),
@@ -146,7 +175,73 @@ fn ssh_args(worker: &Worker, local_port: u16, known_hosts: Option<&str>) -> Vec<
         "--".into(),
         worker.login.clone(),
     ]);
+    if options.start_rpc {
+        args.push(rpc_command(worker.rpc_port));
+    }
     args
+}
+
+fn read_ssh_log(log: &Path) -> String {
+    let mut content = Vec::new();
+    if let Ok(file) = std::fs::File::open(log) {
+        let _ = file.take(256 * 1024).read_to_end(&mut content);
+    }
+    String::from_utf8_lossy(&content).into_owned()
+}
+
+fn forwarded_channel_confirmed(log: &str) -> bool {
+    let mut forwards = std::collections::HashSet::new();
+    for line in log.lines() {
+        let Some((prefix, event)) = line.split_once(": ") else {
+            continue;
+        };
+        if !matches!(prefix, "debug1" | "debug2") {
+            continue;
+        }
+        let Some((channel, action)) = event
+            .strip_prefix("channel ")
+            .and_then(|event| event.split_once(": "))
+        else {
+            continue;
+        };
+        if action.starts_with("new direct-tcpip ") {
+            forwards.insert(channel);
+        } else if action.starts_with("open confirm ") && forwards.contains(channel) {
+            return true;
+        } else if action.starts_with("free:") {
+            forwards.remove(channel);
+        }
+    }
+    false
+}
+
+fn ssh_failure(log: &str, ready_failure: &str) -> String {
+    if log.contains("Host key verification failed")
+        || log.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+    {
+        return "SSH host-key verification failed. Verify the worker's fingerprint and add its key to known_hosts.".into();
+    }
+    if log.contains("Permission denied (") {
+        return "SSH authentication failed. Check the username and select a key or load it into ssh-agent.".into();
+    }
+    if log.contains("ggml-rpc-server is missing on this worker") {
+        return "Install the matching ggml-rpc-server on the worker and make it available on PATH or in ~/.local/bin.".into();
+    }
+    if log.contains("PTY allocation request failed") {
+        return "SSH could not allocate a terminal for the worker. Allow SSH PTY allocation or start the RPC worker manually.".into();
+    }
+    log.lines()
+        .rev()
+        .find(|line| !line.starts_with("debug") && !line.trim().is_empty())
+        .map_or_else(
+            || ready_failure.to_owned(),
+            |line| {
+                format!(
+                    "{ready_failure} {}",
+                    line.chars().take(350).collect::<String>()
+                )
+            },
+        )
 }
 
 pub(crate) struct Tunnel {
@@ -158,40 +253,51 @@ impl Tunnel {
     pub(crate) fn open(
         worker: &Worker,
         log: &Path,
-        known_hosts: Option<&str>,
+        options: &SshOptions,
         cancel: &AtomicBool,
     ) -> Result<Self, String> {
         let reservation =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|err| err.to_string())?;
         let address = reservation.local_addr().map_err(|err| err.to_string())?;
         let stderr = std::fs::File::create(log).map_err(|err| err.to_string())?;
+        let stdout = stderr.try_clone().map_err(|err| err.to_string())?;
         if cancel.load(Ordering::Relaxed) {
             return Err("Startup cancelled".into());
         }
         drop(reservation);
         let child = Command::new("/usr/bin/ssh")
-            .args(ssh_args(worker, address.port(), known_hosts))
+            .args(ssh_args(worker, address.port(), options))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(stdout)
             .stderr(stderr)
             .spawn()
             .map_err(|err| format!("Could not start OpenSSH: {err}"))?;
         let mut tunnel = Self { child, address };
-        let deadline = Instant::now() + Duration::from_secs(12);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut probe_after = Instant::now();
         while Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
+            let output = read_ssh_log(log);
             if !tunnel.is_running().map_err(|err| err.to_string())? {
-                let reason = std::fs::read_to_string(log).unwrap_or_default();
-                return Err(format!("SSH forwarding failed. {}", reason.trim()));
+                return Err(ssh_failure(&output, "SSH worker exited."));
             }
-            if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
+            if forwarded_channel_confirmed(&output) {
                 return Ok(tunnel);
+            }
+            if Instant::now() >= probe_after {
+                // A local accept alone proves only that SSH is listening.
+                // Wait for the remote direct-tcpip channel to confirm its bind.
+                let _ = TcpStream::connect_timeout(&address, Duration::from_millis(100));
+                probe_after = Instant::now() + Duration::from_millis(400);
             }
             thread::sleep(Duration::from_millis(50));
         }
         Err(if cancel.load(Ordering::Relaxed) {
             "Startup cancelled".into()
         } else {
-            "Timed out opening the SSH forward.".into()
+            ssh_failure(
+                &read_ssh_log(log),
+                "RPC is unreachable through SSH. Check the worker's RPC port and SSH forwarding.",
+            )
         })
     }
 
@@ -225,6 +331,34 @@ mod tests {
     }
 
     #[test]
+    fn rpc_readiness_requires_the_remote_forward_instead_of_the_ssh_session() {
+        let session_only = "debug2: channel 1: open confirm rwindow 0";
+        let rejected = "debug1: channel 2: new direct-tcpip [direct-tcpip]\nchannel 2: open failed: connect failed: Connection refused";
+        assert!(!forwarded_channel_confirmed(session_only));
+        assert!(!forwarded_channel_confirmed(rejected));
+        assert!(forwarded_channel_confirmed(&format!("{rejected}\ndebug1: channel 3: new direct-tcpip [direct-tcpip]\ndebug2: channel 3: open confirm rwindow 0")));
+    }
+
+    #[test]
+    fn managed_rpc_binds_only_remote_loopback_and_uses_a_foreground_cpu_process() {
+        let workers = parse_workers("alice@host 22 50052").unwrap();
+        let args = ssh_args(
+            &workers[0],
+            12345,
+            &SshOptions {
+                start_rpc: true,
+                ..SshOptions::default()
+            },
+        );
+        assert!(args.contains(&"-tt".into()));
+        assert!(!args.contains(&"-N".into()));
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("exec ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU"));
+    }
+
+    #[test]
     fn validates_every_worker_before_starting_and_rejects_ssh_options() {
         for invalid in [
             "-oProxyCommand=test 22 50052",
@@ -240,11 +374,18 @@ mod tests {
 
     #[test]
     fn dedicated_host_keys_override_the_default_trust_stores() {
-        assert!(known_hosts_file("/tmp/trust file").is_err());
-        assert!(known_hosts_file("/tmp/%h").is_err());
-        let hosts = known_hosts_file("/tmp/cluster-hosts").unwrap();
+        assert!(ssh_file("/tmp/trust file", "known-hosts").is_err());
+        assert!(ssh_file("/tmp/%h", "known-hosts").is_err());
+        let hosts = ssh_file("/tmp/cluster-hosts", "known-hosts").unwrap();
         let workers = parse_workers("alice@worker 22 50052").unwrap();
-        let args = ssh_args(&workers[0], 12345, hosts.as_deref());
+        let args = ssh_args(
+            &workers[0],
+            12345,
+            &SshOptions {
+                known_hosts: hosts,
+                ..SshOptions::default()
+            },
+        );
         assert!(args.contains(&"UserKnownHostsFile=/tmp/cluster-hosts".to_owned()));
         assert!(args.contains(&"GlobalKnownHostsFile=none".to_owned()));
     }
@@ -253,7 +394,7 @@ mod tests {
     fn ssh_requires_known_hosts_and_forwards_only_loopback() {
         let workers = parse_workers("alice@worker-1 2222 50052\nbob@worker-2 22 50052").unwrap();
         assert_eq!(workers.len(), 2);
-        let args = ssh_args(&workers[0], 12345, None);
+        let args = ssh_args(&workers[0], 12345, &SshOptions::default());
         assert!(args
             .windows(2)
             .any(|pair| pair == ["-L", "127.0.0.1:12345:127.0.0.1:50052"]));

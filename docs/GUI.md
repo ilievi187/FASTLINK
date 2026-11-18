@@ -535,7 +535,7 @@ ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU --threads 2
 ```
 
 Verify each SSH host key out of band and enroll it in OpenSSH's known-hosts
-store, or enter a dedicated file in **Known-hosts file (optional)**. Set up key-based login using a default OpenSSH identity or `ssh-agent`.
+store, or enter a dedicated file in **Known-hosts file (optional)**. Use a default OpenSSH identity, `ssh-agent`, or **SSH private key file (optional)**. A passphrase-protected key must be unlocked in an agent visible to the app.
 FASTLINK uses direct OpenSSH connections with strict host-key verification,
 batch authentication, and loopback-only forwarding. Each worker's SSH server
 must permit forwarding to its local RPC port.
@@ -557,10 +557,17 @@ alice@worker-a 22 50052
 bob@worker-b 22 50052
 ```
 
+If the Linux workers have a matching `ggml-rpc-server` installed on PATH or
+in `~/.local/bin`, enable **Start CPU RPC workers on load** to have FASTLINK
+start it over SSH. The SSH server must allow a terminal and local forwarding.
+Use this mode with free worker RPC ports. For already-running workers, leave
+the checkbox clear. FASTLINK checks that the remote RPC port accepts the
+forward before it starts the coordinator.
+
 Choose **Distribute and load model**. llama.cpp selects layer placement based
 on the available device memory and sends model tensors from the coordinator
 through the SSH forwards as it loads. The GGUF source file stays on the
 coordinator. FASTLINK owns the forwards for this session and closes them when
-you stop the server. If a tunnel exits, the app stops the session. Restore the
+you stop the server. It also stops the CPU workers it started. If a tunnel exits, the app stops the session. Restore the
 worker and load the model again. Worker processes are administered separately.
 Use workers you trust with the model and inference data.

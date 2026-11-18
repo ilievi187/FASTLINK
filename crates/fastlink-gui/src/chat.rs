@@ -1,5 +1,5 @@
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -13,10 +13,14 @@ use fastlink::llama_rpc::{
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
 #[cfg(target_os = "linux")]
-use crate::workers::{discovered_worker, known_hosts_file, merge_workers, Tunnel, Worker};
+use crate::workers::{discovered_worker, merge_workers, ssh_file, SshOptions, Tunnel, Worker};
 
 #[cfg(not(target_os = "linux"))]
 struct Worker;
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Default)]
+struct SshOptions {}
 
 struct Session {
     server: ManagedLlamaServer,
@@ -59,6 +63,10 @@ pub(crate) struct Chat {
     workers: String,
     #[cfg(target_os = "linux")]
     known_hosts: String,
+    #[cfg(target_os = "linux")]
+    identity_file: String,
+    #[cfg(target_os = "linux")]
+    start_rpc: bool,
     startup: Option<Startup>,
     session: Option<Session>,
     stream: Option<CompletionStreamHandle>,
@@ -78,17 +86,14 @@ impl Chat {
         chat.executable = std::env::var_os("FASTLINK_LLAMA_SERVER")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("PATH").and_then(|path| {
-                    std::env::split_paths(&path)
-                        .map(|dir| {
-                            dir.join(if cfg!(windows) {
-                                "llama-server.exe"
-                            } else {
-                                "llama-server"
-                            })
-                        })
-                        .find(|candidate| candidate.is_file())
-                })
+                find_on_path(
+                    if cfg!(windows) {
+                        "llama-server.exe"
+                    } else {
+                        "llama-server"
+                    }
+                    .as_ref(),
+                )
             })
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -198,7 +203,10 @@ impl Chat {
                         let stream = self.stream.take().unwrap();
                         self.status = match stream.join() {
                             Ok(_) => "Response complete".into(),
-                            Err(error) => error.to_string(),
+                            Err(fastlink::llama_rpc::LlamaRpcError::StreamCancelled) => {
+                                "Response cancelled".into()
+                            }
+                            Err(error) => format!("Prompt failed: {error}"),
                         };
                         break;
                     }
@@ -282,7 +290,19 @@ impl Chat {
                         .hint_text("Known-hosts file (optional)")
                         .desired_width(420.0),
                 );
-                ui.label("Use an RPC-enabled CPU build on this machine. Workers must already run RPC on loopback.");
+                ui.add_enabled(
+                    !active,
+                    egui::TextEdit::singleline(&mut self.identity_file)
+                        .hint_text("SSH private key file (optional)")
+                        .desired_width(420.0),
+                );
+                ui.add_enabled(
+                    !active,
+                    egui::Checkbox::new(&mut self.start_rpc, "Start CPU RPC workers on load"),
+                ).on_hover_text("Starts ggml-rpc-server over SSH on each Linux worker. Stop server closes these sessions.");
+                if self.start_rpc {
+                    ui.label("Each worker needs ggml-rpc-server installed and must allow SSH forwarding and a terminal.");
+                }
             }
         }
         #[cfg(target_os = "linux")]
@@ -293,25 +313,32 @@ impl Chat {
             ui.label("llama-server executable");
             ui.add_enabled(
                 !active,
-                egui::TextEdit::singleline(&mut self.executable).hint_text("/path/to/llama-server"),
+                egui::TextEdit::singleline(&mut self.executable)
+                    .hint_text("/path/to/llama-server")
+                    .desired_width(360.0),
             );
+        });
+        let can_load = !active && !adding && model.is_some() && !self.executable.trim().is_empty();
+        ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(
-                    !active && !adding && model.is_some() && !self.executable.trim().is_empty(),
-                    egui::Button::new(if distributed {
-                        "Distribute and load model"
-                    } else {
-                        "Load model (CPU)"
-                    }),
-                )
+                .add_enabled(can_load, egui::Button::new("Load model (CPU)"))
                 .clicked()
             {
-                self.start(model.unwrap().clone());
+                self.start(model.unwrap().clone(), false);
             }
-            if ui
-                .add_enabled(active, egui::Button::new("Stop server"))
-                .clicked()
+            if distributed
+                && ui
+                    .add_enabled(can_load, egui::Button::new("Distribute and load model"))
+                    .clicked()
             {
+                self.start(model.unwrap().clone(), true);
+            }
+            let stop = if self.startup.is_some() {
+                "Cancel load"
+            } else {
+                "Stop server"
+            };
+            if ui.add_enabled(active, egui::Button::new(stop)).clicked() {
                 self.stop();
             }
         });
@@ -329,7 +356,10 @@ impl Chat {
         } else {
             ui.label("Register and confirm a GGUF in Devices and models.");
         }
-        ui.label(&self.status);
+        ui.add(egui::Label::new(&self.status).selectable(true));
+        if self.session.is_none() {
+            ui.label("Load a model to send a prompt.");
+        }
         ui.add_enabled(
             self.session.is_some() && self.stream.is_none(),
             egui::TextEdit::multiline(&mut self.prompt).hint_text("Prompt"),
@@ -387,52 +417,61 @@ impl Chat {
         }
     }
 
-    fn start(&mut self, model: RegisteredGguf) {
+    fn start(&mut self, model: RegisteredGguf, distributed: bool) {
         #[cfg(target_os = "linux")]
-        let workers = match self
-            .added_devices
-            .iter()
-            .map(|device| discovered_worker(self.ssh_user.trim(), device.address))
-            .collect::<Result<Vec<_>, _>>()
-            .and_then(|added| merge_workers(&self.workers, added.into_iter()))
-        {
-            Ok(workers) => workers,
-            Err(error) => {
-                self.status = error;
-                return;
+        let (workers, ssh) = if distributed {
+            match self.distributed_settings() {
+                Ok(settings) => settings,
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
             }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let workers = Vec::new();
-        #[cfg(target_os = "linux")]
-        let known_hosts = match known_hosts_file(if workers.is_empty() {
-            ""
         } else {
-            self.known_hosts.trim()
-        }) {
-            Ok(path) => path,
-            Err(error) => {
-                self.status = error;
-                return;
-            }
+            (Vec::new(), SshOptions::default())
         };
         #[cfg(not(target_os = "linux"))]
-        let known_hosts = None;
+        let (workers, ssh) = (Vec::new(), SshOptions {});
         let executable = PathBuf::from(self.executable.trim());
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
         match thread::Builder::new()
             .name("fastlink-model-load".into())
-            .spawn(move || start_session(executable, model, workers, known_hosts, &signal))
+            .spawn(move || start_session(executable, model, workers, ssh, &signal))
         {
             Ok(worker) => {
-                self.status = "Loading model…".into();
+                self.status = if distributed {
+                    "Connecting to SSH workers and loading the model…".into()
+                } else {
+                    "Loading model locally…".into()
+                };
                 self.output.clear();
                 self.metrics = None;
                 self.startup = Some(Startup { cancel, worker });
             }
             Err(error) => self.status = error.to_string(),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn distributed_settings(&self) -> Result<(Vec<Worker>, SshOptions), String> {
+        let added = self
+            .added_devices
+            .iter()
+            .map(|device| discovered_worker(self.ssh_user.trim(), device.address))
+            .collect::<Result<Vec<_>, _>>()?;
+        let workers = merge_workers(&self.workers, added.into_iter())?;
+        if workers.is_empty() {
+            return Err("Add an SSH worker or choose Load model (CPU).".into());
+        }
+        Ok((
+            workers,
+            SshOptions {
+                known_hosts: ssh_file(self.known_hosts.trim(), "known-hosts")?,
+                identity_file: ssh_file(self.identity_file.trim(), "SSH private key")?,
+                start_rpc: self.start_rpc,
+            },
+        ))
     }
 
     fn stop(&mut self) {
@@ -461,11 +500,50 @@ impl Drop for Chat {
     }
 }
 
+fn find_on_path(name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn resolve_server(executable: PathBuf) -> Result<PathBuf, String> {
+    let executable = if let Ok(path) = executable.strip_prefix("~") {
+        let home = std::env::var_os("HOME")
+            .ok_or("Cannot resolve ~. Enter the absolute llama-server path.")?;
+        PathBuf::from(home).join(path)
+    } else if executable.parent() == Some(Path::new("")) {
+        let name = executable.as_os_str();
+        find_on_path(name)
+            .ok_or("llama-server was not found on PATH. Enter its full executable path.")?
+    } else {
+        executable
+    };
+    let path = executable
+        .canonicalize()
+        .map_err(|error| format!("llama-server executable: {error}"))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("llama-server executable: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Select the llama-server executable file.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("The selected llama-server file is not executable.".into());
+        }
+    }
+    Ok(path)
+}
+
 fn start_session(
     executable: PathBuf,
     model: RegisteredGguf,
     workers: Vec<Worker>,
-    known_hosts: Option<String>,
+    ssh: SshOptions,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -475,9 +553,7 @@ fn start_session(
     if fresh.opened_identity != model.opened_identity || fresh.identity != model.identity {
         return Err("GGUF changed. Confirm the model again before loading.".into());
     }
-    let executable = executable
-        .canonicalize()
-        .map_err(|error| format!("llama-server executable: {error}"))?;
+    let executable = resolve_server(executable)?;
     let logs = tempfile::tempdir().map_err(|error| error.to_string())?;
     #[cfg(target_os = "linux")]
     let tunnels = workers
@@ -487,7 +563,7 @@ fn start_session(
             Tunnel::open(
                 worker,
                 &logs.path().join(format!("ssh-{index}.log")),
-                known_hosts.as_deref(),
+                &ssh,
                 cancel,
             )
             .map_err(|error| format!("Worker {}: {error}", index + 1))
@@ -497,7 +573,8 @@ fn start_session(
     let rpc_servers: Vec<_> = tunnels.iter().map(Tunnel::endpoint).collect();
     #[cfg(not(target_os = "linux"))]
     let rpc_servers: Vec<String> = {
-        debug_assert!(workers.is_empty() && known_hosts.is_none());
+        let _ = ssh;
+        debug_assert!(workers.is_empty());
         Vec::new()
     };
     let n_gpu_layers = if rpc_servers.is_empty() { 0 } else { 999 };
@@ -526,7 +603,7 @@ fn start_session(
     })
     .map_err(|error| error.to_string())?;
     server
-        .wait_ready_with_cancel(Duration::from_secs(120), cancel)
+        .wait_ready_with_cancel(Duration::from_secs(600), cancel)
         .map_err(|error| error.to_string())?;
     Ok(Session {
         server,
@@ -541,6 +618,20 @@ fn start_session(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn llama_server_selection_rejects_a_directory_and_missing_command() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_server(dir.path().into()).unwrap_err(),
+            "Select the llama-server executable file."
+        );
+        assert!(
+            resolve_server("fastlink-no-such-llama-server-fixture".into())
+                .unwrap_err()
+                .contains("PATH")
+        );
+    }
 
     #[test]
     fn chat_renders_a_delta_before_final_decode_metrics() {
@@ -620,7 +711,7 @@ mod tests {
                 PathBuf::new(),
                 confirmed,
                 Vec::new(),
-                None,
+                SshOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -634,7 +725,7 @@ mod tests {
                 PathBuf::new(),
                 confirmed,
                 Vec::new(),
-                None,
+                SshOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -654,7 +745,7 @@ mod tests {
             std::env::current_exe().unwrap(),
             model,
             Vec::new(),
-            None,
+            SshOptions::default(),
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
