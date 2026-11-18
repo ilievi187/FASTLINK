@@ -271,3 +271,9 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 
 - On Linux, each discovery result exposes Add device. The local resolver resolves only the selected candidate, and the redacted discovery schema stays unchanged. Chat includes the added endpoints automatically in distributed load and retains strict SSH host-key verification.
 - Added routes stay in memory. Ambiguous IPv4 candidates can be entered manually. Workstation SSH and loopback RPC must already be set up on workers.
+
+## 2026-11-18 — Chat startup and RPC lifecycle
+
+- Confirm remote forwarded RPC connectivity before loading. Chat distinguishes SSH trust, authentication, and remote port failures and can select an SSH private key without an agent.
+- Local load remains independently available with workers configured. Linux Chat can start CPU RPC workers in foreground SSH sessions and cancels or stops the processes it owns.
+- In an isolated desktop test without an SSH agent, FASTLINK started two CPU RPC workers from a private key, allocated nonzero model buffers on both, generated 123 tokens from the tiny test GGUF, and stopped both worker processes. The test used separate SSH sessions and RPC processes on one host.
