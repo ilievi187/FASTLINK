@@ -277,3 +277,8 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Confirm remote forwarded RPC connectivity before loading. Chat distinguishes SSH trust, authentication, and remote port failures and can select an SSH private key without an agent.
 - Local load remains independently available with workers configured. Linux Chat can start CPU RPC workers in foreground SSH sessions and cancels or stops the processes it owns.
 - In an isolated desktop test without an SSH agent, FASTLINK started two CPU RPC workers from a private key, allocated nonzero model buffers on both, generated 123 tokens from the tiny test GGUF, and stopped both worker processes. The test used separate SSH sessions and RPC processes on one host.
+
+## 2026-11-18 — OpenAI-compatible inference API
+
+- Added a headless API command and API settings in Linux Chat. A single authenticated llama.cpp coordinator serves the loaded model, including distributed weight placement through trusted worker tunnels. The app uses server metrics and model buffer summaries.
+- A CPU-only test with llama.cpp b12503 and the 1.19 MB stories260K GGUF verified Bearer auth, model listing, chat completion JSON, streaming completion events, metrics, SIGTERM cleanup, and nonzero buffers on two RPC processes. Both workers ran on one host. Physical mixed CPU/GPU validation remains pending.

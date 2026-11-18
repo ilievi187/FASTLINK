@@ -3,7 +3,8 @@
 FASTLINK is a native Linux desktop app built with Rust, [egui](https://github.com/emilk/egui)
 and eframe. It shows local hardware, discovers candidate devices on request,
 and runs streaming GGUF inference locally or across configured SSH workers.
-See [Run a GGUF on Linux](#run-a-gguf-on-linux) for setup.
+See [Run a GGUF on Linux](#run-a-gguf-on-linux) for setup and
+[FASTLINK inference API](API.md) for serving compatible clients.
 
 ## What it does
 
