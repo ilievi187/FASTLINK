@@ -285,3 +285,8 @@
 
 - In Devices and models, register a GGUF and choose Confirm load. In Chat, enter the llama-server executable path and choose Load model (CPU). Send a prompt once the model is ready. Stop server releases the managed process and weights.
 - Chat accepts standalone completion prompts. The token rate appears when llama.cpp returns final decode timings.
+
+## 2026-11-18 — SSH-backed worker sessions
+
+- Linux Chat accepts explicit worker endpoints and opens managed loopback-only SSH forwards using already trusted host keys. The coordinator uses llama.cpp RPC with automatic placement and streams through the same Chat view.
+- The worker RPC processes are prepared separately. Forward loss tears down the managed session, and the operator can reload after the worker recovers.

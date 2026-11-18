@@ -1,15 +1,9 @@
 # FASTLINK desktop shell (Linux, pre-alpha)
 
-This document describes the first real Linux desktop shell for FASTLINK. Its
-milestone scope is deliberately narrow: **local device overview and explicit
-local-device opt-in**. It is a native desktop binary (`fastlink-gui`) built with
-Rust, [egui](https://github.com/emilk/egui) and eframe.
-
-**Status: pre-alpha.** The shell is aligned with the implemented
-`fastlink devices --json` inventory. It also consumes the opt-in
-`fastlink.discover.v1` contract behind an explicit **Discover devices** action;
-the backend CLI in this integration base does not implement `discover` yet, so
-that action fails closed with a safe error until a supporting CLI is supplied.
+FASTLINK is a native Linux desktop app built with Rust, [egui](https://github.com/emilk/egui)
+and eframe. It shows local hardware, discovers candidate devices on request,
+and runs streaming GGUF inference locally or across configured SSH workers.
+See [Run a GGUF on Linux](#run-a-gguf-on-linux) for setup.
 
 ## What it does
 
@@ -290,13 +284,10 @@ was registered" error, and does not rename the entry. A
 deleted or non-file re-check, including registering that same path again, is
 refused and any stale confirmation is cleared. Registering a different invalid
 path leaves the existing confirmation in place. A successful check stores an
-explicit pending-backend confirmation and refreshes the byte size. It does not
-allocate weights, start a runtime, or change `loaded` from false. The loaded
-and chat lines are rendered from those flags; the backend is not connected, so
-chat stays unavailable and no tokens are generated. Selecting or registering a
-different file clears that confirmation. Chat remains **Not available** in the workspace,
-with the statement that no inference backend is connected and that this window
-does not generate tokens. There is no token list and no completion stream.
+confirmation and refreshes the byte size. Select **Load model (CPU)**
+or **Distribute and load model** in Chat to start the runtime. Changing the
+selection clears the pending confirmation. The active session keeps its
+original model until stopped.
 
 Registration does not start discovery, refresh, or an application-managed
 network request. However, inspecting a path on NFS/CIFS, another remote mount,
@@ -522,3 +513,44 @@ the hostname, machine id or hash.
 | GGUF path rejected | The path is empty, not a `.gguf` file, missing, a directory, or not readable. On Windows, device/UNC/pipe namespaces and DOS reserved names are also refused. The shell does not search nearby files. |
 | Path changed since registration | Confirmation re-opened the file and the stored path or identity no longer matches. Nothing was confirmed; re-register the path to refresh the row. |
 | Load confirmed, chat still unavailable | Confirmation is only a session flag. No inference backend is connected, so no weights are loaded and no tokens are generated. |
+
+## Run a GGUF on Linux
+
+Build the desktop app with `cargo build --release -p fastlink-gui` and launch
+`target/release/fastlink-gui`. In Devices and models, register a local GGUF and
+choose **Confirm load**. Open **Chat**, enter the path to a compatible
+`llama-server`, and choose **Load model (CPU)**. Send a prompt when the model is
+ready. **Cancel response** ends the current stream. **Stop server** releases
+the coordinator process and its model.
+
+### Distribute across trusted SSH workers
+
+Use matching RPC-enabled llama.cpp builds on the coordinator and workers. Use
+the CPU build on the coordinator if you want to reserve its accelerators for
+other jobs. On each worker, start an RPC server bound to IPv4 loopback. For a CPU
+worker with the current upstream binary:
+
+```sh
+ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU --threads 2
+```
+
+Verify each SSH host key out of band and enroll it in OpenSSH's known-hosts
+store, or enter a dedicated file in **Known-hosts file (optional)**. Set up key-based login using a default OpenSSH identity or `ssh-agent`.
+FASTLINK uses direct OpenSSH connections with strict host-key verification,
+batch authentication, and loopback-only forwarding. Each worker's SSH server
+must permit forwarding to its local RPC port.
+
+Enter one worker per line under **SSH workers (optional)**:
+
+```text
+alice@worker-a 22 50052
+bob@worker-b 22 50052
+```
+
+Choose **Distribute and load model**. llama.cpp selects layer placement based
+on the available device memory and sends model tensors from the coordinator
+through the SSH forwards as it loads. The GGUF source file stays on the
+coordinator. FASTLINK owns the forwards for this session and closes them when
+you stop the server. If a tunnel exits, the app stops the session. Restore the
+worker and load the model again. Worker processes are administered separately.
+Use workers you trust with the model and inference data.
