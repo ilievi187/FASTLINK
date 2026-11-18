@@ -279,6 +279,70 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn chat_renders_a_delta_before_final_decode_metrics() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (finish, wait) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut socket);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").unwrap();
+            socket
+                .write_all(b"data: {\"content\":\"Hello\",\"stop\":false}\n\n")
+                .unwrap();
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            socket.write_all(b"data: {\"stop\":true,\"timings\":{\"predicted_n\":2,\"predicted_ms\":250}}\n\n").unwrap();
+        });
+
+        let mut chat = Chat::default();
+        chat.stream = Some(
+            spawn_completion_stream(
+                address,
+                &CompletionRequest::new("Test"),
+                &CompletionStreamOptions::default(),
+            )
+            .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while chat.output.is_empty() && Instant::now() < deadline {
+            chat.poll();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(chat.output, "Hello");
+        assert!(chat.metrics.is_none());
+        finish.send(()).unwrap();
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while chat.stream.is_some() && Instant::now() < deadline {
+            chat.poll();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(chat.status, "Response complete");
+        let metrics = chat.metrics.as_ref().unwrap();
+        assert_eq!(metrics.predicted_n, 2);
+        assert_eq!(metrics.predicted_ms, 250.0);
+    }
+
+    #[test]
     fn load_rejects_a_replaced_confirmation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("model.gguf");

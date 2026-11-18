@@ -507,7 +507,7 @@ fn collect_shape(shape: &egui::Shape, out: &mut String) {
 }
 
 #[test]
-fn catalog_ui_shows_metadata_confirmation_and_unavailable_chat() {
+fn catalog_ui_shows_metadata_confirmation_and_chat_handoff() {
     let dir = scratch_dir("ui");
     let marker = b"WEIGHT-BYTES-MUST-NOT-RENDER";
     let path = write_named(&dir, "visible.gguf", marker);
@@ -528,21 +528,10 @@ fn catalog_ui_shows_metadata_confirmation_and_unavailable_chat() {
         text.contains("Not loaded"),
         "missing not-loaded state:\n{text}"
     );
+    assert!(text.contains("Confirmed"), "missing confirmation:\n{text}");
     assert!(
-        text.contains("Load confirmed"),
-        "missing confirmation:\n{text}"
-    );
-    assert!(
-        text.contains("No inference backend is connected"),
-        "missing backend notice:\n{text}"
-    );
-    assert!(
-        text.contains("does not generate tokens"),
-        "missing token notice:\n{text}"
-    );
-    assert!(
-        text.contains("Not available"),
-        "chat must stay unavailable:\n{text}"
+        text.contains("Open Chat to load it."),
+        "missing Chat handoff:\n{text}"
     );
     assert!(
         text.contains("Discover devices"),
@@ -595,7 +584,7 @@ fn validation_error_is_visible_and_does_not_clear_an_existing_entry() {
         "existing entry disappeared:\n{text}"
     );
     assert!(
-        text.contains("Load confirmed"),
+        text.contains("Confirmed"),
         "confirmation disappeared:\n{text}"
     );
     assert!(text.contains("Not available"));
