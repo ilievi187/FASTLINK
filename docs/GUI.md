@@ -535,7 +535,7 @@ ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU --threads 2
 ```
 
 Verify each SSH host key out of band and enroll it in OpenSSH's known-hosts
-store. Set up key-based login using a default OpenSSH identity or `ssh-agent`.
+store, or enter a dedicated file in **Known-hosts file (optional)**. Set up key-based login using a default OpenSSH identity or `ssh-agent`.
 FASTLINK uses direct OpenSSH connections with strict host-key verification,
 batch authentication, and loopback-only forwarding. Each worker's SSH server
 must permit forwarding to its local RPC port.

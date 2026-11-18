@@ -13,7 +13,7 @@ use fastlink::llama_rpc::{
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
 #[cfg(target_os = "linux")]
-use crate::workers::{parse_workers, Tunnel, Worker};
+use crate::workers::{known_hosts_file, parse_workers, Tunnel, Worker};
 
 #[cfg(not(target_os = "linux"))]
 struct Worker;
@@ -36,6 +36,8 @@ pub(crate) struct Chat {
     executable: String,
     #[cfg(target_os = "linux")]
     workers: String,
+    #[cfg(target_os = "linux")]
+    known_hosts: String,
     startup: Option<Startup>,
     session: Option<Session>,
     stream: Option<CompletionStreamHandle>,
@@ -120,6 +122,12 @@ impl Chat {
                     .hint_text("user@host SSH_PORT RPC_PORT"),
             );
             if !self.workers.trim().is_empty() {
+                ui.add_enabled(
+                    !active,
+                    egui::TextEdit::singleline(&mut self.known_hosts)
+                        .hint_text("Known-hosts file (optional)")
+                        .desired_width(420.0),
+                );
                 ui.label("Use an RPC-enabled CPU build on this machine. Workers must already run RPC on loopback.");
             }
         }
@@ -236,12 +244,26 @@ impl Chat {
         };
         #[cfg(not(target_os = "linux"))]
         let workers = Vec::new();
+        #[cfg(target_os = "linux")]
+        let known_hosts = match known_hosts_file(if workers.is_empty() {
+            ""
+        } else {
+            self.known_hosts.trim()
+        }) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let known_hosts = None;
         let executable = PathBuf::from(self.executable.trim());
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
         match thread::Builder::new()
             .name("fastlink-model-load".into())
-            .spawn(move || start_session(executable, model, workers, &signal))
+            .spawn(move || start_session(executable, model, workers, known_hosts, &signal))
         {
             Ok(worker) => {
                 self.status = "Loading model…".into();
@@ -278,6 +300,7 @@ fn start_session(
     executable: PathBuf,
     model: RegisteredGguf,
     workers: Vec<Worker>,
+    known_hosts: Option<String>,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -299,6 +322,7 @@ fn start_session(
             Tunnel::open(
                 worker,
                 &logs.path().join(format!("ssh-{index}.log")),
+                known_hosts.as_deref(),
                 cancel,
             )
             .map_err(|error| format!("Worker {}: {error}", index + 1))
@@ -308,7 +332,7 @@ fn start_session(
     let rpc_servers: Vec<_> = tunnels.iter().map(Tunnel::endpoint).collect();
     #[cfg(not(target_os = "linux"))]
     let rpc_servers: Vec<String> = {
-        debug_assert!(workers.is_empty());
+        debug_assert!(workers.is_empty() && known_hosts.is_none());
         Vec::new()
     };
     let n_gpu_layers = if rpc_servers.is_empty() { 0 } else { 999 };
@@ -431,6 +455,7 @@ mod tests {
                 PathBuf::new(),
                 confirmed,
                 Vec::new(),
+                None,
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -444,6 +469,7 @@ mod tests {
                 PathBuf::new(),
                 confirmed,
                 Vec::new(),
+                None,
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -463,6 +489,7 @@ mod tests {
             std::env::current_exe().unwrap(),
             model,
             Vec::new(),
+            None,
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");

@@ -59,7 +59,23 @@ pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
     Ok(workers)
 }
 
-fn ssh_args(worker: &Worker, local_port: u16) -> Vec<String> {
+pub(crate) fn known_hosts_file(input: &str) -> Result<Option<String>, String> {
+    if input.is_empty() {
+        return Ok(None);
+    }
+    // OpenSSH expands tokens and supports multiple paths in this option.
+    // Accept literal absolute paths only.
+    if !Path::new(input).is_absolute()
+        || !input
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+    {
+        return Err("Enter an absolute known-hosts path using letters, numbers, dots, underscores, and hyphens.".into());
+    }
+    Ok(Some(input.into()))
+}
+
+fn ssh_args(worker: &Worker, local_port: u16, known_hosts: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-F",
         "/dev/null",
@@ -69,6 +85,8 @@ fn ssh_args(worker: &Worker, local_port: u16) -> Vec<String> {
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=yes",
+        "-o",
+        "UpdateHostKeys=no",
         "-o",
         "ExitOnForwardFailure=yes",
         "-o",
@@ -85,6 +103,14 @@ fn ssh_args(worker: &Worker, local_port: u16) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect();
+    if let Some(path) = known_hosts {
+        args.extend([
+            "-o".into(),
+            format!("UserKnownHostsFile={path}"),
+            "-o".into(),
+            "GlobalKnownHostsFile=none".into(),
+        ]);
+    }
     args.extend([
         "-p".into(),
         worker.ssh_port.to_string(),
@@ -102,7 +128,12 @@ pub(crate) struct Tunnel {
 }
 
 impl Tunnel {
-    pub(crate) fn open(worker: &Worker, log: &Path, cancel: &AtomicBool) -> Result<Self, String> {
+    pub(crate) fn open(
+        worker: &Worker,
+        log: &Path,
+        known_hosts: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> Result<Self, String> {
         let reservation =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|err| err.to_string())?;
         let address = reservation.local_addr().map_err(|err| err.to_string())?;
@@ -112,7 +143,7 @@ impl Tunnel {
         }
         drop(reservation);
         let child = Command::new("/usr/bin/ssh")
-            .args(ssh_args(worker, address.port()))
+            .args(ssh_args(worker, address.port(), known_hosts))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(stderr)
@@ -172,10 +203,21 @@ mod tests {
     }
 
     #[test]
+    fn dedicated_host_keys_override_the_default_trust_stores() {
+        assert!(known_hosts_file("/tmp/trust file").is_err());
+        assert!(known_hosts_file("/tmp/%h").is_err());
+        let hosts = known_hosts_file("/tmp/cluster-hosts").unwrap();
+        let workers = parse_workers("alice@worker 22 50052").unwrap();
+        let args = ssh_args(&workers[0], 12345, hosts.as_deref());
+        assert!(args.contains(&"UserKnownHostsFile=/tmp/cluster-hosts".to_owned()));
+        assert!(args.contains(&"GlobalKnownHostsFile=none".to_owned()));
+    }
+
+    #[test]
     fn ssh_requires_known_hosts_and_forwards_only_loopback() {
         let workers = parse_workers("alice@worker-1 2222 50052\nbob@worker-2 22 50052").unwrap();
         assert_eq!(workers.len(), 2);
-        let args = ssh_args(&workers[0], 12345);
+        let args = ssh_args(&workers[0], 12345, None);
         assert!(args
             .windows(2)
             .any(|pair| pair == ["-L", "127.0.0.1:12345:127.0.0.1:50052"]));
