@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 mod chat;
+#[cfg(target_os = "linux")]
+mod workers;
 use chat::Chat;
 
 use eframe::egui;

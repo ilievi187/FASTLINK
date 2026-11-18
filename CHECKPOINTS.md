@@ -260,3 +260,8 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Chat launches a user-selected llama-server with a confirmed GGUF and CPU-only layers on loopback. It renders streamed completion deltas, allows cancellation, and calculates throughput from llama.cpp's final token count and decode timing.
 - Discovery remains an explicit action. Secure desktop pairing and distributed inference are pending.
 - Regression coverage includes replaced GGUF paths and cancelled startup. Live model and physical multi-machine verification are pending.
+
+## 2026-11-18 — Distributed Linux Chat
+
+- Chat supports explicit trusted SSH worker endpoints and managed tunnels. Distribution uses upstream llama.cpp's automatic tensor placement. Tests cover endpoint validation and strict host-key and loopback arguments.
+- A CPU-only smoke test with upstream llama.cpp b12503 and the 1.19 MB stories260K GGUF streamed 12 tokens. The coordinator logged nonzero model buffers on two separate loopback RPC worker processes. The test exercised the real RPC backend on one host. Physical multi-machine SSH verification and GUI-based host-key enrollment remain pending.

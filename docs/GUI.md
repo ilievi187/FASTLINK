@@ -522,3 +522,44 @@ the hostname, machine id or hash.
 | GGUF path rejected | The path is empty, not a `.gguf` file, missing, a directory, or not readable. On Windows, device/UNC/pipe namespaces and DOS reserved names are also refused. The shell does not search nearby files. |
 | Path changed since registration | Confirmation re-opened the file and the stored path or identity no longer matches. Nothing was confirmed; re-register the path to refresh the row. |
 | Load confirmed, chat still unavailable | Confirmation is only a session flag. No inference backend is connected, so no weights are loaded and no tokens are generated. |
+
+## Run a GGUF on Linux
+
+Build the desktop app with `cargo build --release -p fastlink-gui` and launch
+`target/release/fastlink-gui`. In Devices and models, register a local GGUF and
+choose **Confirm load**. Open **Chat**, enter the path to a compatible
+`llama-server`, and choose **Load model (CPU)**. Send a prompt when the model is
+ready. **Cancel response** ends the current stream. **Stop server** releases
+the coordinator process and its model.
+
+### Distribute across trusted SSH workers
+
+Use matching RPC-enabled llama.cpp builds on the coordinator and workers. Use
+the CPU build on the coordinator if you want to reserve its accelerators for
+other jobs. On each worker, start an RPC server bound to IPv4 loopback. For a CPU
+worker with the current upstream binary:
+
+```sh
+ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU --threads 2
+```
+
+Verify each SSH host key out of band and enroll it in OpenSSH's known-hosts
+store. Set up key-based login using a default OpenSSH identity or `ssh-agent`.
+FASTLINK uses direct OpenSSH connections with strict host-key verification,
+batch authentication, and loopback-only forwarding. Each worker's SSH server
+must permit forwarding to its local RPC port.
+
+Enter one worker per line under **SSH workers (optional)**:
+
+```text
+alice@worker-a 22 50052
+bob@worker-b 22 50052
+```
+
+Choose **Distribute and load model**. llama.cpp selects layer placement based
+on the available device memory and sends model tensors from the coordinator
+through the SSH forwards as it loads. The GGUF source file stays on the
+coordinator. FASTLINK owns the forwards for this session and closes them when
+you stop the server. If a tunnel exits, the app stops the session. Restore the
+worker and load the model again. Worker processes are administered separately.
+Use workers you trust with the model and inference data.

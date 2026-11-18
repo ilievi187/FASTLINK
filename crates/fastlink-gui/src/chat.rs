@@ -12,8 +12,16 @@ use fastlink::llama_rpc::{
 };
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
+#[cfg(target_os = "linux")]
+use crate::workers::{parse_workers, Tunnel, Worker};
+
+#[cfg(not(target_os = "linux"))]
+struct Worker;
+
 struct Session {
     server: ManagedLlamaServer,
+    #[cfg(target_os = "linux")]
+    tunnels: Vec<Tunnel>,
     _logs: tempfile::TempDir,
     model: PathBuf,
 }
@@ -26,6 +34,8 @@ struct Startup {
 #[derive(Default)]
 pub(crate) struct Chat {
     executable: String,
+    #[cfg(target_os = "linux")]
+    workers: String,
     startup: Option<Startup>,
     session: Option<Session>,
     stream: Option<CompletionStreamHandle>,
@@ -70,6 +80,17 @@ impl Chat {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if self.session.as_mut().is_some_and(|session| {
+            session
+                .tunnels
+                .iter_mut()
+                .any(|tunnel| !matches!(tunnel.is_running(), Ok(true)))
+        }) {
+            self.stop();
+            self.status =
+                "A worker tunnel closed. Check the worker and load the model again.".into();
+        }
         if let Some(session) = &mut self.session {
             match session.server.is_running() {
                 Ok(true) => {}
@@ -88,8 +109,24 @@ impl Chat {
     }
 
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
-        ui.heading("Local chat");
+        ui.heading("Chat");
         let active = self.startup.is_some() || self.session.is_some();
+        #[cfg(target_os = "linux")]
+        {
+            ui.label("SSH workers (optional)");
+            ui.add_enabled(
+                !active,
+                egui::TextEdit::multiline(&mut self.workers)
+                    .hint_text("user@host SSH_PORT RPC_PORT"),
+            );
+            if !self.workers.trim().is_empty() {
+                ui.label("Use an RPC-enabled CPU build on this machine. Workers must already run RPC on loopback.");
+            }
+        }
+        #[cfg(target_os = "linux")]
+        let distributed = !self.workers.trim().is_empty();
+        #[cfg(not(target_os = "linux"))]
+        let distributed = false;
         ui.horizontal(|ui| {
             ui.label("llama-server executable");
             ui.add_enabled(
@@ -99,7 +136,11 @@ impl Chat {
             if ui
                 .add_enabled(
                     !active && model.is_some() && !self.executable.trim().is_empty(),
-                    egui::Button::new("Load model (CPU)"),
+                    egui::Button::new(if distributed {
+                        "Distribute and load model"
+                    } else {
+                        "Load model (CPU)"
+                    }),
                 )
                 .clicked()
             {
@@ -185,12 +226,22 @@ impl Chat {
     }
 
     fn start(&mut self, model: RegisteredGguf) {
+        #[cfg(target_os = "linux")]
+        let workers = match parse_workers(&self.workers) {
+            Ok(workers) => workers,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let workers = Vec::new();
         let executable = PathBuf::from(self.executable.trim());
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
         match thread::Builder::new()
             .name("fastlink-model-load".into())
-            .spawn(move || start_session(executable, model, &signal))
+            .spawn(move || start_session(executable, model, workers, &signal))
         {
             Ok(worker) => {
                 self.status = "Loading model…".into();
@@ -226,6 +277,7 @@ impl Drop for Chat {
 fn start_session(
     executable: PathBuf,
     model: RegisteredGguf,
+    workers: Vec<Worker>,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -239,6 +291,27 @@ fn start_session(
         .canonicalize()
         .map_err(|error| format!("llama-server executable: {error}"))?;
     let logs = tempfile::tempdir().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    let tunnels = workers
+        .iter()
+        .enumerate()
+        .map(|(index, worker)| {
+            Tunnel::open(
+                worker,
+                &logs.path().join(format!("ssh-{index}.log")),
+                cancel,
+            )
+            .map_err(|error| format!("Worker {}: {error}", index + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    #[cfg(target_os = "linux")]
+    let rpc_servers: Vec<_> = tunnels.iter().map(Tunnel::endpoint).collect();
+    #[cfg(not(target_os = "linux"))]
+    let rpc_servers: Vec<String> = {
+        debug_assert!(workers.is_empty());
+        Vec::new()
+    };
+    let n_gpu_layers = if rpc_servers.is_empty() { 0 } else { 999 };
     let reservation = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
     let port = reservation
         .local_addr()
@@ -253,8 +326,8 @@ fn start_session(
         model_path: fresh.identity,
         listen_host: "127.0.0.1".into(),
         listen_port: port,
-        rpc_servers: Vec::new(),
-        n_gpu_layers: 0,
+        rpc_servers,
+        n_gpu_layers,
         ctx_size: 4096,
         tensor_split: None,
         fastlink_v4: false,
@@ -268,6 +341,8 @@ fn start_session(
         .map_err(|error| error.to_string())?;
     Ok(Session {
         server,
+        #[cfg(target_os = "linux")]
+        tunnels,
         _logs: logs,
         model: model.path,
     })
@@ -352,7 +427,12 @@ mod tests {
         #[cfg(unix)]
         {
             fs::write(&path, b"replacement").unwrap();
-            let result = start_session(PathBuf::new(), confirmed, &AtomicBool::new(false));
+            let result = start_session(
+                PathBuf::new(),
+                confirmed,
+                Vec::new(),
+                &AtomicBool::new(false),
+            );
             assert_eq!(
                 result.err().unwrap(),
                 "GGUF changed. Confirm the model again before loading."
@@ -360,7 +440,12 @@ mod tests {
         }
         #[cfg(not(unix))]
         {
-            let result = start_session(PathBuf::new(), confirmed, &AtomicBool::new(false));
+            let result = start_session(
+                PathBuf::new(),
+                confirmed,
+                Vec::new(),
+                &AtomicBool::new(false),
+            );
             assert_eq!(
                 result.err().unwrap(),
                 "That path does not exist. Nothing was registered."
@@ -377,6 +462,7 @@ mod tests {
         let result = start_session(
             std::env::current_exe().unwrap(),
             model,
+            Vec::new(),
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
