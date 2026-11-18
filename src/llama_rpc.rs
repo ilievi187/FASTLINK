@@ -43,6 +43,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::api_server::{parse_metrics, ApiKey, ApiMetrics, ApiServerOptions};
 use crate::{digest, hex, Digest};
 
 /// Maximum accepted size of a single HTTP chunk payload (guards `vec!` allocation).
@@ -160,7 +161,10 @@ pub fn build_server_args(cfg: &LlamaRpcConfig) -> Vec<String> {
         "-m".into(),
         cfg.model_path.to_string_lossy().into_owned(),
         "--host".into(),
-        cfg.listen_host.clone(),
+        cfg.listen_host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
         "--port".into(),
         cfg.listen_port.to_string(),
         "-ngl".into(),
@@ -204,16 +208,63 @@ pub struct ManagedLlamaServer {
     child: Child,
     addr: SocketAddr,
     log_path: PathBuf,
+    _api_key_file: Option<tempfile::NamedTempFile>,
 }
 
 impl ManagedLlamaServer {
     pub fn spawn(cfg: &LlamaRpcConfig) -> Result<Self, LlamaRpcError> {
-        let addr_str = format!("{}:{}", cfg.listen_host, cfg.listen_port);
-        let addr: SocketAddr = addr_str
-            .parse()
-            .map_err(|_| LlamaRpcError::NonLoopbackListen(addr_str.clone()))?;
+        Self::spawn_inner(cfg, None)
+    }
+
+    pub fn spawn_api(cfg: &LlamaRpcConfig, api: &ApiServerOptions) -> Result<Self, LlamaRpcError> {
+        // Refuse address conflicts before starting any runtime.
+        if !api.bind.ip().is_loopback() || api.bind.port() == 0 {
+            return Err(LlamaRpcError::NonLoopbackListen(api.bind.to_string()));
+        }
+        let reservation = std::net::TcpListener::bind(api.bind)?;
+        let mut cfg = cfg.clone();
+        cfg.listen_host = api.bind.ip().to_string();
+        cfg.listen_port = api.bind.port();
+        cfg.ctx_size = api.context_size;
+        if cfg.ctx_size == 0 {
+            return Err(LlamaRpcError::ParseError(
+                "Context size must be positive.".into(),
+            ));
+        }
+        let logs = cfg.log_path.as_ref().ok_or_else(|| {
+            LlamaRpcError::ParseError("API sessions require a private runtime log path".into())
+        })?;
+        if logs.as_os_str().is_empty() {
+            return Err(LlamaRpcError::ParseError(
+                "API sessions require a private runtime log path".into(),
+            ));
+        }
+        for endpoint in &cfg.rpc_servers {
+            if !endpoint
+                .parse::<SocketAddr>()
+                .is_ok_and(|addr| addr.ip().is_loopback() && addr.port() != 0)
+            {
+                return Err(LlamaRpcError::NonLoopbackEndpoint);
+            }
+        }
+        drop(reservation);
+        Self::spawn_inner(&cfg, Some(api))
+    }
+
+    fn spawn_inner(
+        cfg: &LlamaRpcConfig,
+        api: Option<&ApiServerOptions>,
+    ) -> Result<Self, LlamaRpcError> {
+        let host = cfg
+            .listen_host
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let ip = host
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| LlamaRpcError::NonLoopbackListen(cfg.listen_host.clone()))?;
+        let addr = SocketAddr::new(ip, cfg.listen_port);
         if !addr.ip().is_loopback() {
-            return Err(LlamaRpcError::NonLoopbackListen(addr_str));
+            return Err(LlamaRpcError::NonLoopbackListen(addr.to_string()));
         }
 
         let log_path = cfg.log_path.clone().unwrap_or_else(|| {
@@ -227,6 +278,33 @@ impl ManagedLlamaServer {
             .env_remove("LLAMA_ARG_RPC")
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err));
+
+        let api_key_file = api.map(|options| options.key.key_file()).transpose()?;
+        if let (Some(api), Some(key_file)) = (api, &api_key_file) {
+            // Do not let a desktop session's llama.cpp environment override
+            // authentication, model routing, CORS, or auxiliary endpoints.
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().starts_with("LLAMA_ARG_") {
+                    cmd.env_remove(key);
+                }
+            }
+            cmd.args([
+                "--alias",
+                &api.model_id,
+                "--jinja",
+                "--metrics",
+                "--no-slots",
+                "--cors-origins",
+                "localhost",
+            ])
+            .arg("--api-key-file")
+            .arg(key_file.path());
+            if api.auto_offload {
+                cmd.args(["--n-gpu-layers", "auto", "--fit", "on"]);
+            }
+            // Include model-buffer summaries for coordinator telemetry.
+            cmd.args(["--verbosity", "4"]);
+        }
 
         if let Some(parent) = cfg.server_bin.parent() {
             let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -247,6 +325,7 @@ impl ManagedLlamaServer {
             child,
             addr,
             log_path,
+            _api_key_file: api_key_file,
         })
     }
 
@@ -791,6 +870,7 @@ struct SocketReader {
     cancel: Cancellation,
     idle_timeout: Duration,
     idle_deadline: Instant,
+    response_deadline: Option<Instant>,
     bytes_read: u64,
     max_response_bytes: u64,
 }
@@ -814,6 +894,7 @@ impl SocketReader {
             cancel,
             idle_timeout: options.read_timeout,
             idle_deadline: deadline,
+            response_deadline: None,
             bytes_read: 0,
             max_response_bytes: options.max_response_bytes,
         })
@@ -830,7 +911,16 @@ impl SocketReader {
             if self.cancel.is_cancelled() {
                 return Err(LlamaRpcError::StreamCancelled);
             }
-            if Instant::now() >= self.idle_deadline {
+            let now = Instant::now();
+            if self
+                .response_deadline
+                .is_some_and(|deadline| now >= deadline)
+            {
+                return Err(
+                    io::Error::new(io::ErrorKind::TimedOut, "HTTP response timed out").into(),
+                );
+            }
+            if now >= self.idle_deadline {
                 return Err(LlamaRpcError::Io(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "completion read stalled past the read timeout",
@@ -1285,6 +1375,100 @@ impl SseEvent {
     }
 }
 
+fn read_http_response(reader: &mut SocketReader) -> Result<Framing, LlamaRpcError> {
+    let status_line = reader
+        .read_line_bounded(MAX_STATUS_LINE_BYTES, "HTTP status line")?
+        .ok_or_else(|| LlamaRpcError::ParseError("empty HTTP response".into()))?;
+    let code = parse_status_code(&status_line)?;
+    if code != 200 {
+        return Err(LlamaRpcError::HttpError(format!(
+            "unexpected HTTP status {code}"
+        )));
+    }
+
+    let mut content_length: Option<u64> = None;
+    let mut chunked = false;
+    let mut header_bytes = 0usize;
+    loop {
+        let Some(line) = reader.read_line_bounded(MAX_HEADER_LINE_BYTES, "HTTP header line")?
+        else {
+            return Err(LlamaRpcError::ParseError(
+                "truncated HTTP response headers".into(),
+            ));
+        };
+        if line.is_empty() {
+            break;
+        }
+        header_bytes += line.len() + 2;
+        if header_bytes > MAX_HTTP_HEADER_BYTES {
+            return Err(LlamaRpcError::ParseError(format!(
+                "HTTP response headers exceed {MAX_HTTP_HEADER_BYTES} bytes"
+            )));
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(LlamaRpcError::ParseError(
+                "malformed HTTP header line".into(),
+            ));
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim();
+        if name == "content-length" {
+            content_length =
+                Some(value.parse::<u64>().map_err(|_| {
+                    LlamaRpcError::ParseError("invalid Content-Length header".into())
+                })?);
+        } else if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked") {
+            chunked = true;
+        }
+    }
+
+    let framing = if chunked {
+        Framing::Chunked
+    } else if let Some(len) = content_length {
+        Framing::Length(len)
+    } else {
+        Framing::CloseDelimited
+    };
+    Ok(framing)
+}
+
+pub fn fetch_api_metrics(addr: SocketAddr, key: &ApiKey) -> Result<ApiMetrics, LlamaRpcError> {
+    ensure_loopback(addr)?;
+    let timeout = Duration::from_secs(1);
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    stream.set_write_timeout(Some(timeout))?;
+    let bearer = key.bearer_header();
+    let request = zeroize::Zeroizing::new(format!(
+        "GET /metrics HTTP/1.1\r\nHost: {addr}\r\n{}Connection: close\r\n\r\n",
+        bearer.as_str()
+    ));
+    stream.write_all(request.as_bytes())?;
+    let options = CompletionStreamOptions {
+        read_timeout: timeout,
+        max_response_bytes: 64 * 1024,
+        ..CompletionStreamOptions::default()
+    };
+    let cancel = Cancellation::internal_only(Arc::new(AtomicBool::new(false)));
+    let mut reader = SocketReader::new(stream, cancel, &options)?;
+    reader.response_deadline = Some(Instant::now() + timeout);
+    let framing = read_http_response(&mut reader)?;
+    let mut body = HttpBody::new(reader, framing);
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + timeout;
+    while let Some(line) = body.next_line(8192)? {
+        if Instant::now() >= deadline {
+            return Err(
+                io::Error::new(io::ErrorKind::TimedOut, "metrics request timed out").into(),
+            );
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| LlamaRpcError::ParseError("invalid metrics text".into()))?;
+    Ok(parse_metrics(text))
+}
+
 impl CompletionStream {
     /// Connects, sends the streaming request and validates the HTTP response.
     ///
@@ -1300,6 +1484,7 @@ impl CompletionStream {
             request,
             options,
             Cancellation::internal_only(Arc::new(AtomicBool::new(false))),
+            None,
         )
     }
 
@@ -1308,6 +1493,7 @@ impl CompletionStream {
         request: &CompletionRequest,
         options: &CompletionStreamOptions,
         cancel: Cancellation,
+        key: Option<&ApiKey>,
     ) -> Result<Self, LlamaRpcError> {
         ensure_loopback(addr)?;
         if cancel.is_cancelled() {
@@ -1324,10 +1510,12 @@ impl CompletionStream {
         stream.set_write_timeout(Some(WRITE_SLICE))?;
 
         let body = request.body_json();
-        let request_head = format!(
-            "POST /completion HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        let bearer = key.map(ApiKey::bearer_header);
+        let authorization = bearer.as_deref().map_or("", String::as_str);
+        let request_head = zeroize::Zeroizing::new(format!(
+            "POST /completion HTTP/1.1\r\nHost: {addr}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
-        );
+        ));
         write_request_cancellable(
             &mut stream,
             request_head.as_bytes(),
@@ -1337,61 +1525,7 @@ impl CompletionStream {
         stream.flush()?;
 
         let mut reader = SocketReader::new(stream, cancel, options)?;
-        let status_line = reader
-            .read_line_bounded(MAX_STATUS_LINE_BYTES, "HTTP status line")?
-            .ok_or_else(|| {
-                LlamaRpcError::ParseError("empty HTTP response from /completion".into())
-            })?;
-        let code = parse_status_code(&status_line)?;
-        if code != 200 {
-            return Err(LlamaRpcError::HttpError(format!(
-                "unexpected HTTP status {code}"
-            )));
-        }
-
-        let mut content_length: Option<u64> = None;
-        let mut chunked = false;
-        let mut header_bytes = 0usize;
-        loop {
-            let Some(line) = reader.read_line_bounded(MAX_HEADER_LINE_BYTES, "HTTP header line")?
-            else {
-                return Err(LlamaRpcError::ParseError(
-                    "truncated HTTP response headers".into(),
-                ));
-            };
-            if line.is_empty() {
-                break;
-            }
-            header_bytes += line.len() + 2;
-            if header_bytes > MAX_HTTP_HEADER_BYTES {
-                return Err(LlamaRpcError::ParseError(format!(
-                    "HTTP response headers exceed {MAX_HTTP_HEADER_BYTES} bytes"
-                )));
-            }
-            let Some((name, value)) = line.split_once(':') else {
-                return Err(LlamaRpcError::ParseError(
-                    "malformed HTTP header line".into(),
-                ));
-            };
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim();
-            if name == "content-length" {
-                content_length = Some(value.parse::<u64>().map_err(|_| {
-                    LlamaRpcError::ParseError("invalid Content-Length header".into())
-                })?);
-            } else if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
-            {
-                chunked = true;
-            }
-        }
-
-        let framing = if chunked {
-            Framing::Chunked
-        } else if let Some(len) = content_length {
-            Framing::Length(len)
-        } else {
-            Framing::CloseDelimited
-        };
+        let framing = read_http_response(&mut reader)?;
 
         Ok(Self {
             body: HttpBody::new(reader, framing),
@@ -1653,6 +1787,31 @@ pub fn spawn_completion_stream_with_cancel(
     options: &CompletionStreamOptions,
     external: Arc<AtomicBool>,
 ) -> Result<CompletionStreamHandle, LlamaRpcError> {
+    spawn_completion_worker(addr, request, options, external, None)
+}
+
+pub fn spawn_authenticated_completion_stream(
+    addr: SocketAddr,
+    request: &CompletionRequest,
+    options: &CompletionStreamOptions,
+    key: ApiKey,
+) -> Result<CompletionStreamHandle, LlamaRpcError> {
+    spawn_completion_worker(
+        addr,
+        request,
+        options,
+        Arc::new(AtomicBool::new(false)),
+        Some(key),
+    )
+}
+
+fn spawn_completion_worker(
+    addr: SocketAddr,
+    request: &CompletionRequest,
+    options: &CompletionStreamOptions,
+    external: Arc<AtomicBool>,
+    key: Option<ApiKey>,
+) -> Result<CompletionStreamHandle, LlamaRpcError> {
     ensure_loopback(addr)?;
     let request = request.clone();
     let options = options.clone();
@@ -1664,8 +1823,13 @@ pub fn spawn_completion_stream_with_cancel(
     let (sender, events) = mpsc::sync_channel(EVENT_CHANNEL_CAPACITY);
     let worker = thread::spawn(move || -> Result<LlamaCompletionMetrics, LlamaRpcError> {
         let send_cancel = worker_cancel.clone();
-        let mut stream =
-            CompletionStream::open_with_cancel(addr, &request, &options, worker_cancel)?;
+        let mut stream = CompletionStream::open_with_cancel(
+            addr,
+            &request,
+            &options,
+            worker_cancel,
+            key.as_ref(),
+        )?;
         let mut metrics = None;
         while let Some(event) = stream.next_event()? {
             if let CompletionEvent::Finished { metrics: done } = &event {

@@ -3,6 +3,7 @@
 //! Local device management and managed llama.cpp inference.
 
 use std::time::Duration;
+mod api_panel;
 mod chat;
 #[cfg(target_os = "linux")]
 mod workers;

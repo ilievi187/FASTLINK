@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 fastlink = { path = "../.." }
 tempfile = "3"
+zeroize = "1"
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
 # Glow (OpenGL) keeps the dependency tree small; the default wgpu backend is not
 # needed for a form-style desktop shell.

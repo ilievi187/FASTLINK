@@ -284,7 +284,7 @@ fn serve(address: &str, root: &Path) -> io::Result<()> {
 
 fn usage() {
     eprintln!(
-        "FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]\n  fastlink discover [--json]\n  fastlink plan [--nodes 1|2|3|4|7|16] [--objective largest|latency|throughput] [--model small|70b] [--json]\n  fastlink rpc-bench --server PATH --model PATH [--rpc HOST:PORT] [--fastlink]\nNo remote GPU scheduling yet."
+        "FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]\n  fastlink discover [--json]\n  fastlink plan [--nodes 1|2|3|4|7|16] [--objective largest|latency|throughput] [--model small|70b] [--json]\n  fastlink api --help\n  fastlink rpc-bench --server PATH --model PATH [--rpc HOST:PORT] [--fastlink]\nNo remote GPU scheduling yet."
     );
 }
 
@@ -339,6 +339,7 @@ fn main() {
             print!("{output}");
             Ok(())
         }
+        Some("api") => fastlink::api_server::run_api_cli(&args[2..]),
         Some("rpc-bench") => {
             let rest: Vec<String> = args[2..].to_vec();
             let output = match llama_rpc::run_rpc_bench_cli(&rest) {

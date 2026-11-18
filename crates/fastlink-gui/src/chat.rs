@@ -5,10 +5,13 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::api_panel::{ApiLive, ApiPanel};
 use eframe::egui;
+use fastlink::api_server::{parse_model_buffers, ApiServerOptions};
 use fastlink::llama_rpc::{
-    spawn_completion_stream, CompletionEvent, CompletionRequest, CompletionStreamHandle,
-    CompletionStreamOptions, LlamaCompletionMetrics, LlamaRpcConfig, ManagedLlamaServer,
+    spawn_authenticated_completion_stream, spawn_completion_stream, CompletionEvent,
+    CompletionRequest, CompletionStreamHandle, CompletionStreamOptions, LlamaCompletionMetrics,
+    LlamaRpcConfig, ManagedLlamaServer,
 };
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
@@ -28,6 +31,7 @@ struct Session {
     tunnels: Vec<Tunnel>,
     _logs: tempfile::TempDir,
     model: PathBuf,
+    api: Option<ApiLive>,
 }
 
 struct Startup {
@@ -74,6 +78,7 @@ pub(crate) struct Chat {
     output: String,
     metrics: Option<LlamaCompletionMetrics>,
     status: String,
+    api: ApiPanel,
 }
 
 impl Chat {
@@ -225,6 +230,9 @@ impl Chat {
                 "A worker tunnel closed. Check the worker and load the model again.".into();
         }
         if let Some(session) = &mut self.session {
+            if let Some(api) = &mut session.api {
+                api.refresh();
+            }
             match session.server.is_running() {
                 Ok(true) => {}
                 result => {
@@ -242,6 +250,10 @@ impl Chat {
     }
 
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
+        egui::ScrollArea::vertical().show(ui, |ui| self.draw_contents(ui, model));
+    }
+
+    fn draw_contents(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
         ui.heading("Chat");
         let active = self.startup.is_some() || self.session.is_some();
         #[cfg(target_os = "linux")]
@@ -318,10 +330,24 @@ impl Chat {
                     .desired_width(360.0),
             );
         });
+        self.api.draw(
+            ui,
+            active,
+            self.session
+                .as_ref()
+                .and_then(|session| session.api.as_ref()),
+        );
         let can_load = !active && !adding && model.is_some() && !self.executable.trim().is_empty();
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(can_load, egui::Button::new("Load model (CPU)"))
+                .add_enabled(
+                    can_load,
+                    egui::Button::new(if self.api.local_offloads() {
+                        "Load model (auto offload)"
+                    } else {
+                        "Load model (CPU)"
+                    }),
+                )
                 .clicked()
             {
                 self.start(model.unwrap().clone(), false);
@@ -374,13 +400,21 @@ impl Chat {
                 )
                 .clicked()
             {
-                let address = self.session.as_ref().unwrap().server.addr();
+                let session = self.session.as_ref().unwrap();
+                let address = session.server.addr();
                 let request = CompletionRequest::new(&self.prompt).with_n_predict(512);
-                match spawn_completion_stream(
-                    address,
-                    &request,
-                    &CompletionStreamOptions::default(),
-                ) {
+                let options = CompletionStreamOptions::default();
+                let stream = if let Some(api) = &session.api {
+                    spawn_authenticated_completion_stream(
+                        address,
+                        &request,
+                        &options,
+                        api.options.key.clone(),
+                    )
+                } else {
+                    spawn_completion_stream(address, &request, &options)
+                };
+                match stream {
                     Ok(stream) => {
                         self.output.clear();
                         self.metrics = None;
@@ -408,6 +442,8 @@ impl Chat {
             }
         }
         egui::ScrollArea::vertical()
+            .id_salt("chat_response")
+            .max_height(360.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.add(egui::Label::new(&self.output).selectable(true));
@@ -432,12 +468,19 @@ impl Chat {
         };
         #[cfg(not(target_os = "linux"))]
         let (workers, ssh) = (Vec::new(), SshOptions {});
+        let api = match self.api.options(distributed) {
+            Ok(api) => api,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
         let executable = PathBuf::from(self.executable.trim());
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&cancel);
         match thread::Builder::new()
             .name("fastlink-model-load".into())
-            .spawn(move || start_session(executable, model, workers, ssh, &signal))
+            .spawn(move || start_session(executable, model, workers, ssh, api, &signal))
         {
             Ok(worker) => {
                 self.status = if distributed {
@@ -544,6 +587,7 @@ fn start_session(
     model: RegisteredGguf,
     workers: Vec<Worker>,
     ssh: SshOptions,
+    api: Option<ApiServerOptions>,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -577,7 +621,12 @@ fn start_session(
         debug_assert!(workers.is_empty());
         Vec::new()
     };
-    let n_gpu_layers = if rpc_servers.is_empty() { 0 } else { 999 };
+    let n_gpu_layers =
+        if rpc_servers.is_empty() && !api.as_ref().is_some_and(|api| api.auto_offload) {
+            0
+        } else {
+            999
+        };
     let reservation = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
     let port = reservation
         .local_addr()
@@ -587,7 +636,7 @@ fn start_session(
         return Err("Startup cancelled".into());
     }
     drop(reservation);
-    let mut server = ManagedLlamaServer::spawn(&LlamaRpcConfig {
+    let config = LlamaRpcConfig {
         server_bin: executable,
         model_path: fresh.identity,
         listen_host: "127.0.0.1".into(),
@@ -600,17 +649,45 @@ fn start_session(
         fastlink_pack: false,
         fastlink_rle: false,
         log_path: Some(logs.path().join("llama-server.log")),
-    })
+    };
+    let mut server = if let Some(api) = &api {
+        ManagedLlamaServer::spawn_api(&config, api)
+    } else {
+        ManagedLlamaServer::spawn(&config)
+    }
     .map_err(|error| error.to_string())?;
     server
         .wait_ready_with_cancel(Duration::from_secs(600), cancel)
         .map_err(|error| error.to_string())?;
+    let api = api.map(|options| {
+        use std::io::Read;
+        let mut text = String::new();
+        if let Ok(file) = std::fs::File::open(server.log_path()) {
+            let _ = file.take(1024 * 1024).read_to_string(&mut text);
+        }
+        let buffers = parse_model_buffers(&text);
+        #[cfg(target_os = "linux")]
+        let mut buffers = buffers;
+        #[cfg(target_os = "linux")]
+        for (index, tunnel) in tunnels.iter().enumerate() {
+            let endpoint = tunnel.endpoint();
+            for buffer in &mut buffers {
+                if buffer.device.ends_with(&format!("[{endpoint}]")) {
+                    if let Some((device, _)) = buffer.device.split_once('[') {
+                        buffer.device = format!("Worker {} ({device})", index + 1);
+                    }
+                }
+            }
+        }
+        ApiLive::new(options, buffers)
+    });
     Ok(Session {
         server,
         #[cfg(target_os = "linux")]
         tunnels,
         _logs: logs,
         model: model.path,
+        api,
     })
 }
 
@@ -712,6 +789,7 @@ mod tests {
                 confirmed,
                 Vec::new(),
                 SshOptions::default(),
+                None,
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -726,6 +804,7 @@ mod tests {
                 confirmed,
                 Vec::new(),
                 SshOptions::default(),
+                None,
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -746,6 +825,7 @@ mod tests {
             model,
             Vec::new(),
             SshOptions::default(),
+            None,
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");

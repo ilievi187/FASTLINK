@@ -7,12 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use fastlink::api_server::ApiKey;
 use fastlink::digest;
 use fastlink::llama_rpc::{
-    build_fastlink_env, build_server_args, parse_completion_sse_line, parse_fastlink_telemetry,
-    run_streaming_completion, spawn_completion_stream, spawn_completion_stream_with_cancel,
-    stream_completion, CompletionEvent, CompletionRequest, CompletionStream,
-    CompletionStreamOptions, LlamaRpcConfig, LlamaRpcError,
+    build_fastlink_env, build_server_args, fetch_api_metrics, parse_completion_sse_line,
+    parse_fastlink_telemetry, run_streaming_completion, spawn_authenticated_completion_stream,
+    spawn_completion_stream, spawn_completion_stream_with_cancel, stream_completion,
+    CompletionEvent, CompletionRequest, CompletionStream, CompletionStreamOptions, LlamaRpcConfig,
+    LlamaRpcError,
 };
 
 fn sample_config(fastlink_v4: bool) -> LlamaRpcConfig {
@@ -30,6 +32,56 @@ fn sample_config(fastlink_v4: bool) -> LlamaRpcConfig {
         fastlink_rle: fastlink_v4,
         log_path: None,
     }
+}
+
+#[test]
+fn authenticated_completion_sends_a_bearer_header_and_streams() {
+    let (addr, server) = spawn_fake_server(|mut stream, raw| {
+        let request = std::str::from_utf8(&raw).unwrap();
+        assert!(request.starts_with("POST /completion HTTP/1.1\r\n"));
+        assert!(request.contains("\r\nAuthorization: Bearer fixture-bearer-key\r\n"));
+        stream
+            .write_all(close_delimited_ok_headers().as_bytes())
+            .unwrap();
+        stream.write_all(sse_delta("first").as_bytes()).unwrap();
+        stream.write_all(STOP_EVENT.as_bytes()).unwrap();
+    });
+    let key = ApiKey::parse("fixture-bearer-key").unwrap();
+    let handle = spawn_authenticated_completion_stream(
+        addr,
+        &CompletionRequest::new("test"),
+        &options(),
+        key,
+    )
+    .unwrap();
+    let event = handle
+        .events()
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert!(matches!(event, CompletionEvent::Delta { text, .. } if text == "first"));
+    assert_eq!(handle.join().unwrap().predicted_n, 32);
+    server.join().unwrap();
+}
+
+#[test]
+fn native_api_metrics_preserve_counts_through_chunked_http() {
+    let (addr, server) = spawn_fake_server(|mut stream, raw| {
+        let request = std::str::from_utf8(&raw).unwrap();
+        assert!(request.starts_with("GET /metrics HTTP/1.1\r\n"));
+        assert!(request.contains("\r\nAuthorization: Bearer fixture-bearer-key\r\n"));
+        stream.write_all(chunked_ok_headers().as_bytes()).unwrap();
+        stream
+            .write_all(&http_chunk(
+                "llamacpp:requests_processing 2\nllamacpp:predicted_tokens_seconds 42.5\n",
+            ))
+            .unwrap();
+        stream.write_all(b"0\r\n\r\n").unwrap();
+    });
+    let key = ApiKey::parse("fixture-bearer-key").unwrap();
+    let metrics = fetch_api_metrics(addr, &key).unwrap();
+    assert_eq!(metrics.active_requests, Some(2));
+    assert_eq!(metrics.decode_tokens_per_second, Some(42.5));
+    server.join().unwrap();
 }
 
 // ---------------------------------------------------------------------------
