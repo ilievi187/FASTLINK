@@ -587,7 +587,7 @@ fn validation_error_is_visible_and_does_not_clear_an_existing_entry() {
         text.contains("Confirmed"),
         "confirmation disappeared:\n{text}"
     );
-    assert!(text.contains("Not available"));
+    assert!(text.contains("Open Chat to load it."));
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -169,6 +169,9 @@ pub fn build_server_args(cfg: &LlamaRpcConfig) -> Vec<String> {
         cfg.ctx_size.to_string(),
         "--no-webui".into(),
     ];
+    if cfg.rpc_servers.is_empty() && cfg.n_gpu_layers == 0 {
+        args.extend(["--device".into(), "none".into()]);
+    }
     if !cfg.rpc_servers.is_empty() {
         args.push("--rpc".into());
         args.push(cfg.rpc_servers.join(","));
