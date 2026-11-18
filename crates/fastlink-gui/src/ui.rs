@@ -9,7 +9,7 @@ use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, Scroll
 
 use crate::discovery::{CandidateNode, DiscoveryInventory, ProviderStatus, DISCOVERY_SCOPE};
 use crate::inventory::GpuDevice;
-use crate::models::{chat_status_text, loaded_status_label, redacted_path};
+use crate::models::redacted_path;
 use crate::state::{AppState, Screen};
 use crate::view::{self, FieldRow};
 
@@ -135,7 +135,6 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     empty_block(ui, "Paired peers", &peer_status, peer_body);
 
     let registered = state.model_catalog().entries().len();
-    let loaded_label = loaded_status_label(state.model_catalog().weights_loaded());
     let (model_status, model_body) = if registered == 0 {
         (
             "None registered".to_owned(),
@@ -143,14 +142,11 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
         )
     } else {
         (
-            format!("{registered} registered · {loaded_label}"),
-            "Metadata only. Weight bytes stay on disk and are not loaded.",
+            format!("{registered} registered"),
+            "Select and confirm a GGUF here, then load it in Chat.",
         )
     };
     empty_block(ui, "Models", &model_status, model_body);
-    let (chat_title, chat_body) =
-        chat_status_text(state.inference_backend_connected(), state.chat_available());
-    empty_block(ui, "Chat", chat_title, chat_body);
 
     ui.add_space(8.0);
     ui.separator();
@@ -159,8 +155,7 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     ui.label(
         RichText::new(
             "Local inventory is read-only. Network discovery runs only after an explicit \
-             Discover devices click. This GUI itself opens no sockets, downloads no models, \
-             runs no inference, and starts no GPU compute.",
+             Discover devices click. Chat loads weights after an explicit Load model (CPU) click.",
         )
         .small()
         .color(ui.visuals().weak_text_color()),
@@ -806,13 +801,9 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
                             .small(),
                     );
                     ui.label(
-                        RichText::new(format!(
-                            "{} bytes · {}",
-                            entry.size_bytes,
-                            loaded_status_label(entry.loaded)
-                        ))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
+                        RichText::new(format!("{} bytes", entry.size_bytes))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
                     );
                     if selected == Some(index) {
                         badge(ui, "Selected", accent_color(ui));
@@ -825,21 +816,10 @@ fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
     }
     if let Some(path) = confirmation {
         ui.add_space(4.0);
-        let (_title, chat_body) =
-            chat_status_text(state.inference_backend_connected(), state.chat_available());
-        ui.label(
-            RichText::new(format!(
-                "Load confirmed for {}. {chat_body} Status: {}.",
-                redacted_path(&path),
-                loaded_status_label(state.model_catalog().weights_loaded())
-            ))
-            .color(ui.visuals().warn_fg_color),
-        );
-        ui.label(
-            RichText::new("Chat stays unavailable until a real backend is connected.")
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
+        ui.label(format!(
+            "Confirmed {}. Open Chat to load it.",
+            redacted_path(&path)
+        ));
     }
     ui.add_space(8.0);
 }

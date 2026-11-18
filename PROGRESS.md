@@ -280,3 +280,8 @@
 - PR #13 merged into `integrate/fastlink-team` at `a5f1cd7`; independent security review found no findings. Exact PR checks `43914199921`, feature CI `43913532911`, and exact integration merge CI `43914979069` passed on the reviewed candidate/merge.
 - The identity mismatch, ignored revocation persistence failure and public injected-backend seam issues are closed in the integrated candidate. Main remains at the separate M1 merge; no keyring code was merged to main.
 - Residual: no live Secret Service/D-Bus test, and no production-security claim. No live keyring, network discovery, model, GPU, or service interruption occurred.
+
+## 2026-11-18 — Managed local Chat
+
+- In Devices and models, register a GGUF and choose Confirm load. In Chat, enter the llama-server executable path and choose Load model (CPU). Send a prompt once the model is ready. Stop server releases the managed process and weights.
+- Chat accepts standalone completion prompts. The token rate appears when llama.cpp returns final decode timings.
