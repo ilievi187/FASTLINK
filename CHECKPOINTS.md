@@ -266,3 +266,8 @@ Tests may run under owner authorization; the M1 CPU/software test suite and inte
 - Chat supports explicit trusted SSH worker endpoints and managed tunnels. Distribution uses upstream llama.cpp's automatic tensor placement. Tests cover endpoint validation and strict host-key and loopback arguments.
 - A CPU-only smoke test with upstream llama.cpp b12503 and the 1.19 MB stories260K GGUF streamed 12 tokens. The coordinator logged nonzero model buffers on two separate loopback RPC worker processes. The test exercised the real RPC backend on one host. Physical multi-machine SSH verification and GUI-based host-key enrollment remain pending.
 - The installed Linux GUI also completed a live prompt through two real OpenSSH forwards to CPU worker processes on the same host. llama.cpp reported 0.52 MiB and 0.47 MiB of model buffers on the two workers and the GUI displayed 123 generated tokens and decode throughput. A per-cluster known-hosts file held the isolated test server’s pinned key.
+
+## 2026-11-18 — Add discovered workers
+
+- On Linux, each discovery result exposes Add device. The local resolver resolves only the selected candidate, and the redacted discovery schema stays unchanged. Chat includes the added endpoints automatically in distributed load and retains strict SSH host-key verification.
+- Added routes stay in memory. Ambiguous IPv4 candidates can be entered manually. Workstation SSH and loopback RPC must already be set up on workers.

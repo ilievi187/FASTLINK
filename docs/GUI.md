@@ -540,7 +540,17 @@ FASTLINK uses direct OpenSSH connections with strict host-key verification,
 batch authentication, and loopback-only forwarding. Each worker's SSH server
 must permit forwarding to its local RPC port.
 
-Enter one worker per line under **SSH workers (optional)**:
+In **Devices and models**, click **Discover devices**, then **Add device**
+on each worker you want to use. FASTLINK resolves the selected device's IPv4
+route only when you add it. The device appears in **Chat → Added devices**.
+Set the SSH username if it differs from your local username. Added devices
+use SSH port 22 and RPC port 50052. Verify the worker's SSH key for the
+address shown in Chat. The added list lasts for the current app session.
+
+For a custom port, an IPv6-only device, or a worker absent from discovery,
+enter its endpoint under **Manual SSH workers (optional)**. The field accepts
+DNS names and IPv4 addresses. Use an SSH hostname that resolves to IPv6 for
+IPv6-only workers. Enter one worker per line:
 
 ```text
 alice@worker-a 22 50052

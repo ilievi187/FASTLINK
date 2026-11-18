@@ -18,6 +18,14 @@ const OK: Color32 = Color32::from_rgb(94, 214, 143);
 
 /// Draw the whole application inside the root UI.
 pub fn draw(ui: &mut Ui, state: &mut AppState) {
+    draw_with_device_action(ui, state, None);
+}
+
+pub fn draw_with_device_action(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     egui::Panel::top("fastlink_top_bar").show(ui, |ui| top_bar(ui, state));
     egui::Panel::bottom("fastlink_footer").show(ui, |ui| footer(ui, state));
     egui::Panel::left("fastlink_workspace")
@@ -25,7 +33,7 @@ pub fn draw(ui: &mut Ui, state: &mut AppState) {
         .default_size(304.0)
         .min_size(250.0)
         .show(ui, |ui| workspace_panel(ui, state));
-    egui::CentralPanel::default().show(ui, |ui| central_panel(ui, state));
+    egui::CentralPanel::default().show(ui, |ui| central_panel(ui, state, add_device));
 }
 
 fn top_bar(ui: &mut Ui, state: &mut AppState) {
@@ -192,7 +200,11 @@ fn empty_block(ui: &mut Ui, title: &str, headline: &str, body: &str) {
         });
 }
 
-fn central_panel(ui: &mut Ui, state: &mut AppState) {
+fn central_panel(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -216,7 +228,7 @@ fn central_panel(ui: &mut Ui, state: &mut AppState) {
             }
 
             model_catalog_section(ui, state);
-            discovery_section(ui, state);
+            discovery_section(ui, state, add_device);
         });
 }
 
@@ -833,7 +845,11 @@ fn selected_model_path(state: &AppState) -> Option<PathBuf> {
         .map(|entry| entry.path.clone())
 }
 
-fn discovery_section(ui: &mut Ui, state: &mut AppState) {
+fn discovery_section(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     ui.add_space(18.0);
     ui.separator();
     ui.add_space(6.0);
@@ -932,7 +948,7 @@ fn discovery_section(ui: &mut Ui, state: &mut AppState) {
     }
 
     if let Some(discovery) = state.discovery().cloned() {
-        discovery_results(ui, &discovery);
+        discovery_results(ui, &discovery, add_device);
     } else if !busy && state.discovery_error().is_none() {
         Frame::new()
             .fill(ui.visuals().faint_bg_color)
@@ -956,7 +972,11 @@ fn discovery_section(ui: &mut Ui, state: &mut AppState) {
     ui.add_space(8.0);
 }
 
-fn discovery_results(ui: &mut Ui, discovery: &DiscoveryInventory) {
+fn discovery_results(
+    ui: &mut Ui,
+    discovery: &DiscoveryInventory,
+    mut add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Providers").strong());
@@ -1008,7 +1028,7 @@ fn discovery_results(ui: &mut Ui, discovery: &DiscoveryInventory) {
         );
     });
     ui.label(
-        RichText::new(view::candidate_unpaired_warning())
+        RichText::new("Discovered devices are unverified until SSH authenticates them.")
             .small()
             .color(ui.visuals().warn_fg_color),
     );
@@ -1023,7 +1043,18 @@ fn discovery_results(ui: &mut Ui, discovery: &DiscoveryInventory) {
         return;
     }
     for (index, candidate) in discovery.nodes.iter().enumerate() {
-        discovery_candidate_card(ui, index, candidate);
+        discovery_candidate_card(ui, index, candidate, add_device.is_some());
+        if let Some(add) = add_device.as_deref_mut() {
+            if ui
+                .push_id(index, |ui| {
+                    ui.add_enabled(candidate.node_id.is_some(), egui::Button::new("Add device"))
+                        .clicked()
+                })
+                .inner
+            {
+                add(candidate);
+            }
+        }
     }
 }
 
@@ -1041,7 +1072,7 @@ fn provider_badge(ui: &Ui, status: ProviderStatus) -> (Color32, &'static str) {
     }
 }
 
-fn discovery_candidate_card(ui: &mut Ui, index: usize, candidate: &CandidateNode) {
+fn discovery_candidate_card(ui: &mut Ui, index: usize, candidate: &CandidateNode, can_add: bool) {
     let warn = ui.visuals().warn_fg_color;
     Frame::new()
         .fill(ui.visuals().faint_bg_color)
@@ -1080,7 +1111,7 @@ fn discovery_candidate_card(ui: &mut Ui, index: usize, candidate: &CandidateNode
             });
             ui.add_space(4.0);
             ui.label(
-                RichText::new(view::candidate_unpaired_warning())
+                RichText::new("Discovered devices are unverified until SSH authenticates them.")
                     .small()
                     .color(warn),
             );
@@ -1091,11 +1122,9 @@ fn discovery_candidate_card(ui: &mut Ui, index: usize, candidate: &CandidateNode
                         .color(ui.visuals().weak_text_color()),
                 );
             }
-            ui.label(
-                RichText::new("Read-only candidate. No Pair action exists in this build.")
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
+            if can_add {
+                ui.label("Adding a device makes it available in Chat. SSH verifies trust on load.");
+            }
         });
     ui.add_space(8.0);
 }

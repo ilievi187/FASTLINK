@@ -2,7 +2,8 @@
 //!
 //! Never runs on CLI or app startup; executes only when explicitly requested.
 //! Keeps raw peer IP/MAC/endpoint details strictly transient and absent from
-//! public types, serialized JSON, logs, and errors.
+//! serialized reports, logs, and errors. The desktop can explicitly resolve a
+//! selected candidate through the local API for subsequent SSH verification.
 
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
@@ -99,13 +100,63 @@ impl Default for DiscoveryConfig {
 }
 
 #[cfg(target_os = "linux")]
-/// Ephemeral routing info kept strictly inside provider parsing; never serialized
-/// or returned in public discovery output.
-#[allow(dead_code)]
-#[derive(Debug)]
-struct TransientEndpoint {
-    addresses: Vec<String>,
-    port: Option<u16>,
+struct SelectedRoute<'a> {
+    node_id: &'a str,
+    addresses: std::collections::BTreeSet<Ipv4Addr>,
+}
+
+#[cfg(target_os = "linux")]
+impl SelectedRoute<'_> {
+    fn record(&mut self, node_id: &str, addresses: impl IntoIterator<Item = Ipv4Addr>) {
+        if self.node_id == node_id {
+            self.addresses
+                .extend(addresses.into_iter().filter(|address| {
+                    !address.is_unspecified()
+                        && !address.is_loopback()
+                        && !address.is_multicast()
+                        && !address.is_broadcast()
+                }));
+        }
+    }
+}
+
+/// Resolve a single explicitly selected discovery candidate for local SSH setup.
+/// The discovery CLI still emits redacted reports. Discovery never establishes
+/// trust. The caller must verify the SSH host key for the returned address.
+#[cfg(target_os = "linux")]
+pub fn resolve_selected_ipv4(
+    config: &DiscoveryConfig,
+    node_id: &str,
+    cancel: &AtomicBool,
+) -> Result<Ipv4Addr, &'static str> {
+    if !is_opaque_node_id(node_id) {
+        return Err("Discovery did not provide a device identifier.");
+    }
+    let mut route = SelectedRoute {
+        node_id,
+        addresses: Default::default(),
+    };
+    let (lan, lan_nodes) = run_lan_mdns_provider(config, Some(cancel), Some(&mut route));
+    if lan.status != "available" || !lan_nodes.iter().any(|node| node.node_id == node_id) {
+        route.addresses.clear();
+        let (tailnet, nodes) = run_tailscale_provider(config, Some(cancel), Some(&mut route));
+        if tailnet.status != "available" || !nodes.iter().any(|node| node.node_id == node_id) {
+            route.addresses.clear();
+        }
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err("Device resolution cancelled.");
+    }
+    let mut addresses = route.addresses.into_iter();
+    match (addresses.next(), addresses.next()) {
+        (Some(address), None) => Ok(address),
+        (None, _) => Err(
+            "No IPv4 route for that device. Refresh discovery or enter its SSH endpoint in Chat.",
+        ),
+        _ => Err(
+            "The device advertises multiple IPv4 routes. Enter the intended SSH endpoint in Chat.",
+        ),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -202,11 +253,11 @@ fn discover_linux(config: &DiscoveryConfig, cancel: Option<&AtomicBool>) -> Disc
     let mut providers = Vec::with_capacity(2);
     let mut nodes = Vec::new();
 
-    let (mdns_status, mdns_nodes) = run_lan_mdns_provider(config, cancel);
+    let (mdns_status, mdns_nodes) = run_lan_mdns_provider(config, cancel, None);
     providers.push(mdns_status);
     nodes.extend(mdns_nodes);
 
-    let (ts_status, ts_nodes) = run_tailscale_provider(config, cancel);
+    let (ts_status, ts_nodes) = run_tailscale_provider(config, cancel, None);
     providers.push(ts_status);
     nodes.extend(ts_nodes);
 
@@ -234,6 +285,7 @@ const MDNS_SERVICE_TYPE: &str = "_fastlink._tcp";
 fn run_lan_mdns_provider(
     config: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
+    route: Option<&mut SelectedRoute<'_>>,
 ) -> (ProviderStatus, Vec<DiscoveredNode>) {
     let output = match run_bounded_provider(
         &config.lan_mdns_program,
@@ -266,7 +318,7 @@ fn run_lan_mdns_provider(
         return (malformed_mdns_status(), Vec::new());
     };
 
-    let Ok(nodes) = parse_avahi_browse_output(stdout_str) else {
+    let Ok(nodes) = parse_avahi_browse_output(stdout_str, route) else {
         return (malformed_mdns_status(), Vec::new());
     };
 
@@ -290,7 +342,10 @@ fn malformed_mdns_status() -> ProviderStatus {
 }
 
 #[cfg(target_os = "linux")]
-fn parse_avahi_browse_output(stdout: &str) -> Result<Vec<DiscoveredNode>, ()> {
+fn parse_avahi_browse_output(
+    stdout: &str,
+    mut route: Option<&mut SelectedRoute<'_>>,
+) -> Result<Vec<DiscoveredNode>, ()> {
     let mut nodes_by_id: BTreeMap<String, DiscoveredNode> = BTreeMap::new();
 
     for raw_line in stdout.lines() {
@@ -340,17 +395,15 @@ fn parse_avahi_browse_output(stdout: &str) -> Result<Vec<DiscoveredNode>, ()> {
                     return Err(());
                 }
 
-                // Keep mDNS target hostname, IP address, and port strictly transient.
-                let _transient = TransientEndpoint {
-                    addresses: vec![hostname.to_string(), address.to_string()],
-                    port: Some(port),
-                };
-
                 let txt = parse_avahi_txt_metadata(txt_raw)?;
                 let identity_material = txt
                     .node_id
                     .unwrap_or_else(|| format!("{service_type}:{domain}:{service_name}"));
                 let node_id = opaque_node_id("lan_mdns", &identity_material);
+
+                if let Some(route) = route.as_deref_mut() {
+                    route.record(&node_id, address.parse::<Ipv4Addr>().ok());
+                }
 
                 let display_name = sanitize_display_name(service_name)
                     .unwrap_or_else(|| "Unverified LAN peer".to_string());
@@ -586,16 +639,13 @@ struct TailscalePeer {
     online: Option<bool>,
     #[serde(rename = "TailscaleIPs")]
     tailscale_ips: Option<Vec<String>>,
-    #[serde(rename = "CurAddr")]
-    cur_addr: Option<String>,
-    #[serde(rename = "Addrs")]
-    addrs: Option<Vec<String>>,
 }
 
 #[cfg(target_os = "linux")]
 fn run_tailscale_provider(
     config: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
+    mut route: Option<&mut SelectedRoute<'_>>,
 ) -> (ProviderStatus, Vec<DiscoveredNode>) {
     let output = match run_bounded_provider(
         &config.tailscale_program,
@@ -656,19 +706,6 @@ fn run_tailscale_provider(
             if peer.online != Some(true) {
                 continue;
             }
-            // Hold raw addresses strictly transiently inside provider scope only.
-            let mut transient_addrs = peer.tailscale_ips.unwrap_or_default();
-            if let Some(cur) = peer.cur_addr {
-                transient_addrs.push(cur);
-            }
-            if let Some(addrs) = peer.addrs {
-                transient_addrs.extend(addrs);
-            }
-            let _transient = TransientEndpoint {
-                addresses: transient_addrs,
-                port: None,
-            };
-
             let identity_material = peer
                 .id
                 .as_deref()
@@ -676,6 +713,16 @@ fn run_tailscale_provider(
                 .or(peer.public_key.as_deref().filter(|s| !s.trim().is_empty()))
                 .unwrap_or(map_key.as_str());
             let node_id = opaque_node_id("tailscale", identity_material);
+
+            if let Some(route) = route.as_deref_mut() {
+                route.record(
+                    &node_id,
+                    peer.tailscale_ips
+                        .iter()
+                        .flatten()
+                        .filter_map(|ip| ip.parse().ok()),
+                );
+            }
 
             let display_name = peer
                 .host_name
@@ -1654,6 +1701,69 @@ pub fn run_discover(args: &[String]) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_selected_device_keeps_routes_out_of_report_and_rejects_ambiguity() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let provider = temp.path().join("avahi-fixture");
+        let row = "=;eth0;IPv4;Worker;_fastlink._tcp;local;worker.local;192.0.2.10;50052;";
+        let write_fixture = |rows: &str| {
+            std::fs::write(&provider, format!("#!/bin/sh\nprintf '%s\\n' '{rows}'\n")).unwrap();
+            std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        write_fixture(row);
+        let config = DiscoveryConfig {
+            lan_mdns_program: provider.clone(),
+            tailscale_program: temp.path().join("tailscale-absent"),
+            ..DiscoveryConfig::default()
+        };
+        let report = discover_with_config(&config, None);
+        let node = &report.nodes[0];
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("192.0.2.10"));
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            resolve_selected_ipv4(&config, &node.node_id, &cancel),
+            Ok(Ipv4Addr::new(192, 0, 2, 10))
+        );
+        let alternate = row.replace("192.0.2.10", "192.0.2.11");
+        let rows = format!("{row}\n{alternate}");
+        // Use a different executable to avoid replacing a recently spawned script.
+        let second = temp.path().join("avahi-ambiguous");
+        std::fs::write(&second, format!("#!/bin/sh\nprintf '%s\\n' '{rows}'\n")).unwrap();
+        std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = DiscoveryConfig {
+            lan_mdns_program: second,
+            ..config
+        };
+        assert!(resolve_selected_ipv4(&config, &node.node_id, &cancel)
+            .unwrap_err()
+            .contains("multiple"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn selected_tailnet_device_uses_its_overlay_ip() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let provider = temp.path().join("tailscale-fixture");
+        std::fs::write(&provider, r#"#!/bin/sh
+printf '%s\n' '{"BackendState":"Running","Peer":{"sample":{"ID":"peer","Online":true,"HostName":"Worker","TailscaleIPs":["100.64.0.10","fd7a:115c:a1e0::12"],"CurAddr":"192.0.2.20:41641"}}}'
+"#).unwrap();
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = DiscoveryConfig {
+            lan_mdns_program: temp.path().join("avahi-absent"),
+            tailscale_program: provider,
+            ..DiscoveryConfig::default()
+        };
+        let id = opaque_node_id("tailscale", "peer");
+        assert_eq!(
+            resolve_selected_ipv4(&config, &id, &AtomicBool::new(false)),
+            Ok(Ipv4Addr::new(100, 64, 0, 10))
+        );
+    }
 
     fn valid_sample_report() -> DiscoveryReport {
         DiscoveryReport {
