@@ -6,14 +6,140 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WorkerBackendMode {
+    #[default]
+    Cpu,
+    Gpu,
+    Both,
+}
+
+impl WorkerBackendMode {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Gpu => "GPU",
+            Self::Both => "GPU + CPU",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum WorkerBackend {
+    #[default]
+    Cpu,
+    Gpu(String),
+    GpuAndCpu(String),
+}
+
+impl WorkerBackend {
+    /// Returns the `--device` argument value for upstream `ggml-rpc-server`
+    /// (`b12503`: `-d, --device <dev1,dev2,...>`).
+    pub(crate) fn device_arg(&self) -> String {
+        match self {
+            Self::Cpu => "CPU".into(),
+            Self::Gpu(dev) => dev.clone(),
+            Self::GpuAndCpu(dev) => format!("{dev},CPU"),
+        }
+    }
+
+    pub(crate) fn uses_cpu(&self) -> bool {
+        matches!(self, Self::Cpu | Self::GpuAndCpu(_))
+    }
+}
+
+/// Validates a single non-CPU GPU backend token against an explicit allow-list
+/// of upstream `ggml` accelerator device names (`Vulkan0`, `CUDA0`, `ROCm0`,
+/// `HIP0`, `SYCL0`, `OpenCL0`, `Metal`, `Metal0`, etc.).
+///
+/// Rejects `CPU`, `RPC`, shell metacharacters, flags, whitespace, and unknown
+/// tokens so `Gpu` and `GpuAndCpu` never inject arguments or double-count CPU.
+pub(crate) fn validate_gpu_backend_token(input: &str) -> Result<String, String> {
+    let token = input.trim();
+    if token.is_empty() || token.len() > 24 {
+        return Err(
+            "Enter an allow-listed GPU backend token (for example Vulkan0, CUDA0, or ROCm0)."
+                .into(),
+        );
+    }
+    if token.eq_ignore_ascii_case("CPU") {
+        return Err(
+            "Select the CPU profile instead of entering CPU as a GPU backend token.".into(),
+        );
+    }
+    if token == "Metal" {
+        return Ok(token.to_owned());
+    }
+    const INDEXED_PREFIXES: &[&str] = &["Vulkan", "CUDA", "ROCm", "HIP", "SYCL", "OpenCL", "Metal"];
+    for prefix in INDEXED_PREFIXES {
+        if let Some(suffix) = token.strip_prefix(prefix) {
+            if !suffix.is_empty()
+                && suffix.len() <= 2
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                && (suffix.len() == 1 || !suffix.starts_with('0'))
+            {
+                return Ok(token.to_owned());
+            }
+        }
+    }
+    Err(format!(
+        "Unsupported GPU backend token '{token}'. Use an allow-listed device such as Vulkan0, CUDA0, ROCm0, HIP0, SYCL0, OpenCL0, or Metal."
+    ))
+}
+
+pub(crate) fn build_worker_backend(
+    mode: WorkerBackendMode,
+    gpu_device: &str,
+) -> Result<WorkerBackend, String> {
+    match mode {
+        WorkerBackendMode::Cpu => Ok(WorkerBackend::Cpu),
+        WorkerBackendMode::Gpu => Ok(WorkerBackend::Gpu(validate_gpu_backend_token(gpu_device)?)),
+        WorkerBackendMode::Both => Ok(WorkerBackend::GpuAndCpu(validate_gpu_backend_token(
+            gpu_device,
+        )?)),
+    }
+}
+
+fn parse_backend_spec(spec: &str) -> Result<WorkerBackend, String> {
+    let parts: Vec<&str> = spec.split(',').collect();
+    match parts.as_slice() {
+        ["CPU"] => Ok(WorkerBackend::Cpu),
+        [single] => Ok(WorkerBackend::Gpu(validate_gpu_backend_token(single)?)),
+        ["CPU", gpu] | [gpu, "CPU"] => {
+            Ok(WorkerBackend::GpuAndCpu(validate_gpu_backend_token(gpu)?))
+        }
+        _ => Err(format!(
+            "Unsupported worker backend '{spec}'. Use CPU, an allow-listed GPU token (e.g. Vulkan0), or <GPU>,CPU."
+        )),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Worker {
     login: String,
     ssh_port: u16,
     rpc_port: u16,
+    backend: WorkerBackend,
 }
 
-pub(crate) fn discovered_worker(user: &str, host: Ipv4Addr) -> Result<Worker, String> {
+impl Worker {
+    fn same_endpoint(&self, other: &Self) -> bool {
+        self.login == other.login
+            && self.ssh_port == other.ssh_port
+            && self.rpc_port == other.rpc_port
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend(&self) -> &WorkerBackend {
+        &self.backend
+    }
+}
+
+pub(crate) fn discovered_worker(
+    user: &str,
+    host: Ipv4Addr,
+    backend: WorkerBackend,
+) -> Result<Worker, String> {
     if user.is_empty()
         || user
             .bytes()
@@ -21,7 +147,10 @@ pub(crate) fn discovered_worker(user: &str, host: Ipv4Addr) -> Result<Worker, St
     {
         return Err("Enter a valid SSH username in Chat.".into());
     }
-    parse_workers(&format!("{user}@{host} 22 50052")).map(|mut workers| workers.remove(0))
+    let mut worker =
+        parse_workers(&format!("{user}@{host} 22 50052")).map(|mut workers| workers.remove(0))?;
+    worker.backend = backend;
+    Ok(worker)
 }
 
 pub(crate) fn merge_workers(
@@ -30,7 +159,10 @@ pub(crate) fn merge_workers(
 ) -> Result<Vec<Worker>, String> {
     let mut workers = parse_workers(manual)?;
     for worker in added {
-        if !workers.contains(&worker) {
+        if !workers
+            .iter()
+            .any(|existing| existing.same_endpoint(&worker))
+        {
             workers.push(worker);
         }
     }
@@ -41,7 +173,7 @@ pub(crate) fn merge_workers(
 }
 
 pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
-    let mut workers = Vec::new();
+    let mut workers: Vec<Worker> = Vec::new();
     for (index, line) in input.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -49,12 +181,18 @@ pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
         let fields: Vec<_> = line.split_whitespace().collect();
         let invalid = || {
             format!(
-                "Worker line {} must be user@host SSH_PORT RPC_PORT.",
+                "Worker line {} must be user@host SSH_PORT RPC_PORT [CPU|GPU|GPU,CPU].",
                 index + 1
             )
         };
-        let [login, ssh_port, rpc_port] = fields.as_slice() else {
-            return Err(invalid());
+        let (login, ssh_port, rpc_port, backend) = match fields.as_slice() {
+            [login, ssh_port, rpc_port] => (*login, *ssh_port, *rpc_port, WorkerBackend::Cpu),
+            [login, ssh_port, rpc_port, backend_spec] => {
+                let backend = parse_backend_spec(backend_spec)
+                    .map_err(|err| format!("Worker line {}: {err}", index + 1))?;
+                (*login, *ssh_port, *rpc_port, backend)
+            }
+            _ => return Err(invalid()),
         };
         let (user, host) = login.split_once('@').ok_or_else(invalid)?;
         let valid_name = |name: &str| {
@@ -68,11 +206,15 @@ pub(crate) fn parse_workers(input: &str) -> Result<Vec<Worker>, String> {
         }
         let port = |value: &str| value.parse::<u16>().ok().filter(|port| *port != 0);
         let worker = Worker {
-            login: (*login).to_owned(),
+            login: login.to_owned(),
             ssh_port: port(ssh_port).ok_or_else(invalid)?,
             rpc_port: port(rpc_port).ok_or_else(invalid)?,
+            backend,
         };
-        if workers.contains(&worker) {
+        if workers
+            .iter()
+            .any(|existing| existing.same_endpoint(&worker))
+        {
             return Err(format!(
                 "Worker line {} duplicates an earlier endpoint.",
                 index + 1
@@ -109,11 +251,17 @@ pub(crate) struct SshOptions {
     pub start_rpc: bool,
 }
 
-fn rpc_command(port: u16) -> String {
+fn rpc_command(port: u16, backend: &WorkerBackend) -> String {
+    let device = backend.device_arg();
+    let threads = if backend.uses_cpu() {
+        " --threads 2"
+    } else {
+        ""
+    };
     format!(
         "exec /bin/sh -c 'if ! command -v ggml-rpc-server >/dev/null 2>&1; then PATH=\"$HOME/.local/bin:$PATH\"; export PATH; fi; \
         command -v ggml-rpc-server >/dev/null 2>&1 || {{ echo \"ggml-rpc-server is missing on this worker\"; exit 127; }}; \
-        exec ggml-rpc-server --host 127.0.0.1 --port {port} --device CPU --threads 2'"
+        exec ggml-rpc-server --host 127.0.0.1 --port {port} --device {device}{threads}'"
     )
 }
 
@@ -176,7 +324,7 @@ fn ssh_args(worker: &Worker, local_port: u16, options: &SshOptions) -> Vec<Strin
         worker.login.clone(),
     ]);
     if options.start_rpc {
-        args.push(rpc_command(worker.rpc_port));
+        args.push(rpc_command(worker.rpc_port, &worker.backend));
     }
     args
 }
@@ -323,11 +471,81 @@ mod tests {
 
     #[test]
     fn discovered_workers_share_the_normal_load_path_without_duplicates() {
-        let selected = discovered_worker("alice", "192.0.2.5".parse().unwrap()).unwrap();
+        let selected =
+            discovered_worker("alice", "192.0.2.5".parse().unwrap(), WorkerBackend::Cpu).unwrap();
         let workers =
             merge_workers("alice@192.0.2.5 22 50052", [selected.clone()].into_iter()).unwrap();
         assert_eq!(workers, vec![selected]);
-        assert!(discovered_worker("alice\nbob", "192.0.2.5".parse().unwrap()).is_err());
+        assert!(discovered_worker(
+            "alice\nbob",
+            "192.0.2.5".parse().unwrap(),
+            WorkerBackend::Cpu
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn worker_backend_defaults_to_cpu_and_supports_opt_in_gpu_and_both_without_cpu_double_count() {
+        let workers = parse_workers(
+            "alice@w1 22 50052\nbob@w2 22 50052 Vulkan0\ncarol@w3 22 50052 CUDA0,CPU\ndave@w4 22 50052 CPU,ROCm1",
+        )
+        .unwrap();
+        assert_eq!(workers[0].backend(), &WorkerBackend::Cpu);
+        assert_eq!(workers[1].backend(), &WorkerBackend::Gpu("Vulkan0".into()));
+        assert_eq!(
+            workers[2].backend(),
+            &WorkerBackend::GpuAndCpu("CUDA0".into())
+        );
+        assert_eq!(
+            workers[3].backend(),
+            &WorkerBackend::GpuAndCpu("ROCm1".into())
+        );
+
+        let opts = SshOptions {
+            start_rpc: true,
+            ..SshOptions::default()
+        };
+        let cpu_cmd = ssh_args(&workers[0], 12345, &opts).pop().unwrap();
+        assert!(cpu_cmd.contains(
+            "exec ggml-rpc-server --host 127.0.0.1 --port 50052 --device CPU --threads 2'"
+        ));
+
+        let gpu_cmd = ssh_args(&workers[1], 12346, &opts).pop().unwrap();
+        assert!(gpu_cmd
+            .contains("exec ggml-rpc-server --host 127.0.0.1 --port 50052 --device Vulkan0'"));
+        assert!(!gpu_cmd.contains("--threads"));
+
+        let both_cmd = ssh_args(&workers[2], 12347, &opts).pop().unwrap();
+        assert!(both_cmd.contains(
+            "exec ggml-rpc-server --host 127.0.0.1 --port 50052 --device CUDA0,CPU --threads 2'"
+        ));
+        assert_eq!(both_cmd.matches("CPU").count(), 1);
+    }
+
+    #[test]
+    fn backend_allow_list_rejects_unsafe_unknown_and_double_counted_tokens() {
+        for bad in [
+            "",
+            "CPU",
+            "RPC0",
+            "Vulkan",
+            "Vulkan00",
+            "Vulkan0;id",
+            "Vulkan0 --cache",
+            "-dVulkan0",
+            "CUDA0,Vulkan0",
+            "CPU,CPU",
+            "Unknown0",
+        ] {
+            assert!(
+                validate_gpu_backend_token(bad).is_err(),
+                "token {bad:?} must be rejected"
+            );
+        }
+        assert!(parse_workers("alice@w1 22 50052 CPU,CPU").is_err());
+        assert!(parse_workers("alice@w1 22 50052 Vulkan0;id").is_err());
+        assert!(parse_workers("alice@w1 22 50052 Vulkan0,CUDA0").is_err());
+        assert!(parse_workers("alice@w1 22 50052 CPU\nalice@w1 22 50052 Vulkan0").is_err());
     }
 
     #[test]

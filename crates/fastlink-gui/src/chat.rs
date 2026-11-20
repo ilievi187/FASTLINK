@@ -16,7 +16,10 @@ use fastlink::llama_rpc::{
 use fastlink_gui::models::{inspect_gguf_path, RegisteredGguf};
 
 #[cfg(target_os = "linux")]
-use crate::workers::{discovered_worker, merge_workers, ssh_file, SshOptions, Tunnel, Worker};
+use crate::workers::{
+    build_worker_backend, discovered_worker, merge_workers, ssh_file, SshOptions, Tunnel, Worker,
+    WorkerBackendMode,
+};
 
 #[cfg(not(target_os = "linux"))]
 struct Worker;
@@ -44,6 +47,8 @@ struct AddedDevice {
     id: String,
     name: String,
     address: std::net::Ipv4Addr,
+    backend_mode: WorkerBackendMode,
+    gpu_device: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -71,6 +76,8 @@ pub(crate) struct Chat {
     identity_file: String,
     #[cfg(target_os = "linux")]
     start_rpc: bool,
+    #[cfg(target_os = "linux")]
+    tensor_split: String,
     startup: Option<Startup>,
     session: Option<Session>,
     stream: Option<CompletionStreamHandle>,
@@ -132,7 +139,13 @@ impl Chat {
             .spawn(move || {
                 use fastlink::discovery::{resolve_selected_ipv4, DiscoveryConfig};
                 let address = resolve_selected_ipv4(&DiscoveryConfig::default(), &id, &signal)?;
-                Ok(AddedDevice { id, name, address })
+                Ok(AddedDevice {
+                    id,
+                    name,
+                    address,
+                    backend_mode: WorkerBackendMode::Cpu,
+                    gpu_device: "Vulkan0".into(),
+                })
             }) {
             Ok(worker) => {
                 self.add_job = Some(AddDeviceJob { cancel, worker });
@@ -272,10 +285,39 @@ impl Chat {
                     ui.add_enabled(!active, egui::TextEdit::singleline(&mut self.ssh_user));
                 });
                 let mut remove = None;
-                for (index, device) in self.added_devices.iter().enumerate() {
+                for (index, device) in self.added_devices.iter_mut().enumerate() {
                     ui.push_id(index, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(format!("{} · {}", device.name, device.address));
+                            ui.add_enabled_ui(!active, |ui| {
+                                egui::ComboBox::from_id_salt(("worker_backend", index))
+                                    .selected_text(device.backend_mode.label())
+                                    .width(92.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut device.backend_mode,
+                                            WorkerBackendMode::Cpu,
+                                            WorkerBackendMode::Cpu.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut device.backend_mode,
+                                            WorkerBackendMode::Gpu,
+                                            WorkerBackendMode::Gpu.label(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut device.backend_mode,
+                                            WorkerBackendMode::Both,
+                                            WorkerBackendMode::Both.label(),
+                                        );
+                                    });
+                                if device.backend_mode != WorkerBackendMode::Cpu {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut device.gpu_device)
+                                            .hint_text("Vulkan0 / CUDA0 / ROCm0")
+                                            .desired_width(110.0),
+                                    );
+                                }
+                            });
                             if ui
                                 .add_enabled(!active, egui::Button::new("Remove"))
                                 .clicked()
@@ -293,9 +335,18 @@ impl Chat {
             ui.add_enabled(
                 !active,
                 egui::TextEdit::multiline(&mut self.workers)
-                    .hint_text("user@host SSH_PORT RPC_PORT"),
+                    .hint_text("user@host SSH_PORT RPC_PORT [CPU|Vulkan0|Vulkan0,CPU]"),
             );
             if !self.workers.trim().is_empty() || !self.added_devices.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Layer weights (optional)");
+                    ui.add_enabled(
+                        !active,
+                        egui::TextEdit::singleline(&mut self.tensor_split)
+                            .hint_text("Automatic · or 1,1,1")
+                            .desired_width(160.0),
+                    ).on_hover_text("Relative weights in llama.cpp device order, not GiB. A GPU + CPU worker contributes two devices. Leave blank for upstream fitting.");
+                });
                 ui.add_enabled(
                     !active,
                     egui::TextEdit::singleline(&mut self.known_hosts)
@@ -310,10 +361,11 @@ impl Chat {
                 );
                 ui.add_enabled(
                     !active,
-                    egui::Checkbox::new(&mut self.start_rpc, "Start CPU RPC workers on load"),
-                ).on_hover_text("Starts ggml-rpc-server over SSH on each Linux worker. Stop server closes these sessions.");
+                    egui::Checkbox::new(&mut self.start_rpc, "Start managed RPC workers on load"),
+                )
+                .on_hover_text("Starts ggml-rpc-server over SSH on each Linux worker using its selected backend profile (default CPU). Stop server closes these sessions.");
                 if self.start_rpc {
-                    ui.label("Each worker needs ggml-rpc-server installed and must allow SSH forwarding and a terminal.");
+                    ui.label("Each worker needs a matching ggml-rpc-server build for its selected backend and must allow SSH forwarding and a terminal.");
                 }
             }
         }
@@ -468,6 +520,20 @@ impl Chat {
         };
         #[cfg(not(target_os = "linux"))]
         let (workers, ssh) = (Vec::new(), SshOptions {});
+        #[cfg(target_os = "linux")]
+        let tensor_split = if distributed && !self.tensor_split.trim().is_empty() {
+            match fastlink::api_server::parse_tensor_split(&self.tensor_split) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    self.status = error.into();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let tensor_split = None;
         let api = match self.api.options(distributed) {
             Ok(api) => api,
             Err(error) => {
@@ -480,8 +546,9 @@ impl Chat {
         let signal = Arc::clone(&cancel);
         match thread::Builder::new()
             .name("fastlink-model-load".into())
-            .spawn(move || start_session(executable, model, workers, ssh, api, &signal))
-        {
+            .spawn(move || {
+                start_session(executable, model, workers, ssh, api, tensor_split, &signal)
+            }) {
             Ok(worker) => {
                 self.status = if distributed {
                     "Connecting to SSH workers and loading the model…".into()
@@ -501,7 +568,11 @@ impl Chat {
         let added = self
             .added_devices
             .iter()
-            .map(|device| discovered_worker(self.ssh_user.trim(), device.address))
+            .map(|device| {
+                let backend = build_worker_backend(device.backend_mode, &device.gpu_device)
+                    .map_err(|err| format!("{}: {err}", device.name))?;
+                discovered_worker(self.ssh_user.trim(), device.address, backend)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let workers = merge_workers(&self.workers, added.into_iter())?;
         if workers.is_empty() {
@@ -588,6 +659,7 @@ fn start_session(
     workers: Vec<Worker>,
     ssh: SshOptions,
     api: Option<ApiServerOptions>,
+    tensor_split: Option<String>,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -644,7 +716,7 @@ fn start_session(
         rpc_servers,
         n_gpu_layers,
         ctx_size: 4096,
-        tensor_split: None,
+        tensor_split,
         fastlink_v4: false,
         fastlink_pack: false,
         fastlink_rle: false,
@@ -790,6 +862,7 @@ mod tests {
                 Vec::new(),
                 SshOptions::default(),
                 None,
+                None,
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -804,6 +877,7 @@ mod tests {
                 confirmed,
                 Vec::new(),
                 SshOptions::default(),
+                None,
                 None,
                 &AtomicBool::new(false),
             );
@@ -826,8 +900,68 @@ mod tests {
             Vec::new(),
             SshOptions::default(),
             None,
+            None,
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn distributed_load_rejects_invalid_layer_weights_before_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.gguf");
+        fs::write(&path, b"fixture").unwrap();
+        let mut chat = Chat::default();
+        chat.workers = "alice@worker 22 50052 Vulkan0,CPU".into();
+        chat.tensor_split = "0,0".into();
+        chat.start(inspect_gguf_path(&path).unwrap(), true);
+        assert!(chat.status.contains("at least one positive"));
+        assert!(chat.startup.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn added_devices_default_to_cpu_and_apply_per_worker_opt_in_backends() {
+        use crate::workers::WorkerBackend;
+
+        let mut chat = Chat::default();
+        chat.ssh_user = "alice".into();
+        chat.added_devices = vec![
+            AddedDevice {
+                id: "node-1".into(),
+                name: "cpu-box".into(),
+                address: "192.0.2.10".parse().unwrap(),
+                backend_mode: WorkerBackendMode::default(),
+                gpu_device: "Vulkan0".into(),
+            },
+            AddedDevice {
+                id: "node-2".into(),
+                name: "gpu-box".into(),
+                address: "192.0.2.11".parse().unwrap(),
+                backend_mode: WorkerBackendMode::Gpu,
+                gpu_device: "Vulkan0".into(),
+            },
+            AddedDevice {
+                id: "node-3".into(),
+                name: "mixed-box".into(),
+                address: "192.0.2.12".parse().unwrap(),
+                backend_mode: WorkerBackendMode::Both,
+                gpu_device: "CUDA0".into(),
+            },
+        ];
+
+        let (workers, _) = chat.distributed_settings().expect("valid mixed backends");
+        assert_eq!(workers.len(), 3);
+        assert_eq!(workers[0].backend(), &WorkerBackend::Cpu);
+        assert_eq!(workers[1].backend(), &WorkerBackend::Gpu("Vulkan0".into()));
+        assert_eq!(
+            workers[2].backend(),
+            &WorkerBackend::GpuAndCpu("CUDA0".into())
+        );
+
+        chat.added_devices[1].gpu_device = "CPU".into();
+        let err = chat.distributed_settings().err().unwrap();
+        assert!(err.contains("gpu-box"), "{err}");
     }
 }
