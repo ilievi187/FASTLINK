@@ -1,6 +1,7 @@
 # FASTLINK Linux Desktop Packaging
 
-> **Pre-alpha status:** `fastlink-gui` currently only displays **passive local device inventory** collected by `fastlink devices --json`. **Pairing, model loading, and inference are not yet implemented.** Launching the desktop shell does not scan networks, open ports, download models, or execute GPU workloads.
+FASTLINK runs local GGUF inference and can distribute it across configured SSH
+workers. See [the Linux setup guide](../../docs/GUI.md#run-a-gguf-on-linux).
 
 ## Contents
 

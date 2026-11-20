@@ -3,9 +3,13 @@
 //! `draw` takes a plain [`egui::Ui`], so the exact same code path can be
 //! rendered headlessly in tests through [`egui::Context::run_ui`].
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui};
 
+use crate::discovery::{CandidateNode, DiscoveryInventory, ProviderStatus, DISCOVERY_SCOPE};
 use crate::inventory::GpuDevice;
+use crate::models::redacted_path;
 use crate::state::{AppState, Screen};
 use crate::view::{self, FieldRow};
 
@@ -14,6 +18,14 @@ const OK: Color32 = Color32::from_rgb(94, 214, 143);
 
 /// Draw the whole application inside the root UI.
 pub fn draw(ui: &mut Ui, state: &mut AppState) {
+    draw_with_device_action(ui, state, None);
+}
+
+pub fn draw_with_device_action(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     egui::Panel::top("fastlink_top_bar").show(ui, |ui| top_bar(ui, state));
     egui::Panel::bottom("fastlink_footer").show(ui, |ui| footer(ui, state));
     egui::Panel::left("fastlink_workspace")
@@ -21,7 +33,7 @@ pub fn draw(ui: &mut Ui, state: &mut AppState) {
         .default_size(304.0)
         .min_size(250.0)
         .show(ui, |ui| workspace_panel(ui, state));
-    egui::CentralPanel::default().show(ui, |ui| central_panel(ui, state));
+    egui::CentralPanel::default().show(ui, |ui| central_panel(ui, state, add_device));
 }
 
 fn top_bar(ui: &mut Ui, state: &mut AppState) {
@@ -30,7 +42,7 @@ fn top_bar(ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
             ui.label(RichText::new("FASTLINK").size(24.0).strong());
             ui.label(
-                RichText::new("Local device overview · pre-alpha")
+                RichText::new("Local devices, opt-in discovery, session GGUF catalog · pre-alpha")
                     .small()
                     .color(ui.visuals().weak_text_color()),
             );
@@ -130,18 +142,19 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     };
     empty_block(ui, "Paired peers", &peer_status, peer_body);
 
-    empty_block(
-        ui,
-        "Models",
-        "None linked",
-        "No model catalog, download, or transfer exists in this milestone.",
-    );
-    empty_block(
-        ui,
-        "Chat",
-        "Not available",
-        "Inference and chat are not implemented. This shell only shows local device inventory.",
-    );
+    let registered = state.model_catalog().entries().len();
+    let (model_status, model_body) = if registered == 0 {
+        (
+            "None registered".to_owned(),
+            "Enter one .gguf path in the catalog. Nothing is scanned, copied, or loaded.",
+        )
+    } else {
+        (
+            format!("{registered} registered"),
+            "Select and confirm a GGUF here, then load it in Chat.",
+        )
+    };
+    empty_block(ui, "Models", &model_status, model_body);
 
     ui.add_space(8.0);
     ui.separator();
@@ -149,9 +162,8 @@ fn workspace_panel(ui: &mut Ui, state: &AppState) {
     ui.label(RichText::new("Safety").strong());
     ui.label(
         RichText::new(
-            "Inventory is read-only. The shell only runs the command shown in the footer. \
-             It does not scan the network, open listening sockets, download models, run \
-             inference, or start GPU compute.",
+            "Local inventory is read-only. Network discovery runs only after an explicit \
+             Discover devices click. Chat loads weights after an explicit Load model (CPU) click.",
         )
         .small()
         .color(ui.visuals().weak_text_color()),
@@ -189,7 +201,11 @@ fn empty_block(ui: &mut Ui, title: &str, headline: &str, body: &str) {
         });
 }
 
-fn central_panel(ui: &mut Ui, state: &mut AppState) {
+fn central_panel(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -211,6 +227,9 @@ fn central_panel(ui: &mut Ui, state: &mut AppState) {
                 Screen::Error => error_view(ui, state),
                 Screen::Devices => devices_view(ui, state),
             }
+
+            model_catalog_section(ui, state);
+            discovery_section(ui, state, add_device);
         });
 }
 
@@ -701,6 +720,418 @@ fn unknown_fields_section(ui: &mut Ui, node: &crate::inventory::InventoryNode) {
     }
 }
 
+fn model_catalog_section(ui: &mut Ui, state: &mut AppState) {
+    ui.add_space(18.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.heading("GGUF catalog");
+        badge(ui, "Session only", accent_color(ui));
+    });
+    ui.label(
+        RichText::new(
+            "Enter or paste one existing readable .gguf path. The shell records metadata only: \
+             it does not copy the file, read weight bytes, scan a directory, or persist the path. \
+             Confirming a load does not load a model.",
+        )
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    ui.add_space(6.0);
+
+    let mut draft = state.model_catalog().draft().to_owned();
+    let editor = ui.add(
+        egui::TextEdit::singleline(&mut draft)
+            .hint_text("One .gguf path")
+            .desired_width(f32::INFINITY),
+    );
+    if editor.changed() {
+        state.model_catalog_mut().set_draft(&draft);
+    }
+    let busy = state.model_fs_busy();
+    if busy {
+        ui.label(
+            RichText::new("Checking that path on a background worker.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(RichText::new("Register GGUF path").strong()),
+            )
+            .clicked()
+        {
+            state.model_catalog_mut().set_draft(&draft);
+            state.request_register_model();
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Remove selected"))
+            .clicked()
+        {
+            state.remove_selected_model();
+        }
+        let can_confirm = !busy && selected_model_path(state).is_some();
+        if ui
+            .add_enabled(can_confirm, egui::Button::new("Confirm load"))
+            .clicked()
+        {
+            state.request_confirm_model_load();
+        }
+    });
+
+    if let Some(error) = state.model_catalog().error() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(error.summary())
+                .small()
+                .color(ui.visuals().warn_fg_color),
+        );
+    }
+
+    let entries = state.model_catalog().entries().to_vec();
+    let selected = state.model_catalog().selected_index();
+    let confirmation = state.model_catalog().load_confirmation().map(PathBuf::from);
+    ui.add_space(6.0);
+    if entries.is_empty() {
+        ui.label(
+            RichText::new("No GGUF path is registered in this session.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        ui.push_id(index, |ui| {
+            Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(&entry.file_name).strong());
+                    ui.label(
+                        RichText::new(redacted_path(&entry.path))
+                            .monospace()
+                            .small(),
+                    );
+                    ui.label(
+                        RichText::new(format!("{} bytes", entry.size_bytes))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    if selected == Some(index) {
+                        badge(ui, "Selected", accent_color(ui));
+                    } else if ui.add_enabled(!busy, egui::Button::new("Select")).clicked() {
+                        state.select_registered_model(index);
+                    }
+                });
+        });
+        ui.add_space(4.0);
+    }
+    if let Some(path) = confirmation {
+        ui.add_space(4.0);
+        ui.label(format!(
+            "Confirmed {}. Open Chat to load it.",
+            redacted_path(&path)
+        ));
+    }
+    ui.add_space(8.0);
+}
+
+fn selected_model_path(state: &AppState) -> Option<PathBuf> {
+    let index = state.model_catalog().selected_index()?;
+    state
+        .model_catalog()
+        .entries()
+        .get(index)
+        .map(|entry| entry.path.clone())
+}
+
+fn discovery_section(
+    ui: &mut Ui,
+    state: &mut AppState,
+    add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
+    ui.add_space(18.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.heading("Network discovery");
+        badge(ui, "Opt-in", accent_color(ui));
+    });
+    ui.label(
+        RichText::new(format!(
+            "Scope: {} ({DISCOVERY_SCOPE})",
+            view::discovery_scope_label(DISCOVERY_SCOPE)
+        ))
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    ui.label(
+        RichText::new(
+            "Nothing is scanned on launch or when local inventory is refreshed. Clicking \
+             Discover devices runs fastlink discover --json and may contact your LAN/Tailscale \
+             providers. Candidates remain unpaired and unverified.",
+        )
+        .small()
+        .color(ui.visuals().weak_text_color()),
+    );
+    ui.add_space(6.0);
+
+    let busy = state.discovery_busy();
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(RichText::new("Discover devices").strong()),
+            )
+            .clicked()
+        {
+            state.discover();
+        }
+        if busy {
+            ui.spinner();
+            let cancelling = state.discovery_cancelling();
+            ui.label(
+                RichText::new(if cancelling {
+                    "Cancelling discovery…"
+                } else {
+                    "Discovering (bounded by the CLI timeout)…"
+                })
+                .small()
+                .color(ui.visuals().weak_text_color()),
+            );
+            if ui
+                .add_enabled(!cancelling, egui::Button::new("Cancel"))
+                .clicked()
+            {
+                state.cancel_discovery();
+            }
+        }
+    });
+
+    if let Some(age) = state.discovery_age() {
+        ui.label(
+            RichText::new(format!("Last discovery attempt: {}", view::format_age(age)))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    ui.label(
+        RichText::new(format!("Source: {}", state.discovery_command_line()))
+            .monospace()
+            .small()
+            .weak(),
+    );
+
+    if let Some(error) = state.discovery_error() {
+        ui.add_space(6.0);
+        let warn = ui.visuals().warn_fg_color;
+        Frame::new()
+            .fill(warn.gamma_multiply(0.12))
+            .stroke(Stroke::new(1.0, warn.gamma_multiply(0.6)))
+            .corner_radius(8)
+            .inner_margin(10)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Discovery failed safely")
+                        .strong()
+                        .color(warn),
+                );
+                ui.label(RichText::new(&error.summary).small());
+                ui.label(
+                    RichText::new(
+                        "No addresses, endpoints, provider error text or candidates are shown.",
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
+    }
+
+    if let Some(discovery) = state.discovery().cloned() {
+        discovery_results(ui, &discovery, add_device);
+    } else if !busy && state.discovery_error().is_none() {
+        Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(8)
+            .inner_margin(10)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Discovery is idle")
+                        .strong()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(
+                    RichText::new(
+                        "No discovery command has run in this session. Use Discover devices to opt in explicitly.",
+                    )
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
+    }
+    ui.add_space(8.0);
+}
+
+fn discovery_results(
+    ui: &mut Ui,
+    discovery: &DiscoveryInventory,
+    mut add_device: Option<&mut dyn FnMut(&CandidateNode)>,
+) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Providers").strong());
+        ui.label(
+            RichText::new(view::reported_count(discovery.providers.len()))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+    if discovery.providers.is_empty() {
+        ui.label(
+            RichText::new("No providers were reported. This does not prove no providers exist.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    } else {
+        for provider in &discovery.providers {
+            let (color, text) = provider_badge(ui, provider.status);
+            Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(6)
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&provider.provider).monospace().strong());
+                        badge(ui, text, color);
+                    });
+                    if provider.status == ProviderStatus::Unavailable {
+                        ui.label(
+                            RichText::new(
+                                "Unavailable. The raw provider error is intentionally not displayed.",
+                            )
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                    }
+                });
+            ui.add_space(4.0);
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Candidates").strong());
+        ui.label(
+            RichText::new(view::reported_count(discovery.nodes.len()))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+    ui.label(
+        RichText::new("Discovered devices are unverified until SSH authenticates them.")
+            .small()
+            .color(ui.visuals().warn_fg_color),
+    );
+    if discovery.nodes.is_empty() {
+        ui.label(
+            RichText::new(
+                "No candidates were reported. This is not evidence that no devices exist.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        return;
+    }
+    for (index, candidate) in discovery.nodes.iter().enumerate() {
+        discovery_candidate_card(ui, index, candidate, add_device.is_some());
+        if let Some(add) = add_device.as_deref_mut() {
+            if ui
+                .push_id(index, |ui| {
+                    ui.add_enabled(candidate.node_id.is_some(), egui::Button::new("Add device"))
+                        .clicked()
+                })
+                .inner
+            {
+                add(candidate);
+            }
+        }
+    }
+}
+
+fn provider_badge(ui: &Ui, status: ProviderStatus) -> (Color32, &'static str) {
+    match status {
+        ProviderStatus::Available => (ok_color(ui), view::provider_status_label(status)),
+        ProviderStatus::Unavailable => (
+            ui.visuals().warn_fg_color,
+            view::provider_status_label(status),
+        ),
+        ProviderStatus::Unknown => (
+            ui.visuals().weak_text_color(),
+            view::provider_status_label(status),
+        ),
+    }
+}
+
+fn discovery_candidate_card(ui: &mut Ui, index: usize, candidate: &CandidateNode, can_add: bool) {
+    let warn = ui.visuals().warn_fg_color;
+    Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(Stroke::new(1.0, warn.gamma_multiply(0.45)))
+        .corner_radius(10)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(view::candidate_title(candidate.display_name.as_deref()))
+                        .size(18.0)
+                        .strong(),
+                );
+                badge(ui, "Unpaired · unverified", warn);
+            });
+            ui.label(
+                RichText::new(format!(
+                    "node_id: {}",
+                    view::opaque_id_label(candidate.node_id.as_deref())
+                ))
+                .monospace()
+                .small()
+                .weak(),
+            );
+            ui.add_space(6.0);
+            egui::Grid::new(format!(
+                "fastlink_discovery_{index}_{}",
+                candidate.node_id.as_deref().unwrap_or("unknown")
+            ))
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                for row in view::candidate_rows(candidate) {
+                    field_row(ui, &row);
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Discovered devices are unverified until SSH authenticates them.")
+                    .small()
+                    .color(warn),
+            );
+            if view::candidate_uses_tailscale(candidate) {
+                ui.label(
+                    RichText::new(view::candidate_tailnet_warning())
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+            if can_add {
+                ui.label("Adding a device makes it available in Chat. SSH verifies trust on load.");
+            }
+        });
+    ui.add_space(8.0);
+}
+
 fn field_row(ui: &mut Ui, row: &FieldRow) {
     ui.label(
         RichText::new(row.label)
@@ -772,8 +1203,9 @@ fn footer(ui: &mut Ui, state: &AppState) {
     ui.add_space(2.0);
     ui.label(
         RichText::new(
-            "No network scans, listening sockets, downloads, inference, or GPU compute. \
-             Window rendering uses the normal OpenGL driver.",
+            "No automatic network scans, listening sockets, downloads, inference, or GPU compute. \
+             A GGUF path is registered only when you enter one, and only as session metadata. \
+             Discovery runs only after an explicit click. Window rendering uses the normal OpenGL driver.",
         )
         .small()
         .color(ui.visuals().weak_text_color()),

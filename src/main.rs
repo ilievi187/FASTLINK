@@ -1,9 +1,10 @@
 //! FASTLINK CPU-only proof of concept: content-addressed, lossless delta sync.
 //! This does NOT yet accelerate llama.cpp RPC or GPU execution.
 use fastlink::{
-    chunk_count, decode_chunk, devices, digest, encode_chunk, expected_chunk_len, hex, read_u16,
-    read_u32, read_u64, read_u8, write_u16, write_u32, write_u64, write_u8, Digest, CHUNK_BYTES,
-    MAGIC, MAX_CHUNKS, MAX_ENCODED_BYTES, VERSION,
+    chunk_count, cli_plan, decode_chunk, devices, digest, discovery, encode_chunk,
+    expected_chunk_len, hex, llama_rpc, read_u16, read_u32, read_u64, read_u8, write_u16,
+    write_u32, write_u64, write_u8, Digest, CHUNK_BYTES, MAGIC, MAX_CHUNKS, MAX_ENCODED_BYTES,
+    VERSION,
 };
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -340,7 +341,9 @@ fn usage() {
     } else {
         ""
     };
-    eprintln!("FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\n{status_usage}No remote GPU scheduling yet.");
+    eprintln!(
+        "FASTLINK (CPU proof of concept)\n  fastlink serve [127.0.0.1:18777] [./.fastlink-data]\n  fastlink send FILE [127.0.0.1:18777]\n  fastlink devices [--json]   (Linux-only live inventory)\n  fastlink discover [--json]\n  fastlink plan [--nodes 1|2|3|4|7|16] [--objective largest|latency|throughput] [--model small|70b] [--json]\n  fastlink api --help\n  fastlink rpc-bench --server PATH --model PATH [--rpc HOST:PORT] [--fastlink]\n{status_usage}No remote GPU scheduling yet."
+    );
 }
 
 fn main() {
@@ -371,6 +374,43 @@ fn main() {
             Ok(())
         }
         Some("devices") => devices::run_devices(&args[2..]).map(|output| print!("{output}")),
+        Some("discover") => {
+            let rest: Vec<String> = args[2..].to_vec();
+            let output = match discovery::run_discover(&rest) {
+                Ok(output) => output,
+                Err(err) => {
+                    eprintln!("FASTLINK error: {err}");
+                    std::process::exit(1);
+                }
+            };
+            print!("{output}");
+            Ok(())
+        }
+        Some("plan") => {
+            let rest: Vec<String> = args[2..].to_vec();
+            let output = match cli_plan::run_plan(&rest) {
+                Ok(output) => output,
+                Err(err) => {
+                    eprintln!("FASTLINK error: {err}");
+                    std::process::exit(1);
+                }
+            };
+            print!("{output}");
+            Ok(())
+        }
+        Some("api") => fastlink::api_server::run_api_cli(&args[2..]),
+        Some("rpc-bench") => {
+            let rest: Vec<String> = args[2..].to_vec();
+            let output = match llama_rpc::run_rpc_bench_cli(&rest) {
+                Ok(output) => output,
+                Err(err) => {
+                    eprintln!("FASTLINK error: {err}");
+                    std::process::exit(1);
+                }
+            };
+            print!("{output}");
+            Ok(())
+        }
         _ => {
             usage();
             std::process::exit(2);

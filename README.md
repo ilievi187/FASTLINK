@@ -48,38 +48,23 @@ cargo run --release -- send ./examples/hello.txt 127.0.0.1:18778
 
 No unauthorized network access, automatic device discovery, or credential setup is included.
 
-## Desktop shell (Linux, pre-alpha)
+## Linux inference app and API
 
-`fastlink-gui` is a native Linux desktop shell for the first local-device
-milestone. It invokes `fastlink devices --json` (schema
-`fastlink.devices.v1`, scope `local_only`), treats the sole local-only node as
-the local device, and preserves the backend's opaque hashed `node_id`. It renders
-only reported host, GPU and capability fields; unknown or null values remain
-`Unknown`, and network speed/connectivity is never inferred. The session-only
-visual-intent marker is local-node-only and has **no operational effect**: it
-does not enable compute, pair devices, open connections, or send data. Honest
-empty states are shown for peers, models and chat. It performs no discovery,
-downloads, inference or GPU compute. The live inventory command is Linux-only;
-non-Linux platforms receive `Unsupported` instead of an invented success.
+`fastlink-gui` manages local hardware (`fastlink devices --json`, Linux-only;
+non-Linux platforms receive `Unsupported`), optional click-only device
+discovery, discovered/manual SSH workers, one loaded GGUF, and streaming chat.
+It can serve the same model to other applications through a
+Bearer-authenticated OpenAI-compatible API. The local-device session visual
+marker has **no operational effect** (it does not enable compute, pair devices,
+open connections, or send data).
 
-```bash
-cargo build -p fastlink-gui
-cargo run -p fastlink-gui -- --fastlink-bin /path/to/fastlink
-# or: FASTLINK_BIN=/path/to/fastlink cargo run -p fastlink-gui
+```sh
+cargo build -p fastlink -p fastlink-gui
+target/debug/fastlink-gui --fastlink-bin target/debug/fastlink
+target/debug/fastlink api --help
 ```
 
-The built binary is `target/debug/fastlink-gui` (`target/release/fastlink-gui`
-with `--release`). The inventory JSON contract, build requirements, headless
-tests, actual-`FASTLINK_BIN` contract check and limitations are documented in
-[Desktop shell](docs/GUI.md).
-
-**Verification:** the GUI parser is tested against the integrated
-`fastlink devices --json` output by invoking the real binary from
-`FASTLINK_BIN`; the default suite uses a sanitized fixture with the exact
-backend field set. On Linux/Unix, CLI output capture uses bounded nonblocking
-pipe readers rather than growing files, so fast writers and inherited streams
-cannot deadlock, exhaust disk, or keep the worker alive. No GUI window is
-launched by those tests.
+See [Linux app setup](docs/GUI.md) and [inference API and client setup](docs/API.md).
 
 ## Example baseline (synthetic and highly repetitive)
 
