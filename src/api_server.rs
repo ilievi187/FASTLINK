@@ -154,6 +154,34 @@ pub fn parse_model_buffers(log: &str) -> Vec<ModelBuffer> {
         .collect()
 }
 
+/// Normalize explicit relative layer weights in llama.cpp device order.
+/// Upstream b12503 supports at most 16 devices, not 16 hosts times N devices.
+pub fn parse_tensor_split(value: &str) -> Result<String, &'static str> {
+    const INVALID: &str =
+        "Use 1–16 comma-separated weights (integers 0–1000000, at least one positive).";
+    let mut weights = Vec::with_capacity(16);
+    let mut positive = false;
+    for weight in value.split(',') {
+        let weight = weight.trim();
+        if weights.len() == 16
+            || !(1..=7).contains(&weight.len())
+            || !weight.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(INVALID);
+        }
+        let number = weight.parse::<u32>().map_err(|_| INVALID)?;
+        if number > 1_000_000 {
+            return Err(INVALID);
+        }
+        positive |= number > 0;
+        weights.push(number.to_string());
+    }
+    if !positive {
+        return Err(INVALID);
+    }
+    Ok(weights.join(","))
+}
+
 /// Run a headless API server. RPC endpoints are local SSH-forwarded listeners.
 pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
     use std::io::{self, Read};
@@ -164,7 +192,7 @@ pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
 
     use crate::llama_rpc::{LlamaRpcConfig, ManagedLlamaServer};
 
-    const USAGE: &str = "fastlink api --server PATH --model FILE.gguf --api-key-file FILE [--host 127.0.0.1] [--port 8080] [--model-id fastlink] [--rpc 127.0.0.1:PORT]... [--ctx 8192] [--auto-offload]";
+    const USAGE: &str = "fastlink api --server PATH --model FILE.gguf --api-key-file FILE [--host 127.0.0.1] [--port 8080] [--model-id fastlink] [--rpc 127.0.0.1:PORT]... [--ctx 8192] [--auto-offload] [--tensor-split 1,1]";
     let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message.to_owned());
     if args == ["--help"] {
         println!("{USAGE}");
@@ -192,6 +220,7 @@ pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
                 | "--model-id"
                 | "--rpc"
                 | "--ctx"
+                | "--tensor-split"
         ) {
             return Err(invalid(USAGE));
         }
@@ -210,6 +239,14 @@ pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
         } else if flags.insert(flag, value).is_some() {
             return Err(invalid("Duplicate API option."));
         }
+    }
+    let tensor_split = flags
+        .get("--tensor-split")
+        .map(|value| parse_tensor_split(value))
+        .transpose()
+        .map_err(invalid)?;
+    if tensor_split.is_some() && !auto_offload && rpc_servers.is_empty() {
+        return Err(invalid("--tensor-split requires --rpc or --auto-offload."));
     }
     let required = |flag| flags.get(flag).copied().ok_or_else(|| invalid(USAGE));
     let server_bin = PathBuf::from(required("--server")?).canonicalize()?;
@@ -267,7 +304,7 @@ pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
             n_gpu_layers: if api.auto_offload { 999 } else { 0 },
             rpc_servers,
             ctx_size,
-            tensor_split: None,
+            tensor_split,
             fastlink_v4: false,
             fastlink_pack: false,
             fastlink_rle: false,
@@ -297,6 +334,27 @@ pub fn run_api_cli(args: &[String]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_explicit_layer_placement_weights() {
+        assert_eq!(parse_tensor_split("1,1,1").unwrap(), "1,1,1");
+        assert_eq!(parse_tensor_split(" 00, 12, 3 ").unwrap(), "0,12,3");
+        assert!(parse_tensor_split(&["1"; 16].join(",")).is_ok());
+        for invalid in [
+            "",
+            "0,0",
+            "1,,2",
+            "-1,2",
+            "1,NaN",
+            "1,2e3",
+            "1000001,1",
+            "1/2",
+            "1,--host",
+        ] {
+            assert!(parse_tensor_split(invalid).is_err(), "accepted {invalid:?}");
+        }
+        assert!(parse_tensor_split(&["1"; 17].join(",")).is_err());
+    }
 
     #[test]
     fn secrets_are_header_safe_and_redacted() {

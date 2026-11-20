@@ -54,7 +54,13 @@ The key file contains a single secret on one line. Restrict access to that
 file. `fastlink api --help` lists options. Add `--ctx TOKEN_COUNT` for the
 desired context. Repeat `--rpc 127.0.0.1:LOCAL_PORT` for worker tunnels you
 manage separately. Use `--auto-offload` for local GPU offload. Worker endpoints
-trigger automatic fitting as well. Ctrl+C and SIGTERM stop the coordinator.
+trigger automatic fitting as well. For explicit layer placement, add
+`--tensor-split 1,1,1` with a weight for each selected device, in llama.cpp's
+reported device order. These are relative layer weights, not memory budgets.
+One RPC worker can expose multiple devices (for example `Vulkan0,CPU`, using
+GPU VRAM and system RAM on that host). The pinned b12503 engine accepts up to
+16 device weights, which is not the same as 16 mixed-device hosts. Omit the
+option to use upstream default placement. Ctrl+C and SIGTERM stop the coordinator.
 
 The authenticated HTTP listener accepts configurable IPv4 or IPv6 loopback
 addresses. For applications on other hosts or in a separate container network,
