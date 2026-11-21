@@ -121,7 +121,7 @@ impl eframe::App for GuiApp {
                 .selected_index()
                 .and_then(|index| catalog.entries().get(index))
                 .filter(|entry| catalog.load_confirmation() == Some(entry.path.as_path()));
-            self.chat.draw(ui, model);
+            self.chat.draw(ui, model, &mut self.show_chat);
         } else {
             #[cfg(target_os = "linux")]
             {

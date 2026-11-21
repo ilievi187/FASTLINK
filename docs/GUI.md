@@ -517,6 +517,24 @@ the hostname, machine id or hash.
 | Path changed since registration | Confirmation re-opened the file and the stored path or identity no longer matches. Nothing was confirmed; re-register the path to refresh the row. |
 | Load confirmed, chat still unavailable | Confirmation is only a session flag. No inference backend is connected, so no weights are loaded and no tokens are generated. |
 
+## Simple Chat workflow (Linux)
+
+FASTLINK Chat now opens in **Simple mode** by default. You should not need to
+understand RPC ports or tensor splits to see how to get started:
+
+1. Open **Devices and models**, register a GGUF file and confirm the model.
+2. Open **Chat**. The model appears in step 1. **Choose a model** takes you back to the device tab if needed.
+3. In step 2, choose **This computer** (CPU by default; optional local GPU with a compatible llama.cpp build) or **This computer + selected devices**. Added devices appear as checkboxes; uncheck any you do not want participating.
+4. If using SSH devices, choose whether FASTLINK should start their RPC worker processes. Otherwise workers must already be running. Trusted SSH access and matching worker binaries are still required.
+5. Press **Start Chat**, type a prompt and click **Send message**. Each message is currently independent; this is not yet a persistent multi-turn conversation.
+
+**Advanced settings** folds away SSH credentials, manual worker endpoints,
+backend selection, tensor splits, the llama-server executable path, and the
+OpenAI-compatible API controls. All remain available when needed. The GUI does
+not silently contact, pair, or run workloads on discovered devices: you must
+explicitly select connected mode and start the session. A missing `llama-server`
+is reported with setup guidance instead of pretending to be installed.
+
 ## Run a GGUF on Linux
 
 Build the desktop app with `cargo build --release -p fastlink-gui` and launch

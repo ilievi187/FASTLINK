@@ -42,6 +42,12 @@ struct Startup {
     worker: JoinHandle<Result<Session, String>>,
 }
 
+#[derive(Default)]
+struct PlacementOptions {
+    tensor_split: Option<String>,
+    auto_offload: bool,
+}
+
 #[cfg(target_os = "linux")]
 struct AddedDevice {
     id: String,
@@ -49,6 +55,7 @@ struct AddedDevice {
     address: std::net::Ipv4Addr,
     backend_mode: WorkerBackendMode,
     gpu_device: String,
+    enabled: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -57,8 +64,18 @@ struct AddDeviceJob {
     worker: JoinHandle<Result<AddedDevice, &'static str>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ChatMode {
+    #[default]
+    Local,
+    Connected,
+}
+
 #[derive(Default)]
 pub(crate) struct Chat {
+    mode: ChatMode,
+    local_auto_offload: bool,
+    last_prompt: String,
     #[cfg(target_os = "linux")]
     ssh_user: String,
     #[cfg(target_os = "linux")]
@@ -145,6 +162,7 @@ impl Chat {
                     address,
                     backend_mode: WorkerBackendMode::Cpu,
                     gpu_device: "Vulkan0".into(),
+                    enabled: true,
                 })
             }) {
             Ok(worker) => {
@@ -262,24 +280,304 @@ impl Chat {
         adding_device || self.startup.is_some() || self.session.is_some()
     }
 
-    pub(crate) fn draw(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
-        egui::ScrollArea::vertical().show(ui, |ui| self.draw_contents(ui, model));
+    pub(crate) fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: Option<&RegisteredGguf>,
+        show_chat: &mut bool,
+    ) {
+        egui::ScrollArea::vertical().show(ui, |ui| self.draw_contents(ui, model, show_chat));
     }
 
-    fn draw_contents(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>) {
-        ui.heading("Chat");
+    #[cfg(target_os = "linux")]
+    fn selected_worker_count(&self) -> usize {
+        self.added_devices.iter().filter(|d| d.enabled).count()
+    }
+
+    fn draw_contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: Option<&RegisteredGguf>,
+        show_chat: &mut bool,
+    ) {
         let active = self.startup.is_some() || self.session.is_some();
         #[cfg(target_os = "linux")]
         let adding = self.add_job.is_some();
         #[cfg(not(target_os = "linux"))]
         let adding = false;
-        if adding {
-            ui.label("Locating selected device…");
+
+        ui.add_space(12.0);
+        ui.label(
+            egui::RichText::new("FASTLINK  /  WORKSPACE")
+                .small()
+                .color(egui::Color32::from_rgb(106, 205, 181)),
+        );
+        ui.heading(egui::RichText::new("Chat with your model").size(29.0));
+        ui.label("Choose a model and where it runs. Everything else is optional.");
+        ui.add_space(18.0);
+
+        egui::Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(17, 27, 34))
+            .corner_radius(egui::CornerRadius::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("1  ·  Your model").strong().size(18.0));
+                ui.add_space(6.0);
+                if let Some(model) = model {
+                    let name = model
+                        .path
+                        .file_name()
+                        .unwrap_or(model.path.as_os_str())
+                        .to_string_lossy();
+                    ui.label(
+                        egui::RichText::new(format!("✓  {name}"))
+                            .color(egui::Color32::from_rgb(135, 232, 179)),
+                    );
+                    ui.small("This GGUF is confirmed for this session.");
+                } else {
+                    ui.label("No model selected yet.");
+                    ui.label("Add a .gguf file and confirm it in Devices and models.");
+                    if ui.button("Choose a model  →").clicked() {
+                        *show_chat = false;
+                    }
+                }
+            });
+        ui.add_space(12.0);
+
+        egui::Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(17, 27, 34))
+            .corner_radius(egui::CornerRadius::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("2  ·  Where to run").strong().size(18.0));
+                ui.add_space(6.0);
+                ui.add_enabled_ui(!active, |ui| {
+                    ui.radio_value(&mut self.mode, ChatMode::Local, "This computer");
+                    #[cfg(target_os = "linux")]
+                    ui.radio_value(&mut self.mode, ChatMode::Connected, "This computer + selected devices");
+                });
+                if self.mode == ChatMode::Local {
+                    ui.add_enabled(!active, egui::Checkbox::new(
+                        &mut self.local_auto_offload, "Use my GPU if supported"
+                    )).on_hover_text(
+                        "Requires a GPU-enabled llama-server build. Falls back to an error if the build or GPU is unsupported."
+                    );
+                    ui.small("Default: CPU. No other devices will be contacted.");
+                }
+                #[cfg(target_os = "linux")]
+                if self.mode == ChatMode::Connected {
+                    if self.added_devices.is_empty() && self.workers.trim().is_empty() {
+                        ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                            "No devices added. Discover and add a device first.");
+                        if ui.button("Go to devices  →").clicked() {
+                            *show_chat = false;
+                        }
+                    } else {
+                        ui.label("Choose which added devices can join this session:");
+                        for device in &mut self.added_devices {
+                            ui.add_enabled(!active,
+                                egui::Checkbox::new(&mut device.enabled, &device.name)
+                            ).on_hover_text(format!("SSH endpoint: {}", device.address));
+                        }
+                        if !self.workers.trim().is_empty() {
+                            ui.small("Manual SSH workers from Advanced settings will also be used.");
+                        }
+                        ui.add_enabled(!active, egui::Checkbox::new(
+                            &mut self.start_rpc,
+                            "Start RPC workers for me over SSH",
+                        )).on_hover_text("Uses SSH and requires a trusted host key and matching RPC server executable on each selected worker.");
+                        ui.small(if self.start_rpc {
+                            "Requires SSH access, trusted host keys, and ggml-rpc-server on workers."
+                        } else {
+                            "RPC servers must already be running on the selected workers."
+                        });
+                        if self.selected_worker_count() == 0 && self.workers.trim().is_empty() {
+                            ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                                "Select at least one device, or switch to This computer.");
+                        }
+                    }
+                }
+            });
+        ui.add_space(12.0);
+
+        egui::Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(17, 27, 34))
+            .corner_radius(egui::CornerRadius::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("3  ·  Start chatting").strong().size(18.0));
+                ui.add_space(6.0);
+                if self.executable.trim().is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                        "llama-server was not found. Install llama.cpp or set its path in Advanced settings.");
+                    ui.hyperlink_to("How to set up llama.cpp  ↗",
+                        "https://github.com/ilievi187/FASTLINK/blob/main/docs/GUI.md#run-a-gguf-on-linux");
+                }
+                if adding {
+                    ui.label("Adding a device…");
+                }
+                let distributed = self.mode == ChatMode::Connected;
+                #[cfg(target_os = "linux")]
+                let ready_workers = self.selected_worker_count() > 0 || !self.workers.trim().is_empty();
+                #[cfg(not(target_os = "linux"))]
+                let ready_workers = false;
+                let can_start = !active && !adding && model.is_some()
+                    && !self.executable.trim().is_empty()
+                    && (!distributed || ready_workers);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(can_start, egui::Button::new(
+                        egui::RichText::new(if distributed { "Connect & Start Chat  →" } else { "Start Chat  →" })
+                            .strong().size(16.0)
+                    )).clicked() {
+                        if let Some(model) = model {
+                            self.start(model.clone(), distributed);
+                        }
+                    }
+                    if active {
+                        let label = if self.startup.is_some() { "Cancel loading" } else { "Stop model" };
+                        if ui.button(label).clicked() {
+                            self.stop();
+                        }
+                    }
+                });
+                if let Some(session) = &self.session {
+                    let name = session.model.file_name()
+                        .unwrap_or(session.model.as_os_str()).to_string_lossy();
+                    ui.colored_label(egui::Color32::from_rgb(135, 232, 179),
+                        format!("●  {name} ready — type below."));
+                } else if self.startup.is_some() {
+                    ui.label("◌  Starting model…");
+                } else {
+                    ui.label("○  Not running");
+                }
+                if !self.status.is_empty() {
+                    ui.add(egui::Label::new(&self.status).selectable(true));
+                }
+            });
+        ui.add_space(12.0);
+
+        egui::CollapsingHeader::new("Advanced settings  ·  SSH, RPC, llama.cpp, API")
+            .default_open(false)
+            .show(ui, |ui| self.draw_advanced_settings(ui, active));
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.heading("Conversation");
+        ui.small("Each message currently runs as a separate prompt; persistent chat memory is not yet enabled.");
+        ui.add_space(8.0);
+        if !self.last_prompt.is_empty() {
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(27, 37, 46))
+                .corner_radius(egui::CornerRadius::same(10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("YOU").small().strong());
+                    ui.label(&self.last_prompt);
+                });
+            ui.add_space(8.0);
         }
+        egui::Frame::group(ui.style())
+            .fill(egui::Color32::from_rgb(17, 27, 34))
+            .corner_radius(egui::CornerRadius::same(10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new("FASTLINK AI")
+                        .small()
+                        .strong()
+                        .color(egui::Color32::from_rgb(135, 232, 179)),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("chat_response")
+                    .max_height(320.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(if self.output.is_empty() {
+                                if self.stream.is_some() {
+                                    "Generating…"
+                                } else {
+                                    "Your model's answer will appear here."
+                                }
+                            } else {
+                                &self.output
+                            })
+                            .selectable(true),
+                        );
+                    });
+            });
+        ui.add_space(12.0);
+        ui.add_enabled(
+            self.session.is_some() && self.stream.is_none(),
+            egui::TextEdit::multiline(&mut self.prompt)
+                .desired_rows(3)
+                .desired_width(ui.available_width())
+                .hint_text("Ask your model something…"),
+        );
+        ui.horizontal_wrapped(|ui| {
+            let sendable =
+                self.session.is_some() && self.stream.is_none() && !self.prompt.trim().is_empty();
+            if ui
+                .add_enabled(sendable, egui::Button::new("Send message  →"))
+                .clicked()
+            {
+                let session = self.session.as_ref().unwrap();
+                let address = session.server.addr();
+                let request = CompletionRequest::new(&self.prompt).with_n_predict(512);
+                let options = CompletionStreamOptions::default();
+                let stream = if let Some(api) = &session.api {
+                    spawn_authenticated_completion_stream(
+                        address,
+                        &request,
+                        &options,
+                        api.options.key.clone(),
+                    )
+                } else {
+                    spawn_completion_stream(address, &request, &options)
+                };
+                match stream {
+                    Ok(stream) => {
+                        self.last_prompt = self.prompt.clone();
+                        self.output.clear();
+                        self.metrics = None;
+                        self.status = "Generating…".into();
+                        self.stream = Some(stream);
+                        self.prompt.clear();
+                    }
+                    Err(error) => self.status = error.to_string(),
+                }
+            }
+            if ui
+                .add_enabled(self.stream.is_some(), egui::Button::new("Cancel response"))
+                .clicked()
+            {
+                if let Some(stream) = &self.stream {
+                    stream.cancel();
+                    self.status = "Cancelling response…".into();
+                }
+            }
+            if let Some(metrics) = &self.metrics {
+                if metrics.predicted_n > 0 && metrics.predicted_ms > 0.0 {
+                    ui.label(format!(
+                        "{:.2} tok/s · {} tokens",
+                        metrics.predicted_n as f64 * 1000.0 / metrics.predicted_ms,
+                        metrics.predicted_n
+                    ));
+                }
+            }
+        });
+        if active {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn draw_advanced_settings(&mut self, ui: &mut egui::Ui, active: bool) {
+        ui.small("Only change these if the automatic setup cannot find your runtime or you need custom SSH/RPC options.");
         #[cfg(target_os = "linux")]
         {
             if !self.added_devices.is_empty() {
-                ui.heading("Added devices");
+                ui.heading("Connected worker details");
                 ui.horizontal(|ui| {
                     ui.label("SSH username");
                     ui.add_enabled(!active, egui::TextEdit::singleline(&mut self.ssh_user));
@@ -369,10 +667,8 @@ impl Chat {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
-        let distributed = !self.workers.trim().is_empty() || !self.added_devices.is_empty();
-        #[cfg(not(target_os = "linux"))]
-        let distributed = false;
+
+        ui.separator();
         ui.horizontal(|ui| {
             ui.label("llama-server executable");
             ui.add_enabled(
@@ -389,120 +685,6 @@ impl Chat {
                 .as_ref()
                 .and_then(|session| session.api.as_ref()),
         );
-        let can_load = !active && !adding && model.is_some() && !self.executable.trim().is_empty();
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    can_load,
-                    egui::Button::new(if self.api.local_offloads() {
-                        "Load model (auto offload)"
-                    } else {
-                        "Load model (CPU)"
-                    }),
-                )
-                .clicked()
-            {
-                self.start(model.unwrap().clone(), false);
-            }
-            if distributed
-                && ui
-                    .add_enabled(can_load, egui::Button::new("Distribute and load model"))
-                    .clicked()
-            {
-                self.start(model.unwrap().clone(), true);
-            }
-            let stop = if self.startup.is_some() {
-                "Cancel load"
-            } else {
-                "Stop server"
-            };
-            if ui.add_enabled(active, egui::Button::new(stop)).clicked() {
-                self.stop();
-            }
-        });
-        if let Some(path) = self
-            .session
-            .as_ref()
-            .map(|session| session.model.as_path())
-            .or(model.map(|entry| entry.path.as_path()))
-        {
-            ui.label(
-                path.file_name()
-                    .unwrap_or(path.as_os_str())
-                    .to_string_lossy(),
-            );
-        } else {
-            ui.label("Register and confirm a GGUF in Devices and models.");
-        }
-        ui.add(egui::Label::new(&self.status).selectable(true));
-        if self.session.is_none() {
-            ui.label("Load a model to send a prompt.");
-        }
-        ui.add_enabled(
-            self.session.is_some() && self.stream.is_none(),
-            egui::TextEdit::multiline(&mut self.prompt).hint_text("Prompt"),
-        );
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    self.session.is_some()
-                        && self.stream.is_none()
-                        && !self.prompt.trim().is_empty(),
-                    egui::Button::new("Send"),
-                )
-                .clicked()
-            {
-                let session = self.session.as_ref().unwrap();
-                let address = session.server.addr();
-                let request = CompletionRequest::new(&self.prompt).with_n_predict(512);
-                let options = CompletionStreamOptions::default();
-                let stream = if let Some(api) = &session.api {
-                    spawn_authenticated_completion_stream(
-                        address,
-                        &request,
-                        &options,
-                        api.options.key.clone(),
-                    )
-                } else {
-                    spawn_completion_stream(address, &request, &options)
-                };
-                match stream {
-                    Ok(stream) => {
-                        self.output.clear();
-                        self.metrics = None;
-                        self.status = "Generating…".into();
-                        self.stream = Some(stream);
-                    }
-                    Err(error) => self.status = error.to_string(),
-                }
-            }
-            if ui
-                .add_enabled(self.stream.is_some(), egui::Button::new("Cancel response"))
-                .clicked()
-            {
-                self.stream.as_ref().unwrap().cancel();
-                self.status = "Cancelling response…".into();
-            }
-        });
-        if let Some(metrics) = &self.metrics {
-            if metrics.predicted_n > 0 && metrics.predicted_ms > 0.0 {
-                ui.label(format!(
-                    "{:.2} tokens/sec · {} generated tokens",
-                    metrics.predicted_n as f64 * 1000.0 / metrics.predicted_ms,
-                    metrics.predicted_n
-                ));
-            }
-        }
-        egui::ScrollArea::vertical()
-            .id_salt("chat_response")
-            .max_height(360.0)
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.add(egui::Label::new(&self.output).selectable(true));
-            });
-        if active || self.startup.is_some() {
-            ui.ctx().request_repaint_after(Duration::from_millis(30));
-        }
     }
 
     fn start(&mut self, model: RegisteredGguf, distributed: bool) {
@@ -534,6 +716,7 @@ impl Chat {
         };
         #[cfg(not(target_os = "linux"))]
         let tensor_split = None;
+        let auto_offload = self.local_auto_offload || self.api.local_offloads();
         let api = match self.api.options(distributed) {
             Ok(api) => api,
             Err(error) => {
@@ -547,7 +730,18 @@ impl Chat {
         match thread::Builder::new()
             .name("fastlink-model-load".into())
             .spawn(move || {
-                start_session(executable, model, workers, ssh, api, tensor_split, &signal)
+                start_session(
+                    executable,
+                    model,
+                    workers,
+                    ssh,
+                    api,
+                    PlacementOptions {
+                        tensor_split,
+                        auto_offload,
+                    },
+                    &signal,
+                )
             }) {
             Ok(worker) => {
                 self.status = if distributed {
@@ -556,6 +750,7 @@ impl Chat {
                     "Loading model locally…".into()
                 };
                 self.output.clear();
+                self.last_prompt.clear();
                 self.metrics = None;
                 self.startup = Some(Startup { cancel, worker });
             }
@@ -568,6 +763,7 @@ impl Chat {
         let added = self
             .added_devices
             .iter()
+            .filter(|device| device.enabled)
             .map(|device| {
                 let backend = build_worker_backend(device.backend_mode, &device.gpu_device)
                     .map_err(|err| format!("{}: {err}", device.name))?;
@@ -659,7 +855,7 @@ fn start_session(
     workers: Vec<Worker>,
     ssh: SshOptions,
     api: Option<ApiServerOptions>,
-    tensor_split: Option<String>,
+    placement: PlacementOptions,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -693,12 +889,14 @@ fn start_session(
         debug_assert!(workers.is_empty());
         Vec::new()
     };
-    let n_gpu_layers =
-        if rpc_servers.is_empty() && !api.as_ref().is_some_and(|api| api.auto_offload) {
-            0
-        } else {
-            999
-        };
+    let n_gpu_layers = if rpc_servers.is_empty()
+        && !placement.auto_offload
+        && !api.as_ref().is_some_and(|api| api.auto_offload)
+    {
+        0
+    } else {
+        999
+    };
     let reservation = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
     let port = reservation
         .local_addr()
@@ -716,7 +914,7 @@ fn start_session(
         rpc_servers,
         n_gpu_layers,
         ctx_size: 4096,
-        tensor_split,
+        tensor_split: placement.tensor_split,
         fastlink_v4: false,
         fastlink_pack: false,
         fastlink_rle: false,
@@ -767,6 +965,49 @@ fn start_session(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn simple_mode_is_the_default() {
+        let chat = Chat::default();
+        assert_eq!(chat.mode, ChatMode::Local);
+        assert!(!chat.local_auto_offload);
+        assert!(chat.last_prompt.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unchecked_discovered_device_is_excluded_from_remote_workers() {
+        let mut chat = Chat::default();
+        chat.ssh_user = "alice".into();
+        chat.added_devices.push(AddedDevice {
+            id: "node-1".into(),
+            name: "worker".into(),
+            address: "192.0.2.10".parse().unwrap(),
+            backend_mode: WorkerBackendMode::Cpu,
+            gpu_device: "Vulkan0".into(),
+            enabled: false,
+        });
+        assert_eq!(chat.selected_worker_count(), 0);
+        assert!(chat.distributed_settings().is_err());
+        chat.added_devices[0].enabled = true;
+        assert_eq!(chat.selected_worker_count(), 1);
+        assert_eq!(chat.distributed_settings().unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn simple_chat_renders_without_a_model_or_runtime() {
+        let ctx = egui::Context::default();
+        let mut chat = Chat::default();
+        let mut show_chat = true;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            chat.draw_contents(ui, None, &mut show_chat)
+        });
+        let primitives = ctx.tessellate(output.shapes.clone(), output.pixels_per_point);
+        output.textures_delta.clear();
+        assert!(!primitives.is_empty());
+        assert!(show_chat);
+        assert_eq!(chat.mode, ChatMode::Local);
+    }
 
     #[test]
     fn llama_server_selection_rejects_a_directory_and_missing_command() {
@@ -862,7 +1103,7 @@ mod tests {
                 Vec::new(),
                 SshOptions::default(),
                 None,
-                None,
+                PlacementOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -878,7 +1119,7 @@ mod tests {
                 Vec::new(),
                 SshOptions::default(),
                 None,
-                None,
+                PlacementOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -900,7 +1141,7 @@ mod tests {
             Vec::new(),
             SshOptions::default(),
             None,
-            None,
+            PlacementOptions::default(),
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
@@ -934,6 +1175,7 @@ mod tests {
                 address: "192.0.2.10".parse().unwrap(),
                 backend_mode: WorkerBackendMode::default(),
                 gpu_device: "Vulkan0".into(),
+                enabled: true,
             },
             AddedDevice {
                 id: "node-2".into(),
@@ -941,6 +1183,7 @@ mod tests {
                 address: "192.0.2.11".parse().unwrap(),
                 backend_mode: WorkerBackendMode::Gpu,
                 gpu_device: "Vulkan0".into(),
+                enabled: true,
             },
             AddedDevice {
                 id: "node-3".into(),
@@ -948,6 +1191,7 @@ mod tests {
                 address: "192.0.2.12".parse().unwrap(),
                 backend_mode: WorkerBackendMode::Both,
                 gpu_device: "CUDA0".into(),
+                enabled: true,
             },
         ];
 
