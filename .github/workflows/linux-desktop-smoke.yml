@@ -1,0 +1,68 @@
+name: Linux desktop visual smoke
+
+on:
+  push:
+    branches: [delivery/reconciled-team]
+  pull_request:
+    branches: [delivery/reconciled-team]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install virtual desktop tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth xdotool scrot libgl1-mesa-dri libxkbcommon-x11-0
+      - name: Build actual desktop and CLI binaries
+        run: cargo build --locked -p fastlink-gui -p fastlink
+      - name: Start GUI, capture Devices and Chat screens
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          xvfb-run -a -s "-screen 0 1440x900x24" bash <<'SCRIPT'
+          set -euo pipefail
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export GALLIUM_DRIVER=llvmpipe
+          target/debug/fastlink-gui --fastlink-bin target/debug/fastlink > artifacts/gui.log 2>&1 &
+          gui_pid=$!
+          trap 'kill "$gui_pid" 2>/dev/null || true; wait "$gui_pid" 2>/dev/null || true' EXIT
+          window=""
+          for _ in $(seq 1 20); do
+            kill -0 "$gui_pid" || { cat artifacts/gui.log; exit 1; }
+            window=$(xdotool search --onlyvisible --name '^FASTLINK$' 2>/dev/null | head -n 1 || true)
+            if [[ -n "$window" ]]; then break; fi
+            sleep 1
+          done
+          if [[ -z "$window" ]]; then
+            echo "FASTLINK desktop window not found"; cat artifacts/gui.log; exit 1
+          fi
+          xdotool windowsize "$window" 1120 760
+          xdotool windowmove "$window" 40 40
+          sleep 3
+          scrot -z artifacts/devices.png
+          # The Chat tab is the second tab in the application's upper-left row.
+          xdotool mousemove --window "$window" 180 18 click 1
+          sleep 3
+          scrot -z artifacts/chat.png
+          kill -0 "$gui_pid" || { cat artifacts/gui.log; exit 1; }
+          test -s artifacts/devices.png
+          test -s artifacts/chat.png
+          echo "GUI remained live; both virtual desktop captures were created."
+          SCRIPT
+      - name: Upload screenshots and diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastlink-linux-desktop-smoke
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
