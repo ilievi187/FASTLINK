@@ -1103,7 +1103,6 @@ mod tests {
                 Vec::new(),
                 SshOptions::default(),
                 None,
-                None,
                 PlacementOptions::default(),
                 &AtomicBool::new(false),
             );
@@ -1119,7 +1118,6 @@ mod tests {
                 confirmed,
                 Vec::new(),
                 SshOptions::default(),
-                None,
                 None,
                 PlacementOptions::default(),
                 &AtomicBool::new(false),
@@ -1142,7 +1140,6 @@ mod tests {
             model,
             Vec::new(),
             SshOptions::default(),
-            None,
             None,
             PlacementOptions::default(),
             &AtomicBool::new(true),
