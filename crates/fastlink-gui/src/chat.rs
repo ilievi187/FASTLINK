@@ -707,7 +707,7 @@ impl Chat {
         };
         #[cfg(not(target_os = "linux"))]
         let tensor_split = None;
-        let auto_offload = self.local_auto_offload;
+        let auto_offload = self.local_auto_offload || self.api.local_offloads();
         let api = match self.api.options(distributed) {
             Ok(api) => api,
             Err(error) => {
@@ -739,6 +739,7 @@ impl Chat {
                     "Loading model locally…".into()
                 };
                 self.output.clear();
+                self.last_prompt.clear();
                 self.metrics = None;
                 self.startup = Some(Startup { cancel, worker });
             }
