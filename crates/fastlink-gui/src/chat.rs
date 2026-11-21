@@ -478,7 +478,7 @@ impl Chat {
             self.session.is_some() && self.stream.is_none(),
             egui::TextEdit::multiline(&mut self.prompt)
                 .desired_rows(3)
-                .desired_width(f32::INFINITY)
+                .desired_width(ui.available_width())
                 .hint_text("Ask your model something…"),
         );
         ui.horizontal_wrapped(|ui| {
@@ -1116,6 +1116,7 @@ mod tests {
                 address: "192.0.2.11".parse().unwrap(),
                 backend_mode: WorkerBackendMode::Gpu,
                 gpu_device: "Vulkan0".into(),
+                enabled: true,
             },
             AddedDevice {
                 id: "node-3".into(),
