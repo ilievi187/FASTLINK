@@ -274,7 +274,12 @@ impl Chat {
         adding_device || self.startup.is_some() || self.session.is_some()
     }
 
-    pub(crate) fn draw(&mut self, ui: &mut egui::Ui, model: Option<&RegisteredGguf>, show_chat: &mut bool) {
+    pub(crate) fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: Option<&RegisteredGguf>,
+        show_chat: &mut bool,
+    ) {
         egui::ScrollArea::vertical().show(ui, |ui| self.draw_contents(ui, model, show_chat));
     }
 
@@ -296,8 +301,11 @@ impl Chat {
         let adding = false;
 
         ui.add_space(12.0);
-        ui.label(egui::RichText::new("FASTLINK  /  WORKSPACE")
-            .small().color(egui::Color32::from_rgb(106, 205, 181)));
+        ui.label(
+            egui::RichText::new("FASTLINK  /  WORKSPACE")
+                .small()
+                .color(egui::Color32::from_rgb(106, 205, 181)),
+        );
         ui.heading(egui::RichText::new("Chat with your model").size(29.0));
         ui.label("Choose a model and where it runs. Everything else is optional.");
         ui.add_space(18.0);
@@ -310,10 +318,15 @@ impl Chat {
                 ui.label(egui::RichText::new("1  ·  Your model").strong().size(18.0));
                 ui.add_space(6.0);
                 if let Some(model) = model {
-                    let name = model.path.file_name()
-                        .unwrap_or(model.path.as_os_str()).to_string_lossy();
-                    ui.label(egui::RichText::new(format!("✓  {name}"))
-                        .color(egui::Color32::from_rgb(135, 232, 179)));
+                    let name = model
+                        .path
+                        .file_name()
+                        .unwrap_or(model.path.as_os_str())
+                        .to_string_lossy();
+                    ui.label(
+                        egui::RichText::new(format!("✓  {name}"))
+                            .color(egui::Color32::from_rgb(135, 232, 179)),
+                    );
                     ui.small("This GGUF is confirmed for this session.");
                 } else {
                     ui.label("No model selected yet.");
@@ -460,17 +473,29 @@ impl Chat {
             .corner_radius(egui::CornerRadius::same(10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("FASTLINK AI").small().strong()
-                    .color(egui::Color32::from_rgb(135, 232, 179)));
+                ui.label(
+                    egui::RichText::new("FASTLINK AI")
+                        .small()
+                        .strong()
+                        .color(egui::Color32::from_rgb(135, 232, 179)),
+                );
                 egui::ScrollArea::vertical()
                     .id_salt("chat_response")
                     .max_height(320.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
-                        ui.add(egui::Label::new(if self.output.is_empty() {
-                            if self.stream.is_some() { "Generating…" }
-                            else { "Your model's answer will appear here." }
-                        } else { &self.output }).selectable(true));
+                        ui.add(
+                            egui::Label::new(if self.output.is_empty() {
+                                if self.stream.is_some() {
+                                    "Generating…"
+                                } else {
+                                    "Your model's answer will appear here."
+                                }
+                            } else {
+                                &self.output
+                            })
+                            .selectable(true),
+                        );
                     });
             });
         ui.add_space(12.0);
@@ -482,16 +507,22 @@ impl Chat {
                 .hint_text("Ask your model something…"),
         );
         ui.horizontal_wrapped(|ui| {
-            let sendable = self.session.is_some() && self.stream.is_none()
-                && !self.prompt.trim().is_empty();
-            if ui.add_enabled(sendable, egui::Button::new("Send message  →")).clicked() {
+            let sendable =
+                self.session.is_some() && self.stream.is_none() && !self.prompt.trim().is_empty();
+            if ui
+                .add_enabled(sendable, egui::Button::new("Send message  →"))
+                .clicked()
+            {
                 let session = self.session.as_ref().unwrap();
                 let address = session.server.addr();
                 let request = CompletionRequest::new(&self.prompt).with_n_predict(512);
                 let options = CompletionStreamOptions::default();
                 let stream = if let Some(api) = &session.api {
                     spawn_authenticated_completion_stream(
-                        address, &request, &options, api.options.key.clone(),
+                        address,
+                        &request,
+                        &options,
+                        api.options.key.clone(),
                     )
                 } else {
                     spawn_completion_stream(address, &request, &options)
@@ -508,8 +539,10 @@ impl Chat {
                     Err(error) => self.status = error.to_string(),
                 }
             }
-            if ui.add_enabled(self.stream.is_some(),
-                egui::Button::new("Cancel response")).clicked() {
+            if ui
+                .add_enabled(self.stream.is_some(), egui::Button::new("Cancel response"))
+                .clicked()
+            {
                 if let Some(stream) = &self.stream {
                     stream.cancel();
                     self.status = "Cancelling response…".into();
@@ -517,9 +550,11 @@ impl Chat {
             }
             if let Some(metrics) = &self.metrics {
                 if metrics.predicted_n > 0 && metrics.predicted_ms > 0.0 {
-                    ui.label(format!("{:.2} tok/s · {} tokens",
+                    ui.label(format!(
+                        "{:.2} tok/s · {} tokens",
                         metrics.predicted_n as f64 * 1000.0 / metrics.predicted_ms,
-                        metrics.predicted_n));
+                        metrics.predicted_n
+                    ));
                 }
             }
         });
@@ -627,12 +662,20 @@ impl Chat {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("llama-server executable");
-            ui.add_enabled(!active,
+            ui.add_enabled(
+                !active,
                 egui::TextEdit::singleline(&mut self.executable)
-                    .hint_text("/path/to/llama-server").desired_width(360.0));
+                    .hint_text("/path/to/llama-server")
+                    .desired_width(360.0),
+            );
         });
-        self.api.draw(ui, active,
-            self.session.as_ref().and_then(|session| session.api.as_ref()));
+        self.api.draw(
+            ui,
+            active,
+            self.session
+                .as_ref()
+                .and_then(|session| session.api.as_ref()),
+        );
     }
 
     fn start(&mut self, model: RegisteredGguf, distributed: bool) {
@@ -678,7 +721,16 @@ impl Chat {
         match thread::Builder::new()
             .name("fastlink-model-load".into())
             .spawn(move || {
-                start_session(executable, model, workers, ssh, api, tensor_split, auto_offload, &signal)
+                start_session(
+                    executable,
+                    model,
+                    workers,
+                    ssh,
+                    api,
+                    tensor_split,
+                    auto_offload,
+                    &signal,
+                )
             }) {
             Ok(worker) => {
                 self.status = if distributed {
@@ -826,12 +878,14 @@ fn start_session(
         debug_assert!(workers.is_empty());
         Vec::new()
     };
-    let n_gpu_layers =
-        if rpc_servers.is_empty() && !auto_offload && !api.as_ref().is_some_and(|api| api.auto_offload) {
-            0
-        } else {
-            999
-        };
+    let n_gpu_layers = if rpc_servers.is_empty()
+        && !auto_offload
+        && !api.as_ref().is_some_and(|api| api.auto_offload)
+    {
+        0
+    } else {
+        999
+    };
     let reservation = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
     let port = reservation
         .local_addr()
@@ -1074,7 +1128,7 @@ mod tests {
             SshOptions::default(),
             None,
             None,
-                false,
+            false,
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
