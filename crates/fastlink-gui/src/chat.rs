@@ -313,152 +313,214 @@ impl Chat {
                 .color(egui::Color32::from_rgb(106, 205, 181)),
         );
         ui.heading(egui::RichText::new("Chat with your model").size(29.0));
-        ui.label("Choose a model and where it runs. Everything else is optional.");
+        if active {
+            ui.label("The model is running. Just chat; setup is tucked away.");
+        } else {
+            ui.label("Choose a model and where it runs. Everything else is optional.");
+        }
         ui.add_space(18.0);
 
-        egui::Frame::group(ui.style())
-            .fill(egui::Color32::from_rgb(17, 27, 34))
-            .corner_radius(egui::CornerRadius::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("1  ·  Your model").strong().size(18.0));
-                ui.add_space(6.0);
-                if let Some(model) = model {
-                    let name = model
-                        .path
-                        .file_name()
-                        .unwrap_or(model.path.as_os_str())
-                        .to_string_lossy();
-                    ui.label(
-                        egui::RichText::new(format!("✓  {name}"))
-                            .color(egui::Color32::from_rgb(135, 232, 179)),
-                    );
-                    ui.small("This GGUF is confirmed for this session.");
-                } else {
-                    ui.label("No model selected yet.");
-                    ui.label("Add a .gguf file and confirm it in Devices and models.");
-                    if ui.button("Choose a model  →").clicked() {
-                        *show_chat = false;
-                    }
-                }
+        if active {
+            let model_name = self.session.as_ref().map(|session| {
+                session
+                    .model
+                    .file_name()
+                    .unwrap_or(session.model.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
             });
-        ui.add_space(12.0);
-
-        egui::Frame::group(ui.style())
-            .fill(egui::Color32::from_rgb(17, 27, 34))
-            .corner_radius(egui::CornerRadius::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("2  ·  Where to run").strong().size(18.0));
-                ui.add_space(6.0);
-                ui.add_enabled_ui(!active, |ui| {
-                    ui.radio_value(&mut self.mode, ChatMode::Local, "This computer");
-                    #[cfg(target_os = "linux")]
-                    ui.radio_value(&mut self.mode, ChatMode::Connected, "This computer + selected devices");
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(17, 27, 34))
+                .corner_radius(egui::CornerRadius::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    if let Some(name) = &model_name {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(135, 232, 179),
+                            format!("●  {name} is ready"),
+                        );
+                    } else {
+                        ui.label("Loading your model…");
+                    }
+                    if !self.status.is_empty() {
+                        ui.small(&self.status);
+                    }
+                    ui.add_space(8.0);
+                    let stop = if self.startup.is_some() {
+                        "Cancel loading"
+                    } else {
+                        "Stop model"
+                    };
+                    if ui.button(stop).clicked() {
+                        self.stop();
+                    }
                 });
-                if self.mode == ChatMode::Local {
-                    ui.add_enabled(!active, egui::Checkbox::new(
-                        &mut self.local_auto_offload, "Use my GPU if supported"
-                    )).on_hover_text(
-                        "Requires a GPU-enabled llama-server build. Falls back to an error if the build or GPU is unsupported."
-                    );
-                    ui.small("Default: CPU. No other devices will be contacted.");
-                }
-                #[cfg(target_os = "linux")]
-                if self.mode == ChatMode::Connected {
-                    if self.added_devices.is_empty() && self.workers.trim().is_empty() {
-                        ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
-                            "No devices added. Discover and add a device first.");
-                        if ui.button("Go to devices  →").clicked() {
+            egui::CollapsingHeader::new("Connection details & API")
+                .default_open(false)
+                .show(ui, |ui| self.draw_advanced_settings(ui, true));
+        } else {
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(17, 27, 34))
+                .corner_radius(egui::CornerRadius::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("1  ·  Your model").strong().size(18.0));
+                    ui.add_space(6.0);
+                    if let Some(model) = model {
+                        let name = model
+                            .path
+                            .file_name()
+                            .unwrap_or(model.path.as_os_str())
+                            .to_string_lossy();
+                        ui.label(
+                            egui::RichText::new(format!("✓  {name}"))
+                                .color(egui::Color32::from_rgb(135, 232, 179)),
+                        );
+                        ui.small("This GGUF is confirmed for this session.");
+                        if ui.button("Change model >").clicked() {
                             *show_chat = false;
                         }
                     } else {
-                        ui.label("Choose which added devices can join this session:");
-                        for device in &mut self.added_devices {
-                            ui.add_enabled(!active,
-                                egui::Checkbox::new(&mut device.enabled, &device.name)
-                            ).on_hover_text(format!("SSH endpoint: {}", device.address));
-                        }
-                        if !self.workers.trim().is_empty() {
-                            ui.small("Manual SSH workers from Advanced settings will also be used.");
-                        }
-                        ui.add_enabled(!active, egui::Checkbox::new(
-                            &mut self.start_rpc,
-                            "Start RPC workers for me over SSH",
-                        )).on_hover_text("Uses SSH and requires a trusted host key and matching RPC server executable on each selected worker.");
-                        ui.small(if self.start_rpc {
-                            "Requires SSH access, trusted host keys, and ggml-rpc-server on workers."
-                        } else {
-                            "RPC servers must already be running on the selected workers."
-                        });
-                        if self.selected_worker_count() == 0 && self.workers.trim().is_empty() {
-                            ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
-                                "Select at least one device, or switch to This computer.");
-                        }
-                    }
-                }
-            });
-        ui.add_space(12.0);
-
-        egui::Frame::group(ui.style())
-            .fill(egui::Color32::from_rgb(17, 27, 34))
-            .corner_radius(egui::CornerRadius::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("3  ·  Start chatting").strong().size(18.0));
-                ui.add_space(6.0);
-                if self.executable.trim().is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
-                        "llama-server was not found. Install llama.cpp or set its path in Advanced settings.");
-                    ui.hyperlink_to("How to set up llama.cpp  ↗",
-                        "https://github.com/ilievi187/FASTLINK/blob/main/docs/GUI.md#run-a-gguf-on-linux");
-                }
-                if adding {
-                    ui.label("Adding a device…");
-                }
-                let distributed = self.mode == ChatMode::Connected;
-                #[cfg(target_os = "linux")]
-                let ready_workers = self.selected_worker_count() > 0 || !self.workers.trim().is_empty();
-                #[cfg(not(target_os = "linux"))]
-                let ready_workers = false;
-                let can_start = !active && !adding && model.is_some()
-                    && !self.executable.trim().is_empty()
-                    && (!distributed || ready_workers);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(can_start, egui::Button::new(
-                        egui::RichText::new(if distributed { "Connect & Start Chat  →" } else { "Start Chat  →" })
-                            .strong().size(16.0)
-                    )).clicked() {
-                        if let Some(model) = model {
-                            self.start(model.clone(), distributed);
-                        }
-                    }
-                    if active {
-                        let label = if self.startup.is_some() { "Cancel loading" } else { "Stop model" };
-                        if ui.button(label).clicked() {
-                            self.stop();
+                        ui.label("No model selected yet.");
+                        ui.label("Add a .gguf file and confirm it in Devices and models.");
+                        if ui.button("Choose a model >").clicked() {
+                            *show_chat = false;
                         }
                     }
                 });
-                if let Some(session) = &self.session {
-                    let name = session.model.file_name()
-                        .unwrap_or(session.model.as_os_str()).to_string_lossy();
-                    ui.colored_label(egui::Color32::from_rgb(135, 232, 179),
-                        format!("●  {name} ready — type below."));
-                } else if self.startup.is_some() {
-                    ui.label("◌  Starting model…");
-                } else {
-                    ui.label("○  Not running");
-                }
-                if !self.status.is_empty() {
-                    ui.add(egui::Label::new(&self.status).selectable(true));
-                }
-            });
-        ui.add_space(12.0);
+            ui.add_space(12.0);
 
-        egui::CollapsingHeader::new("Advanced settings  ·  SSH, RPC, llama.cpp, API")
-            .default_open(false)
-            .show(ui, |ui| self.draw_advanced_settings(ui, active));
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(17, 27, 34))
+                .corner_radius(egui::CornerRadius::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("2  ·  Where to run").strong().size(18.0));
+                    ui.add_space(6.0);
+                    ui.add_enabled_ui(!active, |ui| {
+                        ui.radio_value(&mut self.mode, ChatMode::Local, "This computer");
+                        #[cfg(target_os = "linux")]
+                        ui.radio_value(&mut self.mode, ChatMode::Connected, "This computer + selected devices");
+                    });
+                    if self.mode == ChatMode::Local {
+                        ui.add_enabled(!active, egui::Checkbox::new(
+                            &mut self.local_auto_offload, "Use my GPU if supported"
+                        )).on_hover_text(
+                            "Requires a GPU-enabled llama-server build. Falls back to an error if the build or GPU is unsupported."
+                        );
+                        ui.small("Default: CPU. No other devices will be contacted.");
+                    }
+                    #[cfg(target_os = "linux")]
+                    if self.mode == ChatMode::Connected {
+                        if self.added_devices.is_empty() && self.workers.trim().is_empty() {
+                            ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                                "No devices added. Discover and add a device first.");
+                            if ui.button("Go to devices >").clicked() {
+                                *show_chat = false;
+                            }
+                        } else {
+                            ui.label("Choose which added devices can join this session:");
+                            for device in &mut self.added_devices {
+                                ui.add_enabled(!active,
+                                    egui::Checkbox::new(&mut device.enabled, &device.name)
+                                ).on_hover_text(format!("SSH endpoint: {}", device.address));
+                            }
+                            if !self.workers.trim().is_empty() {
+                                ui.small("Manual SSH workers from Advanced settings will also be used.");
+                            }
+                            ui.add_enabled(!active, egui::Checkbox::new(
+                                &mut self.start_rpc,
+                                "Start RPC workers for me over SSH",
+                            )).on_hover_text("Uses SSH and requires a trusted host key and matching RPC server executable on each selected worker.");
+                            ui.small(if self.start_rpc {
+                                "Requires SSH access, trusted host keys, and ggml-rpc-server on workers."
+                            } else {
+                                "RPC servers must already be running on the selected workers."
+                            });
+                            if self.selected_worker_count() == 0 && self.workers.trim().is_empty() {
+                                ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                                    "Select at least one device, or switch to This computer.");
+                            }
+                        }
+                    }
+                });
+            ui.add_space(12.0);
+
+            egui::Frame::group(ui.style())
+                .fill(egui::Color32::from_rgb(17, 27, 34))
+                .corner_radius(egui::CornerRadius::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("3  ·  Start chatting").strong().size(18.0));
+                    ui.add_space(6.0);
+                    if self.executable.trim().is_empty() {
+                        ui.colored_label(egui::Color32::from_rgb(244, 189, 113),
+                            "llama-server was not found. Install llama.cpp or set its path in Advanced settings.");
+                        ui.hyperlink_to("How to set up llama.cpp  ↗",
+                            "https://github.com/ilievi187/FASTLINK/blob/main/docs/GUI.md#run-a-gguf-on-linux");
+                    }
+                    if adding {
+                        ui.label("Adding a device…");
+                    }
+                    let distributed = self.mode == ChatMode::Connected;
+                    #[cfg(target_os = "linux")]
+                    let ready_workers = self.selected_worker_count() > 0 || !self.workers.trim().is_empty();
+                    #[cfg(not(target_os = "linux"))]
+                    let ready_workers = false;
+                    let can_start = !active && !adding && model.is_some()
+                        && !self.executable.trim().is_empty()
+                        && (!distributed || ready_workers);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(can_start, egui::Button::new(
+                            egui::RichText::new(if distributed { "Connect & Start Chat >" } else { "Start Chat >" })
+                                .strong().size(16.0)
+                        )).clicked() {
+                            if let Some(model) = model {
+                                self.start(model.clone(), distributed);
+                            }
+                        }
+                        if active {
+                            let label = if self.startup.is_some() { "Cancel loading" } else { "Stop model" };
+                            if ui.button(label).clicked() {
+                                self.stop();
+                            }
+                        }
+                    });
+                    if let Some(session) = &self.session {
+                        let name = session.model.file_name()
+                            .unwrap_or(session.model.as_os_str()).to_string_lossy();
+                        ui.colored_label(egui::Color32::from_rgb(135, 232, 179),
+                            format!("●  {name} ready — type below."));
+                    } else if self.startup.is_some() {
+                        ui.label("◌  Starting model…");
+                    } else {
+                        ui.label("○  Not running");
+                    }
+                    if !self.status.is_empty() {
+                        ui.add(egui::Label::new(&self.status).selectable(true));
+                    }
+                });
+            ui.add_space(12.0);
+
+            egui::CollapsingHeader::new("Advanced settings  ·  SSH, RPC, llama.cpp, API")
+                .default_open(false)
+                .show(ui, |ui| self.draw_advanced_settings(ui, active));
+        }
+
+        // The chat composer should never be buried under a setup form.
+        // Do not show a disabled, empty conversation until a model is ready.
+        if self.session.is_none() {
+            if self.startup.is_some() {
+                ui.add_space(14.0);
+                ui.label("Preparing the model and connecting workers…");
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            } else {
+                ui.add_space(12.0);
+                ui.small("Start Chat to open your conversation.");
+            }
+            return;
+        }
+
         ui.add_space(18.0);
         ui.separator();
         ui.add_space(8.0);
@@ -519,7 +581,7 @@ impl Chat {
             let sendable =
                 self.session.is_some() && self.stream.is_none() && !self.prompt.trim().is_empty();
             if ui
-                .add_enabled(sendable, egui::Button::new("Send message  →"))
+                .add_enabled(sendable, egui::Button::new("Send message >"))
                 .clicked()
             {
                 let session = self.session.as_ref().unwrap();
