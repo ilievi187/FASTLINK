@@ -16,27 +16,27 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Format
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --locked --workspace --all-targets
       - name: Test
-        run: cargo test --workspace --lib --bins --tests --examples
+        run: cargo test --locked --workspace --lib --bins --tests --examples
       - name: Doc tests
-        run: cargo test --workspace --doc
+        run: cargo test --locked --workspace --doc
       - name: Feature-gated transport integration tests
-        run: cargo test -p fastlink --features rpc-v3-transport --test transport_integration --test status_cli
+        run: cargo test --locked -p fastlink --features rpc-v3-transport --test transport_integration --test status_cli
       - name: Doc coherence (M-5)
         if: runner.os == 'Linux'
-        run: cargo test -p fastlink --test benchmark_docs
+        run: cargo test --locked -p fastlink --test benchmark_docs
       - name: Transport benchmark smoke test
         if: github.event_name == 'workflow_dispatch' && runner.os == 'Linux'
         run: cargo bench -p fastlink --bench rpc_latency
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Feature-gated transport Clippy
-        run: cargo clippy -p fastlink --features rpc-v3-transport --all-targets -- -D warnings
-      - name: Live GUI-to-CLI inventory contract
+      - name: Linux GUI-to-CLI inventory contract
         if: runner.os == 'Linux'
         env:
           FASTLINK_BIN: ${{ github.workspace }}/target/debug/fastlink
-        run: cargo test -p fastlink-gui --test command_runner actual_fastlink_binary_from_environment_satisfies_parser
+        run: cargo test --locked -p fastlink-gui --test command_runner actual_fastlink_binary_from_environment_satisfies_parser -- --exact
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Feature-gated transport Clippy
+        run: cargo clippy --locked -p fastlink --features rpc-v3-transport --all-targets -- -D warnings

@@ -1,7 +1,23 @@
 //! FASTLINK: conservative, lossless content-addressed transfer primitives.
 //! This is an independent experimental protocol, not a GPU driver.
 
+pub mod api_server;
+pub mod cli_plan;
+pub mod cluster_orchestrator;
+pub mod cpu_inference;
 pub mod devices;
+pub mod discovery;
+pub mod kv_delta;
+pub mod llama_rpc;
+pub mod manifest;
+pub mod migration_runner;
+pub mod node_runtime;
+pub mod pairing;
+pub mod pipeline;
+pub mod residency;
+pub mod scheduler;
+pub mod secure_worker;
+pub mod stage_auth;
 pub mod topology;
 
 use std::io::{self, Read, Write};

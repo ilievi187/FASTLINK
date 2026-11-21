@@ -6,14 +6,20 @@
 //!
 //! The marker is intentionally session-only and has no operational effect:
 //! this milestone creates no pairing, listener, compute permission or
-//! persisted state.
+//! persisted state. The GGUF catalog is also
+//! session-only metadata and never loads a model.
 
 use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::discovery::{DiscoveryCommand, DiscoveryInventory};
 use crate::inventory::{DeviceInventory, InventoryCommand, InventoryNode, LoadError};
+use crate::models::{inspect_gguf_path, ModelCatalog, ModelJob, ModelJobResult, ModelPathError};
 
 /// What the central panel should show right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,13 +37,20 @@ pub enum Screen {
 /// Result produced by one inventory invocation.
 pub type LoadResult = Result<DeviceInventory, LoadError>;
 
-/// Owns the worker channel for one inventory invocation at a time.
-#[derive(Debug, Default)]
-pub struct InventoryLoader {
-    receiver: Option<Receiver<LoadResult>>,
+/// One bounded command worker. Both local inventory and explicit discovery own
+/// separate instances, so a local refresh can never start discovery.
+#[derive(Debug)]
+pub struct WorkerLoader<T> {
+    receiver: Option<Receiver<Result<T, LoadError>>>,
 }
 
-impl InventoryLoader {
+impl<T> Default for WorkerLoader<T> {
+    fn default() -> Self {
+        Self { receiver: None }
+    }
+}
+
+impl<T> WorkerLoader<T> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -48,30 +61,25 @@ impl InventoryLoader {
         self.receiver.is_some()
     }
 
-    /// Start `command` on a worker thread. Returns `Ok(false)` when a load is
-    /// already running.
-    pub fn start(&mut self, command: InventoryCommand) -> Result<bool, LoadError> {
-        self.start_with(move || command.run())
-    }
-
     /// Start an arbitrary provider. The app passes a command invocation; tests
     /// use this to hold the loading state open deterministically.
     pub fn start_with<F>(&mut self, task: F) -> Result<bool, LoadError>
     where
-        F: FnOnce() -> LoadResult + Send + 'static,
+        F: FnOnce() -> Result<T, LoadError> + Send + 'static,
+        T: Send + 'static,
     {
         if self.receiver.is_some() {
             return Ok(false);
         }
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
-            .name("fastlink-gui-inventory".to_owned())
+            .name("fastlink-gui-worker".to_owned())
             .spawn(move || {
                 let result = task();
                 let _ = sender.send(result);
             })
             .map_err(|err| {
-                LoadError::new(format!("could not start inventory worker: {err}")).with_hint(
+                LoadError::new(format!("could not start worker: {err}")).with_hint(
                     "The operating system refused a new thread. See docs/GUI.md for manual CLI checks.",
                 )
             })?;
@@ -80,7 +88,7 @@ impl InventoryLoader {
     }
 
     /// Non-blocking poll for the finished worker.
-    pub fn poll(&mut self) -> Option<LoadResult> {
+    pub fn poll(&mut self) -> Option<Result<T, LoadError>> {
         let receiver = self.receiver.as_ref()?;
         match receiver.try_recv() {
             Ok(result) => {
@@ -90,11 +98,27 @@ impl InventoryLoader {
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.receiver = None;
-                Some(Err(LoadError::new(
-                    "the inventory worker stopped without a result",
-                )))
+                Some(Err(LoadError::new("the worker stopped without a result")))
             }
         }
+    }
+}
+
+pub type InventoryLoader = WorkerLoader<DeviceInventory>;
+pub type DiscoveryLoader = WorkerLoader<DiscoveryInventory>;
+pub type ModelLoader = WorkerLoader<ModelJobResult>;
+
+impl WorkerLoader<DeviceInventory> {
+    /// Start local inventory on a worker thread.
+    pub fn start(&mut self, command: InventoryCommand) -> Result<bool, LoadError> {
+        self.start_with(move || command.run())
+    }
+}
+
+impl WorkerLoader<DiscoveryInventory> {
+    /// Start explicit opt-in discovery on a worker thread.
+    pub fn start(&mut self, command: DiscoveryCommand) -> Result<bool, LoadError> {
+        self.start_with(move || command.run())
     }
 }
 
@@ -108,11 +132,22 @@ pub struct AppState {
     loaded_at: Option<Instant>,
     selected_id: Option<String>,
     opted_in: BTreeSet<String>,
+    discovery_command: DiscoveryCommand,
+    discovery_loader: DiscoveryLoader,
+    discovery_cancel: Option<Arc<AtomicBool>>,
+    discovery: Option<DiscoveryInventory>,
+    discovery_error: Option<LoadError>,
+    discovery_at: Option<Instant>,
+    model_catalog: ModelCatalog,
+    model_loader: ModelLoader,
+    /// Generation of the catalog when the current model job was queued.
+    model_job_generation: Option<u64>,
 }
 
 impl AppState {
     #[must_use]
     pub fn new(command: InventoryCommand) -> Self {
+        let discovery_command = DiscoveryCommand::new(command.clone());
         Self {
             command,
             loader: InventoryLoader::new(),
@@ -121,7 +156,174 @@ impl AppState {
             loaded_at: None,
             selected_id: None,
             opted_in: BTreeSet::new(),
+            discovery_command,
+            discovery_loader: DiscoveryLoader::new(),
+            discovery_cancel: None,
+            discovery: None,
+            discovery_error: None,
+            discovery_at: None,
+            model_catalog: ModelCatalog::new(),
+            model_loader: ModelLoader::new(),
+            model_job_generation: None,
         }
+    }
+
+    #[must_use]
+    pub fn model_fs_busy(&self) -> bool {
+        self.model_loader.is_busy()
+    }
+
+    #[must_use]
+    pub fn model_loader_mut(&mut self) -> &mut ModelLoader {
+        &mut self.model_loader
+    }
+
+    #[must_use]
+    pub fn discovery_loader_mut(&mut self) -> &mut DiscoveryLoader {
+        &mut self.discovery_loader
+    }
+
+    /// Attach a cancel token when a test or caller already started discovery.
+    ///
+    /// Does not start discovery and does not touch the model worker.
+    pub fn bind_discovery_cancel(&mut self) -> bool {
+        if !self.discovery_loader.is_busy() {
+            return false;
+        }
+        if self.discovery_cancel.is_none() {
+            self.discovery_cancel = Some(Arc::new(AtomicBool::new(false)));
+        }
+        true
+    }
+
+    /// Queue one explicit path check on the model worker.
+    ///
+    /// Returns immediately. An empty draft is rejected on this thread because
+    /// that check does not touch the filesystem. A second request while the
+    /// worker is busy is refused.
+    pub fn request_register_model(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        let draft = self.model_catalog.draft().trim().to_owned();
+        if draft.is_empty() {
+            self.model_catalog
+                .note_failure(ModelPathError::Empty, false);
+            return false;
+        }
+        let path = PathBuf::from(draft);
+        self.start_model_job(ModelJob::Register, path)
+    }
+
+    /// Re-check the selected file on the model worker before confirming.
+    ///
+    /// Does not mark the model loaded and does not start discovery.
+    pub fn request_confirm_model_load(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        let Some(index) = self.model_catalog.selected_index() else {
+            return false;
+        };
+        let Some(path) = self
+            .model_catalog
+            .entries()
+            .get(index)
+            .map(|entry| entry.path.clone())
+        else {
+            return false;
+        };
+        self.start_model_job(ModelJob::Confirm, path)
+    }
+
+    /// Change the selected catalog row. Refused while a model check is running.
+    pub fn select_registered_model(&mut self, index: usize) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.select(index)
+    }
+
+    /// Drop the selected catalog row. Refused while a model check is running.
+    pub fn remove_selected_model(&mut self) -> bool {
+        if self.model_loader.is_busy() {
+            return false;
+        }
+        self.model_catalog.remove_selected()
+    }
+
+    fn start_model_job(&mut self, job: ModelJob, path: PathBuf) -> bool {
+        let generation = self.model_catalog.generation();
+        let inspected = path.clone();
+        match self.model_loader.start_with(move || {
+            Ok(ModelJobResult {
+                job,
+                generation,
+                path: inspected.clone(),
+                outcome: inspect_gguf_path(&inspected),
+            })
+        }) {
+            Ok(true) => {
+                self.model_job_generation = Some(generation);
+                true
+            }
+            Ok(false) => false,
+            Err(_) => {
+                self.model_catalog
+                    .note_failure(ModelPathError::Unavailable, false);
+                false
+            }
+        }
+    }
+
+    fn apply_model_job(&mut self, result: ModelJobResult) {
+        if result.generation != self.model_catalog.generation() {
+            return;
+        }
+        match (result.job, result.outcome) {
+            (ModelJob::Register, Ok(entry)) => {
+                self.model_catalog.accept_registration(entry);
+            }
+            (ModelJob::Register, Err(error)) => {
+                let clear = self.model_catalog.load_confirmation() == Some(result.path.as_path());
+                self.model_catalog.note_failure(error, clear);
+            }
+            (ModelJob::Confirm, Ok(entry)) => {
+                self.model_catalog.accept_confirmation(entry);
+            }
+            (ModelJob::Confirm, Err(error)) => {
+                self.model_catalog.note_failure(error, true);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn model_catalog(&self) -> &ModelCatalog {
+        &self.model_catalog
+    }
+
+    pub fn model_catalog_mut(&mut self) -> &mut ModelCatalog {
+        &mut self.model_catalog
+    }
+
+    /// Chat stays closed until a real inference backend is connected.
+    ///
+    /// Registration and load confirmation never connect a backend.
+    #[must_use]
+    pub fn chat_available(&self) -> bool {
+        self.inference_backend_connected()
+    }
+
+    /// This shell has no inference backend.
+    #[must_use]
+    pub fn inference_backend_connected(&self) -> bool {
+        false
+    }
+
+    /// No token stream exists. The shell never fabricates completions.
+    #[must_use]
+    pub fn generated_tokens(&self) -> &'static [&'static str] {
+        &[]
     }
 
     #[must_use]
@@ -152,6 +354,100 @@ impl AppState {
     #[must_use]
     pub fn loaded_age(&self) -> Option<Duration> {
         self.loaded_at.map(|instant| instant.elapsed())
+    }
+
+    #[must_use]
+    pub fn discovery_busy(&self) -> bool {
+        self.discovery_loader.is_busy()
+    }
+
+    #[must_use]
+    pub fn discovery(&self) -> Option<&DiscoveryInventory> {
+        self.discovery.as_ref()
+    }
+
+    #[must_use]
+    pub fn discovery_error(&self) -> Option<&LoadError> {
+        self.discovery_error.as_ref()
+    }
+
+    #[must_use]
+    pub fn discovery_age(&self) -> Option<Duration> {
+        self.discovery_at.map(|instant| instant.elapsed())
+    }
+
+    #[must_use]
+    pub fn discovery_command_line(&self) -> String {
+        self.discovery_command.command_line()
+    }
+
+    /// Explicit user action: start `fastlink discover --json`.
+    ///
+    /// This is the only method that starts discovery. Construction and
+    /// `refresh()` never call it.
+    pub fn discover(&mut self) -> bool {
+        if self.discovery_loader.is_busy() {
+            return false;
+        }
+        self.discovery_error = None;
+        self.discovery = None;
+        self.discovery_cancel = None;
+
+        let token = Arc::new(AtomicBool::new(false));
+        let command = self
+            .discovery_command
+            .clone()
+            .with_cancel_token(token.clone());
+        match self.discovery_loader.start(command) {
+            Ok(true) => {
+                self.discovery_cancel = Some(token);
+                true
+            }
+            Ok(false) => false,
+            Err(_) => {
+                self.discovery_error = Some(LoadError::new(
+                    "Discovery could not start. Check the configured FASTLINK binary.",
+                ));
+                false
+            }
+        }
+    }
+
+    /// Request real cancellation of the active discovery run. The worker runner
+    /// kills the CLI process group; the UI stays busy until that cleanup result
+    /// arrives.
+    pub fn cancel_discovery(&mut self) -> bool {
+        if !self.discovery_loader.is_busy() {
+            return false;
+        }
+        let Some(token) = self.discovery_cancel.as_ref() else {
+            return false;
+        };
+        !token.swap(true, Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn discovery_cancelling(&self) -> bool {
+        self.discovery_cancel
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::SeqCst))
+    }
+
+    /// Apply a completed discovery attempt. Kept public so headless state/UI
+    /// tests can exercise results without network activity.
+    pub fn apply_discovery_result(&mut self, result: Result<DiscoveryInventory, LoadError>) {
+        self.discovery_cancel = None;
+        match result {
+            Ok(discovery) => {
+                self.discovery = Some(discovery);
+                self.discovery_error = None;
+            }
+            Err(err) => {
+                self.discovery = None;
+                self.discovery_error = Some(safe_discovery_error(err));
+            }
+        }
+        self.discovery_at = Some(Instant::now());
     }
 
     #[must_use]
@@ -224,11 +520,37 @@ impl AppState {
     /// Collect a finished worker result. Returns `true` when the UI should
     /// repaint because state changed.
     pub fn poll(&mut self) -> bool {
-        let Some(result) = self.loader.poll() else {
-            return false;
-        };
-        self.apply_result(result);
-        true
+        let mut changed = false;
+        if let Some(result) = self.loader.poll() {
+            self.apply_result(result);
+            changed = true;
+        }
+        if let Some(result) = self.discovery_loader.poll() {
+            if self.discovery_cancelling() {
+                self.apply_discovery_result(Err(LoadError::new(
+                    "Discovery was cancelled. No candidates were shown.",
+                )));
+            } else {
+                self.apply_discovery_result(result);
+            }
+            changed = true;
+        }
+        if let Some(result) = self.model_loader.poll() {
+            let queued = self.model_job_generation.take();
+            match result {
+                Ok(job) => self.apply_model_job(job),
+                Err(_) => {
+                    if queued
+                        .is_some_and(|generation| generation == self.model_catalog.generation())
+                    {
+                        self.model_catalog
+                            .note_failure(ModelPathError::Unavailable, false);
+                    }
+                }
+            }
+            changed = true;
+        }
+        changed
     }
 
     /// Apply a completed inventory load.
@@ -306,6 +628,16 @@ impl AppState {
     }
 }
 
+fn safe_discovery_error(error: LoadError) -> LoadError {
+    let safe = error.summary.starts_with("Discovery ")
+        && !crate::discovery::text_contains_address_like(&error.summary);
+    if safe {
+        LoadError::new(error.summary)
+    } else {
+        LoadError::new("Discovery failed safely. No candidates were shown.")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +662,23 @@ mod tests {
 
     fn error() -> LoadError {
         LoadError::new("inventory failed")
+    }
+
+    #[test]
+    fn discovery_errors_are_reduced_to_safe_ui_text() {
+        let mut state = AppState::new(InventoryCommand::new("fastlink"));
+        state.apply_discovery_result(Err(LoadError::new("provider failed at 192.168.1.9:41641")
+            .with_detail("raw endpoint 192.168.1.9")
+            .with_hint("see 192.168.1.9")));
+        let error = state.discovery_error().expect("safe discovery error");
+        assert!(!format!("{error:?}").contains("192.168.1.9"));
+        assert!(!format!("{error:?}").contains("41641"));
+        assert_eq!(
+            error.summary,
+            "Discovery failed safely. No candidates were shown."
+        );
+        assert!(error.detail.is_none());
+        assert!(error.hint.is_none());
     }
 
     #[test]

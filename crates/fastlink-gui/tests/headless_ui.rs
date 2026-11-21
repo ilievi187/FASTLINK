@@ -9,10 +9,12 @@ use std::thread;
 use std::time::Duration;
 
 use egui::{Context, Pos2, RawInput, Rect, Vec2};
+use fastlink_gui::discovery::parse_discovery_json;
 use fastlink_gui::inventory::{parse_inventory_json, DeviceInventory, InventoryCommand, LoadError};
 use fastlink_gui::state::{AppState, Screen};
 
 const FIXTURE: &str = include_str!("../testdata/devices-v1.json");
+const DISCOVERY_FIXTURE: &str = include_str!("../testdata/discovery-v1.json");
 const FIXTURE_ID: &str = "0123456789abcdef0123456789abcdef";
 
 fn inventory(json: &str) -> DeviceInventory {
@@ -279,4 +281,47 @@ fn session_marker_summary_is_visual_only_and_not_consent() {
         summary.contains("visual") && summary.contains("no operational effect"),
         "footer must identify the marker as visual-only with no effect: {summary}"
     );
+}
+
+#[test]
+fn discovery_candidates_render_headlessly_with_unpaired_warning() {
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state.apply_discovery_result(Ok(
+        parse_discovery_json(DISCOVERY_FIXTURE).expect("discovery fixture")
+    ));
+
+    assert!(state.discovery().is_some());
+    assert!(!state.discovery_busy());
+    assert!(state.discovery_age().is_some());
+    render_resting_frames(&mut state);
+}
+
+#[test]
+fn empty_unavailable_discovery_renders_headlessly() {
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    let discovery = parse_discovery_json(
+        r#"{
+            "schema": "fastlink.discover.v1",
+            "scope": "user_opt_in_lan_tailscale",
+            "providers": [
+                {"provider": "lan_mdns", "status": "unavailable"},
+                {"provider": "tailscale", "status": "unavailable"}
+            ],
+            "nodes": []
+        }"#,
+    )
+    .expect("empty discovery");
+    state.apply_discovery_result(Ok(discovery));
+    render_resting_frames(&mut state);
+}
+
+#[test]
+fn safe_discovery_error_renders_headlessly() {
+    let mut state = AppState::new(InventoryCommand::new("fastlink"));
+    state.apply_discovery_result(Err(LoadError::new(
+        "Discovery response did not match the expected schema. No candidates were shown.",
+    )));
+    assert!(state.discovery().is_none());
+    assert!(state.discovery_error().is_some());
+    render_resting_frames(&mut state);
 }

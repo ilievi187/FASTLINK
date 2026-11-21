@@ -25,7 +25,7 @@ Improve distributed compute performance by **reducing unnecessary data movement*
 ## Safety and privacy
 
 - Do **not** stop or restart the user's existing Heretic 256K, llama.cpp RPC, GPU Task Manager, or unrelated video/AI services.
-- Do **not** access or publish private GPUs, internal network addresses, machine paths, SSH keys, tokens, private logs, or user model weights.
+- Do **not** access or publish private GPUs, machine paths, SSH keys, tokens, private logs, or user model weights. Internal network addresses remain prohibited except for explicitly user-opted FASTLINK LAN/Tailscale discovery and pairing: use them only transiently as local routing data, never log, persist, display, commit, or publish raw addresses, and never scan/probe outside the opt-in discovery action.
 - Run CPU-only local tests by default. Real GPU tests require explicit owner approval.
 - Never expose the experimental unauthenticated TCP port beyond loopback.
 - Never spend paid API credits or introduce heavyweight model downloads without explicit approval.
