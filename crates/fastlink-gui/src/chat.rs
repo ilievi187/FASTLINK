@@ -989,7 +989,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut chat = Chat::default();
         let mut show_chat = true;
-        ctx.run_ui(|ui| chat.draw_contents(ui, None, &mut show_chat));
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            chat.draw_contents(ui, None, &mut show_chat)
+        });
         assert!(show_chat);
         assert_eq!(chat.mode, ChatMode::Local);
     }
