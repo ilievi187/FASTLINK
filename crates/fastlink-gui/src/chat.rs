@@ -434,8 +434,11 @@ impl Chat {
                         }
                     }
                 });
-                if self.session.is_some() {
-                    ui.colored_label(egui::Color32::from_rgb(135, 232, 179), "●  Model ready — type below.");
+                if let Some(session) = &self.session {
+                    let name = session.model.file_name()
+                        .unwrap_or(session.model.as_os_str()).to_string_lossy();
+                    ui.colored_label(egui::Color32::from_rgb(135, 232, 179),
+                        format!("●  {name} ready — type below."));
                 } else if self.startup.is_some() {
                     ui.label("◌  Starting model…");
                 } else {
