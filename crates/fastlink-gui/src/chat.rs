@@ -42,6 +42,12 @@ struct Startup {
     worker: JoinHandle<Result<Session, String>>,
 }
 
+#[derive(Default)]
+struct PlacementOptions {
+    tensor_split: Option<String>,
+    auto_offload: bool,
+}
+
 #[cfg(target_os = "linux")]
 struct AddedDevice {
     id: String,
@@ -730,8 +736,10 @@ impl Chat {
                     workers,
                     ssh,
                     api,
-                    tensor_split,
-                    auto_offload,
+                    PlacementOptions {
+                        tensor_split,
+                        auto_offload,
+                    },
                     &signal,
                 )
             }) {
@@ -847,8 +855,7 @@ fn start_session(
     workers: Vec<Worker>,
     ssh: SshOptions,
     api: Option<ApiServerOptions>,
-    tensor_split: Option<String>,
-    auto_offload: bool,
+    placement: PlacementOptions,
     cancel: &AtomicBool,
 ) -> Result<Session, String> {
     if cancel.load(Ordering::Relaxed) {
@@ -883,7 +890,7 @@ fn start_session(
         Vec::new()
     };
     let n_gpu_layers = if rpc_servers.is_empty()
-        && !auto_offload
+        && !placement.auto_offload
         && !api.as_ref().is_some_and(|api| api.auto_offload)
     {
         0
@@ -907,7 +914,7 @@ fn start_session(
         rpc_servers,
         n_gpu_layers,
         ctx_size: 4096,
-        tensor_split,
+        tensor_split: placement.tensor_split,
         fastlink_v4: false,
         fastlink_pack: false,
         fastlink_rle: false,
@@ -1097,7 +1104,7 @@ mod tests {
                 SshOptions::default(),
                 None,
                 None,
-                false,
+                PlacementOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -1114,7 +1121,7 @@ mod tests {
                 SshOptions::default(),
                 None,
                 None,
-                false,
+                PlacementOptions::default(),
                 &AtomicBool::new(false),
             );
             assert_eq!(
@@ -1137,7 +1144,7 @@ mod tests {
             SshOptions::default(),
             None,
             None,
-            false,
+                PlacementOptions::default(),
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
