@@ -1144,7 +1144,7 @@ mod tests {
             SshOptions::default(),
             None,
             None,
-                PlacementOptions::default(),
+            PlacementOptions::default(),
             &AtomicBool::new(true),
         );
         assert_eq!(result.err().unwrap(), "Startup cancelled");
