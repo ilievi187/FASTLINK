@@ -1,4 +1,7 @@
 name: Rust CI
+
+permissions:
+  contents: write
 on:
   push:
     branches: [main]
@@ -50,9 +53,13 @@ jobs:
           tar -C build-artifacts -czf build-artifacts/FASTLINK-linux-x86_64.tar.gz fastlink-linux-x86_64
           rm -r build-artifacts/fastlink-linux-x86_64
           (cd build-artifacts && sha256sum FASTLINK-linux-x86_64.tar.gz > SHA256SUMS.txt)
-      - uses: actions/upload-artifact@v4
+      - name: Publish verified binaries as GitHub prerelease
+        uses: softprops/action-gh-release@v2
         with:
-          name: FASTLINK-Linux-CLI-and-GUI
-          path: build-artifacts/*
-          if-no-files-found: error
-          retention-days: 30
+          tag_name: server-${{ github.sha }}
+          name: FASTLINK Linux CLI and GUI — Ubuntu server build
+          prerelease: true
+          generate_release_notes: false
+          body: Built on the personal Ubuntu runner from this exact source commit.
+          files: build-artifacts/*
+          fail_on_unmatched_files: true
