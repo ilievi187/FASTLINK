@@ -1,15 +1,12 @@
 name: Rust CI
 on:
   push:
-  pull_request:
+    branches: [main]
   workflow_dispatch:
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, Linux, X64, nn-ubuntu-ci]
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,3 +37,22 @@ jobs:
         env:
           FASTLINK_BIN: ${{ github.workspace }}/target/debug/fastlink
         run: cargo test -p fastlink-gui --test command_runner actual_fastlink_binary_from_environment_satisfies_parser
+
+      - name: Compile release binaries on Ubuntu server
+        run: cargo build --workspace --release
+      - name: Package Linux command line and desktop shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build-artifacts/fastlink-linux-x86_64
+          install -m 0755 target/release/fastlink build-artifacts/fastlink-linux-x86_64/fastlink
+          install -m 0755 target/release/fastlink-gui build-artifacts/fastlink-linux-x86_64/fastlink-gui
+          tar -C build-artifacts -czf build-artifacts/FASTLINK-linux-x86_64.tar.gz fastlink-linux-x86_64
+          rm -r build-artifacts/fastlink-linux-x86_64
+          (cd build-artifacts && sha256sum FASTLINK-linux-x86_64.tar.gz > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FASTLINK-Linux-CLI-and-GUI
+          path: build-artifacts/*
+          if-no-files-found: error
+          retention-days: 30
